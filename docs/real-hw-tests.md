@@ -100,3 +100,24 @@ register gives 0.1 s steps, so timing over 60 s or more is good to about 0.2 per
 | R2 | CPU clock in Hz (is it 5.000 MHz?) | Every clock count in the emulator assumes 5 MHz | Count a loop of known clocks between two tenths-register changes, over 60 s |
 | R3 | Frame rate in Hz (IR3 per second) | 56 vs 61 Hz estimates disagree | Count IR3 ticks over 60 s of RTC time |
 | R4 | OsGetTime against the RTC | GRiD-OS time calls were 200-430 ms with a dead clock | Time OsGetTime calls with the RTC running |
+
+## More groups (added 2026-11-11)
+
+| # | What | Why | How (idea) |
+|---|------|-----|------------|
+| F1 | FPATAN, F2XM1, FYL2X, FYL2XP1, FSQRT results as full 80-bit values on ~20 inputs each | Make the rest of the 8087 bit-exact (GRiDBench f03 FPATAN already differs by 1 bit) | FLD inputs from a table, run the instruction, FSTP TBYTE, print hex |
+| F2 | Their times per input, and FADD/FMUL/FDIV/FLD/FST times by operand | 8087 busy times per instruction (only typical values fitted so far) | Loops as in GRiDBench g-tests, one input each |
+| P1 | 80130 interrupt inputs: edge or level triggered | The 0.3.5 sound fix assumed edge-triggered IR0 | Enable the 8274 TX interrupt, let it stay pending, EOI without serving the 8274: level = the routine runs again at once, edge = once; count calls over 10 ms |
+| P2 | Interrupt latency: from the line rising to the first instruction of the routine | Racing-the-beam code that starts work in the IR3 routine | Spin on a counter in a known-clock loop; the routine stores the loop count it interrupted (IR3 vs refresh counter) |
+| P3 | 80130 timers 0-2: what they count and whether any reaches an interrupt | GRiDBench T1 probe gave nonsense; timer 2 is the baud clock | Program each timer, read back, watch IRR bits |
+| K1 | 8741 scan rate: how fast a key press shows in the status byte | Keyboard latency in games | Interactive: press a key, count loop turns between status changes |
+| K2 | The 2-key limit: hold A + L, press Q; Shift/Code status bits with keys held | BomberGRiD 2-player keys depend on it (not checked on hardware) | Interactive: show the matrix keys and DFFC:2 bits live |
+| K3 | Auto-repeat delay and rate | Emulator uses the real 8741 firmware; confirms its timing | GRiDBench keyboard menu already measures it |
+| G1 | Hard disk and floppy: read/write speed, seek near vs far | Disk-heavy programs and builds at true speed | OS-level file tests (GRiDBench menu 1) plus page reads at far-apart addresses |
+| G2 | Time spent in the GPIB DMA window per 512-byte page | The emulator's DMA wait model | Time OsRead of one page vs many |
+| C1 | REP STOSW / REP MOVSW clocks per word in RAM and screen RAM | The one 8086 timing that still misfits (12.2 vs 11.15) | Long REP runs timed with the RTC |
+| C2 | MUL/IMUL/DIV/IDIV clocks for several operand values | They depend on the operand bits | Loops with fixed operands |
+| C3 | INT n / IRET round trip | Software interrupt cost (GRiD-OS calls) | Loop of INT to a dummy handler |
+| U1 | What reads return from empty memory (80000, A0000, C0000, D0000, F0000) and unused I/O ports (10h-FFh) | Programs that probe for hardware; emulator returns FFh | Read bytes and words, print them (skip device registers with side effects) |
+| U2 | Which device registers repeat at other addresses (DFxxx mirrors, port 0-0F mirrors) | Address decoding | Compare reads of harmless status registers at mirrored addresses |
+| X1 | Boot time: power switch to the Executive, and to the PROM menu | Emulator boot speed check | Stopwatch, or RTC time saved at startup vs when switched on |

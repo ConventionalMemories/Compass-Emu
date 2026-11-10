@@ -4,6 +4,7 @@
 
 use crate::screen::CPU_HZ;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Rtc {
     pub running: bool,
     tenths: u8,

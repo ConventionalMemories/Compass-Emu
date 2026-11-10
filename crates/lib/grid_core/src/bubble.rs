@@ -32,14 +32,14 @@ const SR_CLEAR: u8 = 0x7E;
 
 const FIFO_SIZE: usize = 40;
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 enum Phase {
     Idle,
     Exec,
     Result,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 enum Op {
     None,
     Fail,
@@ -50,7 +50,7 @@ enum Op {
 }
 
 /// Adjustable timing, in CPU clocks (to be measured on a real 1101).
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BubbleTiming {
     /// Time to move one 32-byte FSA page between the bubble and the FIFO.
     pub page_clocks: u64,
@@ -69,6 +69,7 @@ impl Default for BubbleTiming {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Bubble {
     pub image: Vec<u8>,
     pub dirty: bool,

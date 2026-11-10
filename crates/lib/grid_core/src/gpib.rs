@@ -29,7 +29,7 @@ const CMD_SPE: u8 = 0x18;
 const CMD_SPD: u8 = 0x19;
 const SECTOR: usize = 512;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 enum Ctrl {
     /// Not controller in charge.
     Idle,
@@ -39,7 +39,7 @@ enum Ctrl {
     Standby,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum DriveKind {
     /// 2101 hard disk, GPIB address 4.
     Hdd2101,
@@ -59,7 +59,7 @@ impl DriveKind {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 enum DriveState {
     Idle,
     Reading,
@@ -69,8 +69,11 @@ enum DriveState {
 }
 
 /// GRiD 2101/2102 drive, byte-level port of MAME's grid210x_device.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Drive {
     pub kind: DriveKind,
+    /// Not in saved states: the image is attached again after loading one.
+    #[serde(skip)]
     pub image: Vec<u8>,
     pub dirty: bool,
     listening: bool,
@@ -87,6 +90,7 @@ pub struct Drive {
     done_at: Option<u64>,
     /// Command delay in CPU clocks (MAME: 5 ms floppy, 150 us hard disk).
     pub delay_clocks: u64,
+    #[serde(skip)]
     pub log: Vec<String>,
 }
 
@@ -292,6 +296,7 @@ impl Drive {
 }
 
 /// TMS9914A plus the devices on its bus.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Gpib {
     int0: u8,
     int1: u8,

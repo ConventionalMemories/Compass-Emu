@@ -26,7 +26,7 @@ pub const LINE_WORDS: usize = SCREEN_W / 16;
 /// during a display slot waits (whole CPU clocks) until the slot is over. During horizontal and
 /// vertical blank the CPU runs at full speed. All values are adjustable until they are measured
 /// on a real 1101.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DisplayTiming {
     pub contention: bool,
     /// 15 MHz states between display fetches (36 = 2.4 us = 12 CPU clocks).

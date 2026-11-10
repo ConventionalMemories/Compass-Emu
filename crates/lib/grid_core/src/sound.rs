@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 const ROWS: [f64; 4] = [697.0, 770.0, 852.0, 941.0];
 const COLS: [f64; 3] = [1209.0, 1336.0, 1477.0];
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Sound {
     pub rate: u32,
     pub cpu_hz: f64,

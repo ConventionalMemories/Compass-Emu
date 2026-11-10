@@ -6,4 +6,5 @@ license = "MIT"
 description = "Intel 8087 numeric coprocessor emulation (80-bit, cycle counts) for Compass-Emu"
 
 [dependencies]
+serde = { version = "1.0.107", features = ["derive"] }
 rustc_apfloat = "0.2"

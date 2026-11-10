@@ -2616,6 +2616,8 @@ dependencies = [
  "log",
  "marty_core",
  "png 0.17.16",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2746,6 +2748,7 @@ name = "i8087"
 version = "0.0.1"
 dependencies = [
  "rustc_apfloat",
+ "serde",
 ]
 
 [[package]]

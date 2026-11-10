@@ -9,7 +9,7 @@ use crate::screen::{self, SCREEN_BASE, SCREEN_H, SCREEN_W, WIDE_H, WIDE_W};
 /// The Compass models. The 110x have the original board; the 112x and 113x (Compass II) the
 /// split board (video/memory board + CPU board). The 113x have the 512 x 256 screen; the
 /// xxx9 models 512K of RAM, the others 256K.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GridModel {
     Compass1101,
     Compass1109,
@@ -259,5 +259,99 @@ impl GridMachine {
     /// Screen RAM as it is now, rendered like render_display().
     pub fn render_now(&self) -> Vec<u8> {
         self.render_ram(&self.screen_ram())
+    }
+}
+
+/// A saved machine state: everything but the drive images (attach them again after
+/// loading, so one saved state can be restarted with a changed disk).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedState {
+    format: u32,
+    model: GridModel,
+    ram: Vec<u8>,
+    /// AX BX CX DX SP BP SI DI ES CS SS DS
+    regs: Vec<u16>,
+    ip: u16,
+    flags: u16,
+    clocks: u64,
+    instructions: u64,
+    board: GridBoard,
+    fpu: Option<i8087::I8087>,
+    beam_frame: Vec<u8>,
+    shown_frame: Vec<u8>,
+    frames: u64,
+    next_fetch: u64,
+    fetch_line: u64,
+    fetch_word: usize,
+}
+
+const STATE_FORMAT: u32 = 1;
+const STATE_REGS: [marty_core::cpu_common::Register16; 12] = {
+    use marty_core::cpu_common::Register16::*;
+    [AX, BX, CX, DX, SP, BP, SI, DI, ES, CS, SS, DS]
+};
+
+impl GridMachine {
+    /// Save the whole machine (between instructions) except the drive images.
+    pub fn save_state(&mut self) -> Vec<u8> {
+        let ram = self.ram();
+        let regs = STATE_REGS.iter().map(|&r| self.cpu.get_register16(r)).collect();
+        let ip = self.cpu.get_ip();
+        let flags = self.cpu.get_flags();
+        let board = self.board();
+        let st = SavedState {
+            format: STATE_FORMAT,
+            model: self.model,
+            ram,
+            regs,
+            ip,
+            flags,
+            clocks: board.clocks,
+            instructions: self.instructions,
+            board: serde_json::from_value(serde_json::to_value(board).unwrap()).unwrap(),
+            fpu: self.fpu().map(|f| serde_json::from_value(serde_json::to_value(f).unwrap()).unwrap()),
+            beam_frame: self.beam_frame.clone(),
+            shown_frame: self.shown_frame.clone(),
+            frames: self.frames,
+            next_fetch: self.next_fetch,
+            fetch_line: self.fetch_line,
+            fetch_word: self.fetch_word,
+        };
+        serde_json::to_vec(&st).unwrap()
+    }
+
+    /// Load a state saved by save_state. Drive images are empty: set them with
+    /// `board_mut().gpib.drives[i].image` before running.
+    pub fn load_state(data: &[u8]) -> Result<GridMachine, String> {
+        let st: SavedState = serde_json::from_slice(data).map_err(|e| format!("not a saved Compass state: {e}"))?;
+        if st.format != STATE_FORMAT {
+            return Err(format!("saved state format {} (this version reads {STATE_FORMAT})", st.format));
+        }
+        let prom = vec![0xF4u8; 8192];
+        let mut m = GridMachine::new(st.model, &prom, &prom);
+        for (a, &b) in st.ram.iter().enumerate() {
+            let _ = m.cpu.bus_mut().write_u8(a, b, 0);
+        }
+        m.cpu.bus_mut().install_external(Box::new(st.board));
+        if let (Some(f), Some(saved)) = (m.fpu_mut(), st.fpu) {
+            *f = saved;
+        }
+        m.cpu.set_reset_vector(marty_core::cpu_common::CpuAddress::Segmented(st.regs[9], st.ip));
+        m.cpu.reset();
+        for (&r, &v) in STATE_REGS.iter().zip(st.regs.iter()) {
+            m.cpu.set_register16(r, v);
+        }
+        m.cpu.set_flags(st.flags);
+        m.cpu.set_cycle_num(st.clocks);
+        m.instructions = st.instructions;
+        m.beam_frame = st.beam_frame;
+        m.shown_frame = st.shown_frame;
+        m.frames = st.frames;
+        m.next_fetch = st.next_fetch;
+        m.fetch_line = st.fetch_line;
+        m.fetch_word = st.fetch_word;
+        let intr = m.board().intr();
+        m.cpu.set_intr(intr);
+        Ok(m)
     }
 }

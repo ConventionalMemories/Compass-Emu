@@ -13,8 +13,10 @@ pub trait UpiPorts {
     fn t1(&mut self) -> bool;
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Upi41 {
     pub rom: Vec<u8>,
+    #[serde(with = "crate::bytes_n")]
     pub ram: [u8; 64],
     pub pc: u16,
     pub a: u8,

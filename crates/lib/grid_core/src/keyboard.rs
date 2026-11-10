@@ -12,6 +12,7 @@ pub const MOD_CTRL: u8 = 0x01;
 pub const MOD_SHIFT: u8 = 0x02;
 pub const MOD_CODE: u8 = 0x08;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Matrix {
     cols: [u8; 8],
     mods: u8,
@@ -38,6 +39,7 @@ impl UpiPorts for Matrix {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Keyboard {
     pub mcu: Upi41,
     m: Matrix,

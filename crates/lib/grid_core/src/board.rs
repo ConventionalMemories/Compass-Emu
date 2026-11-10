@@ -48,9 +48,12 @@ pub const IR_KEYBOARD: u8 = 4;
 pub const IR_GPIB: u8 = 5;
 pub const IR_8087: u8 = 6;
 
+/// See tick_to.
+const SLOW_STEP: u64 = 64;
+
 
 /// A logged access to a device, for debugging and for Claude's tools.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IoLog {
     pub clock: u64,
     pub address: usize,
@@ -58,6 +61,7 @@ pub struct IoLog {
     pub data: u8,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GridBoard {
     prom: Vec<u8>,
     /// CPU clocks since power-on (advanced by tick()).
@@ -72,6 +76,7 @@ pub struct GridBoard {
     // 8741 keyboard (HLE for now)
     kbd_status: u8,
     kbd_queue: std::collections::VecDeque<u8>,
+    #[serde(skip)]
     pub kbd_commands: Vec<(u64, u8, bool)>,
     /// Sound DAC, volume DAC and DTMF (modem board).
     pub sound: Sound,
@@ -83,6 +88,7 @@ pub struct GridBoard {
     serial_irq: bool,
     // Unknown/unhandled accesses
     pub log_unhandled: bool,
+    #[serde(skip)]
     pub unhandled: Vec<IoLog>,
     last_vsync_frame: u64,
     vsync_line_high: bool,
@@ -109,6 +115,9 @@ pub struct GridBoard {
     pub split_regs: [u8; 4],
     /// 113x large screen switched on.
     wide: bool,
+    /// Next clock at which tick_to updates bubble, GPIB and keyboard.
+    #[serde(default)]
+    next_slow: u64,
     /// Split board only: also answer the 1101's GPIB DMA window at E0000, so a 1101 boot
     /// PROM can stand in for a missing 1121/1129 PROM.
     pub e0000_dma: bool,
@@ -162,6 +171,7 @@ impl GridBoard {
             ram_extra_wait: 0,
             split_regs: [0; 4],
             wide: false,
+            next_slow: 0,
             e0000_dma: false,
         }
     }
@@ -220,13 +230,18 @@ impl GridBoard {
             self.serial.advance(now);
         }
         self.sync_serial_int();
-        if let Some(b) = &mut self.bubble {
-            b.advance(now);
+        // Bubble, GPIB and the keyboard MCU in steps of SLOW_STEP clocks (any access to them
+        // brings them up to date first, so this only delays their IRQs by up to 13 us).
+        if now >= self.next_slow {
+            self.next_slow = now + SLOW_STEP;
+            if let Some(b) = &mut self.bubble {
+                b.advance(now);
+            }
+            self.sync_bubble_int();
+            self.gpib.advance(now);
+            self.sync_gpib_int();
+            self.kbd_at(0);
         }
-        self.sync_bubble_int();
-        self.gpib.advance(now);
-        self.sync_gpib_int();
-        self.kbd_at(0);
     }
 
     /// Run the keyboard MCU up to the current time and follow its IRQ line.

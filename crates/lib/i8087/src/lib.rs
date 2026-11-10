@@ -67,14 +67,16 @@ fn f64_to_f80(x: f64) -> F80 {
 }
 
 /// Instruction counters, for profiling.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FpuStats {
     pub instructions: u64,
     pub busy_clocks: u64,
     pub unknown: u64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct I8087 {
+    #[serde(with = "f80_regs")]
     st: [F80; 8],
     pub cw: u16,
     pub sw: u16,
@@ -1243,5 +1245,26 @@ mod tests {
         assert!(!f.busy(1018));
         f.esc(&mut m, 1005, 0xD9, 0xE8, None, 0); // queued behind the first
         assert_eq!(f.busy_until(), 1036);
+    }
+}
+
+/// The register stack as raw 80-bit patterns (for saved machine states).
+mod f80_regs {
+    use super::F80;
+    use rustc_apfloat::Float;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(st: &[F80; 8], s: S) -> Result<S::Ok, S::Error> {
+        let bits: Vec<u128> = st.iter().map(|f| f.to_bits()).collect();
+        bits.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[F80; 8], D::Error> {
+        let bits = Vec::<u128>::deserialize(d)?;
+        let mut st = [F80::ZERO; 8];
+        for (r, b) in st.iter_mut().zip(bits) {
+            *r = F80::from_bits(b);
+        }
+        Ok(st)
     }
 }

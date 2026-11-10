@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Channel {
     pub wr: [u8; 8],
     ptr: usize,
@@ -96,6 +96,7 @@ impl Channel {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Serial8274 {
     pub ch: [Channel; 2],
     /// Bytes channel A sent: (CPU clock when the last bit left, byte).

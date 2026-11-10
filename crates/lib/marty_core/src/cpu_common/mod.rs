@@ -649,6 +649,8 @@ pub trait Cpu {
     fn get_flags(&self) -> u16;
     fn set_flags(&mut self, flags: u16);
     fn get_cycle_ct(&self) -> (u64, u64);
+    /// Set the running clock count (restoring a saved machine state). Default: ignored.
+    fn set_cycle_num(&mut self, _n: u64) {}
     fn get_instruction_ct(&self) -> u64;
     fn flat_ip(&self) -> u32;
     fn flat_ip_disassembly(&self) -> u32;

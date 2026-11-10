@@ -22,3 +22,17 @@ pub mod fragment;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};
+
+/// serde for byte arrays longer than 32 (saved machine states).
+pub(crate) mod bytes_n {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer, const N: usize>(a: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
+        a.as_slice().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<[u8; N], D::Error> {
+        let v = Vec::<u8>::deserialize(d)?;
+        v.try_into().map_err(|_| serde::de::Error::custom("wrong array length"))
+    }
+}

@@ -154,6 +154,11 @@ impl Cpu for Intel808x {
         self.get_cycle_ct()
     }
 
+    fn set_cycle_num(&mut self, n: u64) {
+        self.cycle_num = n;
+        self.bus.set_cpu_now(n);
+    }
+
     #[inline]
     fn get_instruction_ct(&self) -> u64 {
         self.get_instruction_ct()

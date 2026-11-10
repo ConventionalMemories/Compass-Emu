@@ -43,3 +43,15 @@ pub fn find(model: GridModel, dir: &Path) -> RomSet {
     let keyboard = if model.split_board() && k2.exists() { k2 } else { p("300067-01.bin") };
     RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note }
 }
+
+/// A ready machine for `model` with the ROMs from `dir` (keyboard firmware loaded, the
+/// E0000 window set for a stand-in PROM), or a message naming the missing file.
+pub fn machine(model: GridModel, dir: &Path) -> Result<crate::GridMachine, String> {
+    let r = find(model, dir);
+    let rd = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()));
+    let (even, odd, kbd) = (rd(&r.prom_even)?, rd(&r.prom_odd)?, rd(&r.keyboard)?);
+    let mut m = crate::GridMachine::new(model, &even, &odd);
+    m.board_mut().keyboard = Some(crate::keyboard::Keyboard::new(kbd));
+    m.board_mut().e0000_dma = model.split_board() && !model.wide_screen();
+    Ok(m)
+}

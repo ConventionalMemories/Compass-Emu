@@ -1125,13 +1125,15 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "base64",
  "cpal 0.15.3",
  "grid_core",
  "marty_core",
  "minifb",
  "png 0.17.16",
+ "serde_json",
  "serialport",
 ]
 
@@ -2613,6 +2615,7 @@ dependencies = [
  "i8087",
  "log",
  "marty_core",
+ "png 0.17.16",
 ]
 
 [[package]]

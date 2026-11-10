@@ -237,7 +237,7 @@ impl ExternalBoard for GridBoard {
                 idn | (self.rtc.read(off) & 0x0F)
             }
             0xC0000..=0xCFFFF => 0xFF,
-            0xDFE00..=0xDFFFF | 0xE0000..=0xEFFFF => {
+            0xDFE00..=0xDFFFF => {
                 self.log(address, false, 0xFF);
                 0xFF
             }

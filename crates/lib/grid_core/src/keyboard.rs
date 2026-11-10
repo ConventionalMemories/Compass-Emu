@@ -163,6 +163,12 @@ impl Keyboard {
         self.m.mods
     }
 
+    /// Set the whole matrix and modifiers at once (window frontends).
+    pub fn set_matrix(&mut self, cols: [u8; 8], mods: u8) {
+        self.m.cols = cols;
+        self.m.mods = mods;
+    }
+
     pub fn release_all(&mut self) {
         self.m.cols = [0; 8];
         self.m.mods = 0;

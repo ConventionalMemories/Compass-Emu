@@ -1,0 +1,176 @@
+[workspace]
+members = [
+    "crates/lib/*",
+    "crates/bin/*"
+]
+resolver = "2"
+default-members = ["crates/bin/martypc_eframe"]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+authors = ["Daniel Balsom"]
+
+[workspace.dependencies]
+winit = "0.30"
+wgpu = { version = "29.0", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal", "gles", "webgpu"] }
+glow = "0.17"
+bytemuck = "1.14"
+raw-window-handle = "0.6"
+thiserror = "2.0"
+anyhow = "1.0"
+bpaf = { version = "0.7", features = ["derive"] }
+log = "0.4.20"
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+serialport = "4.7.3"
+web-time = "1.1.0"
+toml = "0.8"
+rustc-hash = "2.1"
+enum_dispatch = "0.3.13"
+indexmap = "2.14"
+crossbeam-channel = "0.5.15"
+chrono = "0.4"
+zip = { version = "2.3", default-features = false }
+strum = {  version = "0.27", features = ["derive"] }
+strum_macros = "0.27"
+url = "2.5"
+egui_commonmark = { version = "0.22.0" }
+rand = "0.9"
+getrandom = "0.3"
+regex = "1.5"
+cfg-if = "1.0"
+binrw = "0.14"
+fatfs = { git = "https://github.com/dbalsom/fluxfox_fat.git", branch = "attributes", default-features = false, features = ["std", "chrono"] }
+rfd = "0.17.2"
+gilrs = { version = "0.11.1", default-features = false }
+hound = "3.5.1"
+tempfile = "3.20"
+uuid = { version = "1.17", features = ["v4"] }
+
+# wasm workspace dependencies
+# ---------------------------------------------------------------------------------------------------------------------
+
+# Match the wasm-bindgen/web-sys versions required by eframe.
+wasm-bindgen = "0.2.108"
+wasm-bindgen-futures = "0.4.58"
+wasm-bindgen-rayon = "1.3"
+[workspace.dependencies.web-sys]
+version = "0.3.77"
+features = [
+    "DedicatedWorkerGlobalScope",
+    "WorkerOptions",
+    "WorkerType",
+    "Url",
+    "Blob",
+    "BlobPropertyBag",
+    "Window",
+    "Document",
+    "HtmlAnchorElement",
+    "Event",
+    "FileReader",
+    "HtmlInputElement"
+]
+
+[workspace.dependencies.fluxfox]
+git = "https://github.com/dbalsom/fluxfox.git"
+branch = "finish_fat"
+default-features = false
+
+[workspace.dependencies.fluxfox_egui]
+git = "https://github.com/dbalsom/fluxfox.git"
+branch = "finish_fat"
+
+[workspace.dependencies.egui]
+version = "0.34.2"
+default-features = false
+
+[workspace.dependencies.eframe]
+git = "https://github.com/dbalsom/egui_martypc.git"
+branch = "wasm-pointer-lock"
+default-features = false
+
+[workspace.dependencies.egui-winit]
+default-features = false
+version = "0.34.2"
+#branch = "0_24_2_winit_0_29_15"
+#features = ["clipboard", "wayland", "x11"]
+
+[workspace.dependencies.egui-wgpu]
+version = "0.34.2"
+default-features = false
+features = ["winit", "capture"]
+
+[workspace.dependencies.egui_glow]
+version = "0.34.2"
+
+[workspace.dependencies.egui_extras]
+version = "0.34.2"
+default-features = false
+#branch = "0_24_2_winit_0_29_15"
+features = ["image"]
+
+[workspace.dependencies.egui_plot]
+version = "0.35.0"
+#default-features = false
+
+[workspace.dependencies.egui-notify]
+version = "0.22"
+
+[workspace.dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png"]
+
+#[workspace.dependencies.pixels]
+#git = "https://github.com/mattjuk/pixels.git"
+#branch = "update-wgpu-22-winit-0.30"
+#git = "https://github.com/dbalsom/pixels_martypc.git"
+#branch = "marty_update_deps4"
+
+[workspace.dependencies.rodio]
+version = "0.22.2"
+default-features = false
+features = ["playback"]
+
+#[workspace.dependencies.egui]
+#git = "https://github.com/dbalsom/egui_martypc.git"
+#branch = "0_24_2_winit_0_29_15"
+#
+#[workspace.dependencies.egui-wgpu]
+#git = "https://github.com/dbalsom/egui_martypc.git"
+#branch = "0_24_2_winit_0_29_15"
+#
+#[workspace.dependencies.egui-winit]
+#git = "https://github.com/dbalsom/egui_martypc.git"
+#branch = "0_24_2_winit_0_29_15"
+#default-features = false
+#features = ["clipboard", "wayland", "x11"]
+#
+#[workspace.dependencies.egui_extras]
+#git = "https://github.com/dbalsom/egui_martypc.git"
+#branch = "0_24_2_winit_0_29_15"
+#features = ["image"]
+#
+#[workspace.dependencies.egui_plot]
+#git = "https://github.com/dbalsom/egui_martypc.git"
+#branch = "0_24_2_winit_0_29_15"
+
+[profile.release]
+opt-level = 3
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+strip = true
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3
+
+
+
+
+

@@ -5,7 +5,8 @@
 //!   gridfrag code.bin [max-clocks]
 //! Prints clocks used, instructions, and the 8087 state. Environment: FPU_EXTRA, FPU_WAITMIN
 //! (8087 timing), DISP_CONTENTION (0 = off), DISP_FETCH_LEN, DISP_FETCH_PERIOD,
-//! FRAG_PNG=file saves the last displayed frame. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states).
+//! FRAG_PNG=file saves the last displayed frame. FRAG_MODEL=1139 etc. picks the model,
+//! RAM_EXTRA_WAIT the extra wait states on every RAM access. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states).
 
 use grid_core::{GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, CpuAddress, Register16};
@@ -20,7 +21,11 @@ fn main() {
     let max: u64 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
     // A PROM of HLTs: never executed, the reset vector points at the fragment.
     let prom = vec![0xF4u8; 8192];
-    let mut m = GridMachine::new(GridModel::Compass1101, &prom, &prom);
+    let model = std::env::var("FRAG_MODEL").ok().and_then(|s| GridModel::parse(&s)).unwrap_or(GridModel::Compass1101);
+    let mut m = GridMachine::new(model, &prom, &prom);
+    if let Some(v) = std::env::var("RAM_EXTRA_WAIT").ok().and_then(|v| v.parse().ok()) {
+        m.board_mut().ram_extra_wait = v;
+    }
     if let Some(f) = m.fpu_mut() {
         if let Ok(v) = std::env::var("FPU_EXTRA") {
             f.extra_busy = v.parse().unwrap();
@@ -77,9 +82,10 @@ fn main() {
     let clocks = m.board().clocks - start;
     if let Ok(path) = std::env::var("FRAG_PNG") {
         // The last complete frame as the beam showed it.
-        let pix = grid_core::screen::render(&m.display_frame());
+        let pix = m.render_display();
+        let (w, h) = m.screen_size();
         let f = std::fs::File::create(&path).expect("png file");
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), 320, 240);
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
         enc.set_color(png::ColorType::Grayscale);
         enc.set_depth(png::BitDepth::Eight);
         let data: Vec<u8> = pix.iter().map(|&p| if p != 0 { 0xFF } else { 0x10 }).collect();

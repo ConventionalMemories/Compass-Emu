@@ -6,9 +6,9 @@ use std::{fs, io::BufWriter, time::Instant};
 use grid_core::{gpib::{Drive, DriveKind}, keyboard::{self, Keyboard}, screen, GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, Register16};
 
-fn save_png(path: &str, pix: &[u8]) {
+fn save_png(path: &str, pix: &[u8], w: usize, h: usize) {
     let f = fs::File::create(path).unwrap();
-    let mut enc = png::Encoder::new(BufWriter::new(f), screen::SCREEN_W as u32, screen::SCREEN_H as u32);
+    let mut enc = png::Encoder::new(BufWriter::new(f), w as u32, h as u32);
     enc.set_color(png::ColorType::Grayscale);
     enc.set_depth(png::BitDepth::Eight);
     let mut w = enc.write_header().unwrap();
@@ -25,7 +25,10 @@ fn main() {
     let even = fs::read(&a[1]).unwrap();
     let odd = fs::read(&a[2]).unwrap();
     let secs: f64 = a[3].parse().unwrap();
-    let mut m = GridMachine::new(GridModel::Compass1101, &even, &odd);
+    // GRID_MODEL = 1101 (default), 1109, 1121, 1129, 1131, 1139.
+    let model = std::env::var("GRID_MODEL").ok().and_then(|s| GridModel::parse(&s)).unwrap_or(GridModel::Compass1101);
+    println!("model: Compass {}", model.name());
+    let mut m = GridMachine::new(model, &even, &odd);
     // Drives: GRID_FLOP (2102, addr 6), GRID_FLOP2101 (addr 5), GRID_HD (2101 hard disk, addr 4).
     for (var, kind) in [
         ("GRID_HD", DriveKind::Hdd2101),
@@ -195,6 +198,8 @@ fn main() {
             }
         }
     }
-    save_png(&a[4], &screen::render(&m.ram()));
+    let (w, h) = m.screen_size();
+    println!("screen mode {:?}, split regs {:02X?}", m.screen_mode(), m.board().split_regs);
+    save_png(&a[4], &m.render_now(), w, h);
     println!("screen saved to {}", a[4]);
 }

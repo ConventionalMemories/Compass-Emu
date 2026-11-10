@@ -41,31 +41,88 @@ pub struct DisplayTiming {
     pub cpu_write_len: u32,
     /// Line on which IR3 (vertical sync) rises; it falls at the start of line 0.
     pub ir3_line: u64,
+    /// Geometry: CPU clocks per line, lines per frame, visible lines, words fetched per
+    /// visible line (pixels / 16).
+    pub line_clocks: u64,
+    pub frame_lines: u64,
+    pub visible_lines: u64,
+    pub line_words: usize,
 }
 
 impl Default for DisplayTiming {
     fn default() -> Self {
-        DisplayTiming { contention: true, fetch_period: 36, fetch_len: 6, fetch_offset: 0, cpu_len: 3, cpu_write_len: 2, ir3_line: VISIBLE_LINES }
+        DisplayTiming {
+            contention: true,
+            fetch_period: 36,
+            fetch_len: 6,
+            fetch_offset: 0,
+            cpu_len: 3,
+            cpu_write_len: 2,
+            ir3_line: VISIBLE_LINES,
+            line_clocks: LINE_CLOCKS,
+            frame_lines: FRAME_LINES,
+            visible_lines: VISIBLE_LINES,
+            line_words: LINE_WORDS,
+        }
     }
 }
 
+/// The 113x (Compass II 1131/1139) large screen: 512 x 256. Estimated, not measured: the same
+/// 61.8 us line, 269 lines (a real 1137 runs its tick at ~60.1 Hz by GRiDBench), and the display
+/// fetches 32 words per visible line, one every 8 CPU clocks.
+pub const WIDE_W: usize = 512;
+pub const WIDE_H: usize = 256;
+
 impl DisplayTiming {
+    /// Timing of the 113x large screen (to be measured on a real 1131/1139).
+    pub fn wide() -> DisplayTiming {
+        DisplayTiming {
+            fetch_period: 24,
+            ir3_line: WIDE_H as u64,
+            frame_lines: 269,
+            visible_lines: WIDE_H as u64,
+            line_words: WIDE_W / 16,
+            ..DisplayTiming::default()
+        }
+    }
+
+    pub fn frame_clocks(&self) -> u64 {
+        self.line_clocks * self.frame_lines
+    }
+
+    /// Bytes of screen RAM the display scans per frame.
+    pub fn frame_bytes(&self) -> usize {
+        self.visible_lines as usize * self.line_words * 2
+    }
+
+    /// Beam position at CPU clock `total_clocks`.
+    pub fn beam(&self, total_clocks: u64) -> Beam {
+        let fc = self.frame_clocks();
+        let in_frame = total_clocks % fc;
+        Beam {
+            frame: total_clocks / fc,
+            line: in_frame / self.line_clocks,
+            clock: in_frame % self.line_clocks,
+            vblank: in_frame / self.line_clocks >= self.visible_lines,
+        }
+    }
+
     /// Wait states for a CPU RAM access whose T2 starts at CPU clock `now`.
     #[inline]
     pub fn ram_wait(&self, now: u64, write: bool) -> u32 {
         if !self.contention {
             return 0;
         }
-        let in_frame = now % FRAME_CLOCKS;
-        if in_frame >= VISIBLE_LINES * LINE_CLOCKS {
+        let in_frame = now % self.frame_clocks();
+        if in_frame >= self.visible_lines * self.line_clocks {
             return 0;
         }
-        let x = (in_frame % LINE_CLOCKS) as i64 * 3 - self.fetch_offset as i64;
+        let x = (in_frame % self.line_clocks) as i64 * 3 - self.fetch_offset as i64;
         let w = if write { self.cpu_write_len } else { self.cpu_len } as i64;
         let (p, l) = (self.fetch_period as i64, self.fetch_len as i64);
         let k0 = if x < 0 { 0 } else { x / p };
         for k in [k0, k0 + 1] {
-            if k >= LINE_WORDS as i64 {
+            if k >= self.line_words as i64 {
                 break;
             }
             let s = k * p;
@@ -89,33 +146,37 @@ pub struct Beam {
     pub line: u64,
     /// CPU clock within the line.
     pub clock: u64,
+    vblank: bool,
 }
 
 impl Beam {
+    /// Beam position on the 1101 screen.
     pub fn at(total_clocks: u64) -> Beam {
-        let frame = total_clocks / FRAME_CLOCKS;
-        let in_frame = total_clocks % FRAME_CLOCKS;
-        Beam {
-            frame,
-            line: in_frame / LINE_CLOCKS,
-            clock: in_frame % LINE_CLOCKS,
-        }
+        DisplayTiming::default().beam(total_clocks)
     }
     pub fn in_vblank(&self) -> bool {
-        self.line >= VISIBLE_LINES
+        self.vblank
     }
 }
 
 /// Convert screen RAM (9600 bytes from 0400h) to 1 byte per pixel (0/1).
 /// Each 16-bit word is shown with bit 15 leftmost (as in MAME), so the odd byte comes first.
 pub fn render(ram: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8; SCREEN_W * SCREEN_H];
-    for y in 0..SCREEN_H {
-        for wx in 0..SCREEN_W / 16 {
-            let a = SCREEN_BASE + (y * (SCREEN_W / 16) + wx) * 2;
-            let w = ram[a] as u16 | (ram[a + 1] as u16) << 8;
+    render_into(ram, SCREEN_W, SCREEN_H, SCREEN_W, SCREEN_H)
+}
+
+/// Render a `w` x `h` bitmap from screen RAM (`ram` starts at address 0, the bitmap at 0400h)
+/// into a `out_w` x `out_h` picture, centred (the 113x compatibility mode shows the 320 x 240
+/// screen in the middle of its 512 x 256 panel).
+pub fn render_into(ram: &[u8], w: usize, h: usize, out_w: usize, out_h: usize) -> Vec<u8> {
+    let mut out = vec![0u8; out_w * out_h];
+    let (px, py) = ((out_w - w) / 2, (out_h - h) / 2);
+    for y in 0..h {
+        for wx in 0..w / 16 {
+            let a = SCREEN_BASE + (y * (w / 16) + wx) * 2;
+            let word = ram.get(a).copied().unwrap_or(0) as u16 | (ram.get(a + 1).copied().unwrap_or(0) as u16) << 8;
             for b in 0..16 {
-                out[y * SCREEN_W + wx * 16 + b] = ((w >> (15 - b)) & 1) as u8;
+                out[(y + py) * out_w + px + wx * 16 + b] = ((word >> (15 - b)) & 1) as u8;
             }
         }
     }

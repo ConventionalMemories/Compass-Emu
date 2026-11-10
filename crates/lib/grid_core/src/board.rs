@@ -12,6 +12,16 @@
 //!   DFFC0-DFFCF  8741 keyboard: DFFC0 data, DFFC2 status/command
 //!   E0000-EFFFF  GPIB pseudo-DMA window (TMS9914 data register)
 //!   FC000-FFFFF  16K boot PROM (even/odd chips interleaved)
+//!
+//! Split board (Compass II 1121/1129/1131/1139, MAME grid1121_map + the 1139 PROM and 113x OS):
+//!   00000-7FFFF  RAM (256K or 512K)
+//!   80000-9FFFF  application ROM sockets (empty -> FF)
+//!   DFA00-DFDFF  GPIB pseudo-DMA window (instead of E0000)
+//!   DFE00-DFE07  video/memory control: DFE00 = 1 selects the video chip, then DFE04 sets the
+//!                mode; the 113x OS writes 0Bh (512K) or 0Ah (256K) for the large screen, the
+//!                PROM writes 0Eh (bit 2 set = 320 x 240 compatibility mode)
+//!   DFE08-DFE0F  application ROM control
+//!   DFE10-DFE1F  serial port select latches (ST0-3, at DFE00 on the 1101)
 //! IO ports 00h/02h: 80130 interrupt controller (8259 compatible); 08h-0Eh: 80130 timers.
 //! IRQ wiring (MAME): IR0 serial, IR1 bubble, IR2 modem, IR3 vsync, IR4 keyboard, IR5 GPIB,
 //! IR6 8087, IR7 ring.
@@ -27,7 +37,8 @@ use crate::serial::Serial8274;
 use crate::sound::Sound;
 use crate::rtc::Rtc;
 use crate::keyboard::Keyboard;
-use crate::screen::{Beam, DisplayTiming, FRAME_CLOCKS, LINE_CLOCKS};
+use crate::machine::GridModel;
+use crate::screen::{Beam, DisplayTiming};
 
 pub const IR_SERIAL: u8 = 0;
 pub const IR_BUBBLE: u8 = 1;
@@ -37,7 +48,6 @@ pub const IR_KEYBOARD: u8 = 4;
 pub const IR_GPIB: u8 = 5;
 pub const IR_8087: u8 = 6;
 
-const RAM_TOP: usize = 0x40000;
 
 /// A logged access to a device, for debugging and for Claude's tools.
 #[derive(Clone, Debug)]
@@ -89,11 +99,26 @@ pub struct GridBoard {
     pub dma_wait_limit: u64,
     /// Display timing and RAM contention.
     pub display: DisplayTiming,
+    /// The model this board belongs to.
+    pub model: GridModel,
+    /// End of RAM (256K or 512K).
+    ram_top: usize,
+    /// Extra wait states on every RAM access (not measured yet; see docs/real-hw-tests.md).
+    pub ram_extra_wait: u32,
+    /// Split board video/memory control registers DFE00-DFE06 (last written).
+    pub split_regs: [u8; 4],
+    /// 113x large screen switched on.
+    wide: bool,
 }
 
 impl GridBoard {
-    /// `even` and `odd` are the two 8K PROM chips.
+    /// A 1101 board. `even` and `odd` are the two 8K PROM chips.
     pub fn new(even: &[u8], odd: &[u8]) -> GridBoard {
+        Self::new_model(GridModel::Compass1101, even, odd)
+    }
+
+    /// The board of `model`.
+    pub fn new_model(model: GridModel, even: &[u8], odd: &[u8]) -> GridBoard {
         assert_eq!(even.len(), odd.len());
         let mut prom = vec![0xFFu8; even.len() * 2];
         for i in 0..even.len() {
@@ -128,12 +153,39 @@ impl GridBoard {
             machine_id: [0; 16],
             gpib_int: false,
             dma_wait_limit: 20_000_000,
-            display: DisplayTiming::default(),
+            display: if model.wide_screen() { DisplayTiming::wide() } else { DisplayTiming::default() },
+            model,
+            ram_top: model.ram_size(),
+            ram_extra_wait: 0,
+            split_regs: [0; 4],
+            wide: false,
         }
     }
 
     pub fn beam(&self) -> Beam {
-        Beam::at(self.clocks)
+        self.display.beam(self.clocks)
+    }
+
+    /// The 113x large screen is on (else 320 x 240).
+    pub fn wide_mode(&self) -> bool {
+        self.wide
+    }
+
+    fn split_write(&mut self, address: usize, data: u8) {
+        let r = (address >> 1) & 3;
+        self.split_regs[r] = data;
+        if r == 2 && self.split_regs[0] == 1 && self.model.wide_screen() {
+            self.wide = data & 4 == 0;
+        }
+    }
+
+    fn is_dma_window(&self, address: usize) -> bool {
+        if self.model.split_board() {
+            (0xDFA00..=0xDFDFF).contains(&address)
+        }
+        else {
+            (0xE0000..=0xEFFFF).contains(&address)
+        }
     }
 
     /// Advance board time by `cycles` CPU clocks.
@@ -145,8 +197,8 @@ impl GridBoard {
     pub fn tick_to(&mut self, now: u64) {
         self.clocks = now.max(self.clocks);
         // IR3: rising edge at the start of line ir3_line (vertical blank), low again at frame start.
-        let in_frame = self.clocks % FRAME_CLOCKS;
-        let vblank = in_frame >= self.display.ir3_line * LINE_CLOCKS;
+        let in_frame = self.clocks % self.display.frame_clocks();
+        let vblank = in_frame >= self.display.ir3_line * self.display.line_clocks;
         if vblank && !self.vsync_line_high {
             self.vsync_line_high = true;
             self.pic.request_interrupt(IR_VSYNC);
@@ -258,7 +310,7 @@ impl GridBoard {
 impl ExternalBoard for GridBoard {
     fn mem_ranges(&self) -> Vec<(usize, usize)> {
         // Everything above RAM belongs to the board (unmapped space reads FFh).
-        vec![(RAM_TOP, 0x100000 - RAM_TOP)]
+        vec![(self.ram_top, 0x100000 - self.ram_top)]
     }
 
     fn io_ports(&self) -> Vec<u16> {
@@ -266,6 +318,12 @@ impl ExternalBoard for GridBoard {
     }
 
     fn mem_read_u8(&mut self, address: usize, _cycles: u32) -> u8 {
+        if self.is_dma_window(address) {
+            self.gpib_at(_cycles);
+            let v = self.gpib.read(7);
+            self.sync_gpib_int();
+            return v;
+        }
         match address {
             0xFC000..=0xFFFFF => self.prom[(address - 0xFC000) % self.prom.len()],
             0xDFFC0..=0xDFFCF if self.keyboard.is_some() => {
@@ -290,12 +348,6 @@ impl ExternalBoard for GridBoard {
             0xDFF80..=0xDFF8F if address & 1 == 0 => {
                 self.gpib_at(_cycles);
                 let v = self.gpib.read((address & 0xF) >> 1);
-                self.sync_gpib_int();
-                v
-            }
-            0xE0000..=0xEFFFF => {
-                self.gpib_at(_cycles);
-                let v = self.gpib.read(7);
                 self.sync_gpib_int();
                 v
             }
@@ -338,7 +390,17 @@ impl ExternalBoard for GridBoard {
     }
 
     fn mem_write_u8(&mut self, address: usize, data: u8, _cycles: u32) {
+        if self.is_dma_window(address) {
+            self.gpib_at(_cycles);
+            self.gpib.write(7, data);
+            self.sync_gpib_int();
+            return;
+        }
+        let split = self.model.split_board();
         match address {
+            0xDFE00..=0xDFE07 if split && address & 1 == 0 => self.split_write(address, data),
+            // serial port select latches: nothing to model (channel A is the only port)
+            0xDFE10..=0xDFE1F if split => {}
             // DFE4:2 sound DAC, DFE4:4 volume DAC (SoundTest on a real 1101).
             0xDFE40..=0xDFE4F => {
                 let now = self.clocks + _cycles as u64;
@@ -382,18 +444,13 @@ impl ExternalBoard for GridBoard {
                 self.gpib.write((address & 0xF) >> 1, data);
                 self.sync_gpib_int();
             }
-            0xE0000..=0xEFFFF => {
-                self.gpib_at(_cycles);
-                self.gpib.write(7, data);
-                self.sync_gpib_int();
-            }
             0xDFE00..=0xDFFFF => self.log(address, true, data),
             _ => {}
         }
     }
 
     fn mem_wait(&mut self, address: usize, cycles: u32, write: bool) -> u32 {
-        if (0xE0000..=0xEFFFF).contains(&address) {
+        if self.is_dma_window(address) {
             self.gpib_at(cycles);
             let lim = self.dma_wait_limit;
             return self.gpib.dma_wait(write, lim) as u32;
@@ -402,8 +459,8 @@ impl ExternalBoard for GridBoard {
     }
 
     fn ram_wait(&mut self, address: usize, now: u64, write: bool) -> u32 {
-        if address < RAM_TOP {
-            self.display.ram_wait(now, write)
+        if address < self.ram_top {
+            self.display.ram_wait(now, write) + self.ram_extra_wait
         }
         else {
             0

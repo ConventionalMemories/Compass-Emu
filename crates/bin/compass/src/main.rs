@@ -1,8 +1,11 @@
-//! Compass-Emu 0.1.0: GRiD Compass 1101 in a window.
+//! Compass-Emu 0.2.0: a GRiD Compass in a window.
 //!
 //! compass [options]
-//!   --prom-even F --prom-odd F   boot PROM chips (default roms/1101even.rev3.bin, roms/1101odd.rev3.bin)
-//!   --kbd F                      8741 keyboard firmware (default roms/300067-01.bin)
+//!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
+//!   --prom-even F --prom-odd F   boot PROM chips (default: see default_prom)
+//!   --prom F                     boot PROM as one 16K file (even/odd bytes interleaved)
+//!   --kbd F                      8741 keyboard firmware (default roms/300067-01.bin; the
+//!                                Compass II models use roms/300001-02.bin when it is there)
 //!   --hd F                       2101 hard disk image (GPIB 4)
 //!   --flop F                     2102 floppy image (GPIB 6)
 //!   --flop2101 F                 2101 floppy image (GPIB 5)
@@ -35,7 +38,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -44,7 +47,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program."
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program."
     );
     std::process::exit(1)
 }
@@ -58,6 +61,32 @@ fn default_path(name: &str) -> PathBuf {
         }
     }
     PathBuf::from("roms").join(name)
+}
+
+/// Boot PROM chips for `model`: the model's own dump when it is in the roms folder (MAME
+/// names), else the nearest one we have: 1101 rev 3 for the 1109, the 1139's for the split
+/// board models (1121 and 1131 were never dumped).
+fn default_prom(model: GridModel) -> (PathBuf, PathBuf) {
+    let own = (
+        default_path(&format!("{}even.ccprom.bin", model.name())),
+        default_path(&format!("{}odd.ccprom.bin", model.name())),
+    );
+    if own.0.exists() && own.1.exists() {
+        return own;
+    }
+    if model.split_board() {
+        let p = (default_path("1139even.ccprom.bin"), default_path("1139odd.ccprom.bin"));
+        if model != GridModel::Compass1139 {
+            eprintln!("no {} boot PROM in roms, using the 1139's", model.name());
+        }
+        p
+    }
+    else {
+        if model != GridModel::Compass1101 {
+            eprintln!("no {} boot PROM in roms, using the 1101 rev 3", model.name());
+        }
+        (default_path("1101even.rev3.bin"), default_path("1101odd.rev3.bin"))
+    }
 }
 
 fn read(path: &Path, what: &str) -> Vec<u8> {
@@ -90,9 +119,9 @@ fn matrix_pos(k: Key) -> Option<(usize, u8)> {
     keyboard::key_for_char(c).map(|(col, bit, _)| (col, bit))
 }
 
-fn save_png(path: &str, pix: &[u8]) {
+fn save_png(path: &str, pix: &[u8], w: usize, h: usize) {
     if let Ok(f) = fs::File::create(path) {
-        let mut enc = png::Encoder::new(BufWriter::new(f), screen::SCREEN_W as u32, screen::SCREEN_H as u32);
+        let mut enc = png::Encoder::new(BufWriter::new(f), w as u32, h as u32);
         enc.set_color(png::ColorType::Grayscale);
         enc.set_depth(png::BitDepth::Eight);
         if let Ok(mut w) = enc.write_header() {
@@ -104,9 +133,11 @@ fn save_png(path: &str, pix: &[u8]) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mut prom_even = default_path("1101even.rev3.bin");
-    let mut prom_odd = default_path("1101odd.rev3.bin");
-    let mut kbd = default_path("300067-01.bin");
+    let mut model = GridModel::Compass1101;
+    let mut prom_even: Option<PathBuf> = None;
+    let mut prom_odd: Option<PathBuf> = None;
+    let mut prom: Option<PathBuf> = None;
+    let mut kbd: Option<PathBuf> = None;
     let mut drives: Vec<(DriveKind, PathBuf)> = Vec::new();
     let mut readonly = false;
     let mut bubble: Option<PathBuf> = None;
@@ -116,9 +147,17 @@ fn main() {
     while let Some(a) = args.next() {
         let mut val = || args.next().map(PathBuf::from).unwrap_or_else(|| usage());
         match a.as_str() {
-            "--prom-even" => prom_even = val(),
-            "--prom-odd" => prom_odd = val(),
-            "--kbd" => kbd = val(),
+            "--model" => {
+                let v = val();
+                model = GridModel::parse(&v.to_string_lossy()).unwrap_or_else(|| {
+                    eprintln!("unknown model {} (1101, 1109, 1121, 1129, 1131, 1139)", v.display());
+                    std::process::exit(1)
+                })
+            }
+            "--prom-even" => prom_even = Some(val()),
+            "--prom-odd" => prom_odd = Some(val()),
+            "--prom" => prom = Some(val()),
+            "--kbd" => kbd = Some(val()),
             "--hd" => drives.push((DriveKind::Hdd2101, val())),
             "--flop" => drives.push((DriveKind::Floppy2102, val())),
             "--flop2101" => drives.push((DriveKind::Floppy2101, val())),
@@ -131,10 +170,30 @@ fn main() {
         }
     }
 
-    let even = read(&prom_even, "boot PROM (even)");
-    let odd = read(&prom_odd, "boot PROM (odd)");
-    let mut m = GridMachine::new(GridModel::Compass1101, &even, &odd);
+    let (even, odd) = if let Some(p) = &prom {
+        let d = read(p, "boot PROM");
+        (d.iter().step_by(2).copied().collect(), d.iter().skip(1).step_by(2).copied().collect())
+    }
+    else {
+        let (de, dodd) = default_prom(model);
+        (
+            read(&prom_even.unwrap_or(de), "boot PROM (even)"),
+            read(&prom_odd.unwrap_or(dodd), "boot PROM (odd)"),
+        )
+    };
+    let kbd = kbd.unwrap_or_else(|| {
+        let k2 = default_path("300001-02.bin");
+        if model.split_board() && k2.exists() {
+            k2
+        }
+        else {
+            default_path("300067-01.bin")
+        }
+    });
+    let mut m = GridMachine::new(model, &even, &odd);
     m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")));
+    let (sw, sh) = m.screen_size();
+    let title = format!("Compass-Emu {VERSION} - GRiD Compass {}", model.name());
     for (kind, path) in &drives {
         let img = read(path, "disk image");
         m.board_mut().gpib.drives.push(Drive::new(*kind, img));
@@ -164,9 +223,9 @@ fn main() {
         _ => Scale::X4,
     };
     let mut win = Window::new(
-        &format!("Compass-Emu {VERSION} - GRiD Compass 1101"),
-        screen::SCREEN_W,
-        screen::SCREEN_H,
+        &title,
+        sw,
+        sh,
         WindowOptions { scale: scale_opt, resize: true, ..WindowOptions::default() },
     )
     .unwrap_or_else(|e| {
@@ -184,7 +243,7 @@ fn main() {
     // key position -> (press clock, still held)
     let mut held: std::collections::HashMap<(usize, u8), (u64, bool)> = Default::default();
 
-    let mut buf = vec![DARK; screen::SCREEN_W * screen::SCREEN_H];
+    let mut buf = vec![DARK; sw * sh];
     let mut turbo = false;
     // Real-time pacing: emulated clock `base_clock` matched wall time `base_wall`.
     let mut base_wall = Instant::now();
@@ -302,22 +361,22 @@ fn main() {
             }
         }
 
-        let pix = screen::render(&m.display_frame());
+        let pix = m.render_display();
         for (o, &p) in buf.iter_mut().zip(pix.iter()) {
             *o = if p != 0 { AMBER } else { DARK };
         }
         if win.is_key_pressed(Key::F11, KeyRepeat::No) {
             shot += 1;
             let name = format!("compass-{shot:03}.png");
-            save_png(&name, &pix);
+            save_png(&name, &pix, sw, sh);
         }
-        let _ = win.update_with_buffer(&buf, screen::SCREEN_W, screen::SCREEN_H);
+        let _ = win.update_with_buffer(&buf, sw, sh);
 
         if last_title.elapsed() > Duration::from_secs(1) {
             let c = m.board().clocks;
             let speed = (c - last_clock) as f64 / screen::CPU_HZ / last_title.elapsed().as_secs_f64();
             win.set_title(&format!(
-                "Compass-Emu {VERSION} - GRiD Compass 1101 - {:.0}%{}",
+                "{title} - {:.0}%{}",
                 speed * 100.0,
                 if turbo { " (turbo, F12)" } else { "" }
             ));

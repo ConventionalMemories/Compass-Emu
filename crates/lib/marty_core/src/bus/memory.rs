@@ -164,6 +164,9 @@ impl BusInterface {
         if address < self.memory.len() {
             if self.memory_mask[address] & MEM_MMIO_BIT == 0 {
                 // Address is not mapped.
+                if let Some(ext) = &mut self.external {
+                    return Ok(ext.ram_wait(address, cycles, false));
+                }
                 return Ok(DEFAULT_WAIT_STATES);
             }
             else {
@@ -175,6 +178,11 @@ impl BusInterface {
                         if let Some(card_dispatch) = self.videocards.get_mut(&vid) {
                             let syswait = card_dispatch.mmio_read_wait(address, system_ticks);
                             return Ok(self.system_ticks_to_cpu_cycles(syswait));
+                        }
+                    }
+                    MmioDeviceType::External => {
+                        if let Some(ext) = &mut self.external {
+                            return Ok(ext.mem_wait(address, cycles, false));
                         }
                     }
                     MmioDeviceType::Cart => {
@@ -199,6 +207,9 @@ impl BusInterface {
         if address < self.memory.len() {
             if self.memory_mask[address] & MEM_MMIO_BIT == 0 {
                 // Address is not mapped.
+                if let Some(ext) = &mut self.external {
+                    return Ok(ext.ram_wait(address, cycles, true));
+                }
                 return Ok(DEFAULT_WAIT_STATES);
             }
             else {
@@ -211,6 +222,11 @@ impl BusInterface {
                         if let Some(card_dispatch) = self.videocards.get_mut(&vid) {
                             let syswait = card_dispatch.mmio_write_wait(address, system_ticks);
                             return Ok(self.system_ticks_to_cpu_cycles(syswait));
+                        }
+                    }
+                    MmioDeviceType::External => {
+                        if let Some(ext) = &mut self.external {
+                            return Ok(ext.mem_wait(address, cycles, true));
                         }
                     }
                     MmioDeviceType::Cart => {
@@ -280,6 +296,11 @@ impl BusInterface {
                     MmioDeviceType::MemoryExpansion(mem_id) => {
                         return Ok(self.memory_expansions[mem_id].mmio_read_u8(address, system_ticks, None));
                     }
+                    MmioDeviceType::External => {
+                        if let Some(ext) = &mut self.external {
+                            return Ok((ext.mem_read_u8(address, cycles), 0));
+                        }
+                    }
                     _ => {}
                 }
                 Err(MemError::MmioError)
@@ -337,6 +358,11 @@ impl BusInterface {
                     MmioDeviceType::MemoryExpansion(mem_id) => {
                         let data = self.memory_expansions[mem_id].mmio_peek_u8(address, None);
                         return Ok(data);
+                    }
+                    MmioDeviceType::External => {
+                        if let Some(ext) = &self.external {
+                            return Ok(ext.mem_peek_u8(address));
+                        }
                     }
                     _ => {}
                 }
@@ -422,6 +448,11 @@ impl BusInterface {
                     }
                     MmioDeviceType::MemoryExpansion(mem_id) => {
                         return Ok(self.memory_expansions[mem_id].mmio_write_u8(address, data, 0, None));
+                    }
+                    MmioDeviceType::External => {
+                        if let Some(ext) = &mut self.external {
+                            ext.mem_write_u8(address, data, cycles);
+                        }
                     }
                     _ => {}
                 }

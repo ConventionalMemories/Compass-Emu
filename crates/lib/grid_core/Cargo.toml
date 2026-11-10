@@ -1,0 +1,9 @@
+[package]
+name = "grid_core"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+marty_core = { path = "../marty_core", default-features = false }
+log = "0.4"

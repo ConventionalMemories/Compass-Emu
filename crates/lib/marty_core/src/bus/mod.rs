@@ -32,6 +32,7 @@
 //! to memory and I/O ports.
 //! DMA-capable devices can also access memory directly.
 
+pub mod external;
 mod dispatch;
 mod io;
 mod memory;
@@ -331,6 +332,7 @@ pub enum IoDeviceType {
     Video(VideoCardId),
     Sound,
     Sn76489,
+    External,
 }
 
 pub enum IoDeviceDispatch {
@@ -440,6 +442,7 @@ pub enum MmioDeviceType {
     MemoryExpansion(usize),
     Cart,
     JrIde,
+    External,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -533,6 +536,8 @@ pub struct BusInterface {
     refresh_active: bool,
 
     terminal_port: Option<u16>,
+
+    external: Option<Box<dyn external::ExternalBoard>>,
 }
 
 #[macro_export]
@@ -623,6 +628,7 @@ impl Default for BusInterface {
             refresh_enabled: false,
 
             terminal_port: None,
+            external: None,
         }
     }
 }
@@ -724,6 +730,28 @@ impl BusInterface {
         }
         log::debug!("install_patch(): Patch of {} bytes installed!", patch_size);
         patch.installed = true;
+    }
+
+    /// Install an external board (non-PC machine hardware). Claims its memory ranges and IO ports.
+    pub fn install_external(&mut self, board: Box<dyn external::ExternalBoard>) {
+        for (address, size) in board.mem_ranges() {
+            self.register_map(
+                MmioDeviceType::External,
+                MemRangeDescriptor::new(address, size, false),
+            );
+        }
+        for port in board.io_ports() {
+            self.io_map.insert(port, IoDeviceType::External);
+        }
+        self.external = Some(board);
+    }
+
+    pub fn external(&self) -> Option<&dyn external::ExternalBoard> {
+        self.external.as_deref()
+    }
+
+    pub fn external_mut(&mut self) -> Option<&mut (dyn external::ExternalBoard + 'static)> {
+        self.external.as_deref_mut()
     }
 
     pub fn set_conventional_size(&mut self, size: usize) {

@@ -1,0 +1,10 @@
+[package]
+name = "gridemu"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+grid_core = { path = "../../lib/grid_core" }
+marty_core = { path = "../../lib/marty_core", default-features = false }
+png = "0.17"

@@ -60,6 +60,11 @@ impl BusInterface {
         let mut byte = None;
         if let Some(device_id) = self.io_map.get(&port) {
             match device_id {
+                IoDeviceType::External => {
+                    if let Some(ext) = &mut self.external {
+                        byte = Some(ext.io_read_u8(port, cycles));
+                    }
+                }
                 IoDeviceType::A0Register => {
                     if let Some(a0) = &mut self.a0 {
                         byte = Some(a0.read_u8(port, nul_delta));
@@ -173,11 +178,21 @@ impl BusInterface {
         (low_byte as u16) | ((high_byte as u16) << 8)
     }
 
-    pub fn io_read_wait(&mut self, _port: u16, _cycles: u32) -> u32 {
+    pub fn io_read_wait(&mut self, port: u16, cycles: u32) -> u32 {
+        if let Some(ext) = &mut self.external {
+            if let Some(IoDeviceType::External) = self.io_map.get(&port) {
+                return ext.io_wait(port, cycles, false);
+            }
+        }
         1
     }
 
-    pub fn io_write_wait(&mut self, port: u16, _cycles: u32) -> u32 {
+    pub fn io_write_wait(&mut self, port: u16, cycles: u32) -> u32 {
+        if let Some(ext) = &mut self.external {
+            if let Some(IoDeviceType::External) = self.io_map.get(&port) {
+                return ext.io_wait(port, cycles, true);
+            }
+        }
         let mut write_waits = None;
 
         // Currently only the SN76489 sound chip has a custom write wait time.
@@ -236,6 +251,12 @@ impl BusInterface {
         let mut resolved = false;
         if let Some(device_id) = self.io_map.get(&port) {
             match device_id {
+                IoDeviceType::External => {
+                    if let Some(ext) = &mut self.external {
+                        ext.io_write_u8(port, data, cycles);
+                    }
+                    resolved = true;
+                }
                 IoDeviceType::A0Register => {
                     if let Some(a0) = &mut self.a0 {
                         a0.write_u8(port, data, None, NULL_DELTA_US, analyzer);

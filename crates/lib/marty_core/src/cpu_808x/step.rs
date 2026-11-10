@@ -356,7 +356,12 @@ impl Intel808x {
                 // This is a bit artificial as we don't actually read the IV during the 2nd
                 // INTA cycle like the CPU does, instead we save the value now and simulate it later.
                 // TODO: Think about changing this to query during INTA
-                if let Some(pic) = self.bus.pic_mut().as_mut() {
+                if let Some(ext) = self.bus.external_mut() {
+                    if let Some(iv) = ext.inta() {
+                        irq = iv;
+                    }
+                }
+                else if let Some(pic) = self.bus.pic_mut().as_mut() {
                     // Is INTR active? TODO: Could combine these calls (return Option<iv>) on query?
                     if pic.query_interrupt_line() {
                         if let Some(iv) = pic.get_interrupt_vector() {

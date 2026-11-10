@@ -3,7 +3,7 @@
 
 use std::{fs, io::BufWriter, time::Instant};
 
-use grid_core::{gpib::{Drive, DriveKind}, screen, GridMachine, GridModel};
+use grid_core::{gpib::{Drive, DriveKind}, keyboard::{self, Keyboard}, screen, GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, Register16};
 
 fn save_png(path: &str, pix: &[u8]) {
@@ -38,12 +38,60 @@ fn main() {
             m.board_mut().gpib.drives.push(Drive::new(kind, img));
         }
     }
+    if let Ok(p) = std::env::var("GRID_KBD_ROM") {
+        let rom = fs::read(&p).expect("keyboard ROM");
+        println!("keyboard: 8741 LLE with {}", p);
+        m.board_mut().keyboard = Some(Keyboard::new(rom));
+    }
+    // Key script: GRID_KEYS="seconds:text|seconds:text", text may hold {ret} {esc} {tab} {bs}
+    // {left} {right} {up} {down} and {code+x} {ctrl+x} {shift+x}.
+    let mut events: Vec<(u64, Option<(usize, u8)>, u8)> = Vec::new(); // (clock, key, mods); key None = release all
+    if let Ok(script) = std::env::var("GRID_KEYS") {
+        for part in script.split('|') {
+            let Some((t, text)) = part.split_once(':') else { continue };
+            let mut clk = (t.parse::<f64>().unwrap() * screen::CPU_HZ) as u64;
+            let hold = (0.08 * screen::CPU_HZ) as u64;
+            let mut chars = text.chars().peekable();
+            while let Some(c) = chars.next() {
+                let mut mods = 0u8;
+                let mut ch = c;
+                if c == '{' {
+                    let mut tok = String::new();
+                    while let Some(&n) = chars.peek() { chars.next(); if n == '}' { break; } tok.push(n); }
+                    let (m, k) = match tok.split_once('+') { Some((m, k)) => (m.to_string(), k.to_string()), None => (String::new(), tok.clone()) };
+                    mods = match m.as_str() { "code" => keyboard::MOD_CODE, "ctrl" => keyboard::MOD_CTRL, "shift" => keyboard::MOD_SHIFT, _ => 0 };
+                    ch = match k.as_str() { "ret" => '\r', "esc" => '\x1b', "tab" => '\t', "bs" => '\x08', "left" => '\u{e000}', "down" => '\u{e001}', "right" => '\u{e002}', "up" => '\u{e003}', "space" => ' ', o => o.chars().next().unwrap_or('\0') };
+                }
+                if let Some((col, bit, shift)) = keyboard::key_for_char(ch) {
+                    if shift { mods |= keyboard::MOD_SHIFT; }
+                    events.push((clk, Some((col, bit)), mods));
+                    events.push((clk + hold, None, 0));
+                    clk += hold * 2;
+                } else {
+                    eprintln!("no key for {:?}", ch);
+                }
+            }
+        }
+        events.sort_by_key(|e| e.0);
+    }
+    let mut ev = 0usize;
     m.board_mut().gpib.trace_on = std::env::var("GRID_GPIB_TRACE").is_ok();
     let t = Instant::now();
     let total = (secs * screen::CPU_HZ) as u64;
     let mut next_report = 0u64;
     while m.board().clocks < total {
-        m.run_clocks(500_000);
+        let chunk = if ev < events.len() { 10_000 } else { 500_000 };
+        m.run_clocks(chunk);
+        while ev < events.len() && events[ev].0 <= m.board().clocks {
+            let (_, key, mods) = events[ev];
+            if let Some(k) = &mut m.board_mut().keyboard {
+                match key {
+                    Some((col, bit)) => { k.set_mods(mods); k.set_key(col, bit, true); }
+                    None => k.release_all(),
+                }
+            }
+            ev += 1;
+        }
         if m.board().clocks >= next_report {
             let cs = m.cpu.get_register16(Register16::CS);
             let ip = m.cpu.get_ip();

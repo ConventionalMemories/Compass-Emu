@@ -23,6 +23,7 @@ use marty_core::devices::pic::Pic;
 
 use crate::gpib::Gpib;
 use crate::rtc::Rtc;
+use crate::keyboard::Keyboard;
 use crate::screen::{Beam, FRAME_CLOCKS, LINE_CLOCKS, VISIBLE_LINES};
 
 pub const IR_SERIAL: u8 = 0;
@@ -65,6 +66,9 @@ pub struct GridBoard {
     vsync_line_high: bool,
     pub gpib: Gpib,
     pub rtc: Rtc,
+    /// 8741 keyboard MCU (LLE). When None, a simple HLE queue answers DFFC0/DFFC2.
+    pub keyboard: Option<Keyboard>,
+    kbd_irq: bool,
     /// X2210 machine ID / serial number nibbles (16 bytes).
     pub machine_id: [u8; 16],
     gpib_int: bool,
@@ -97,6 +101,8 @@ impl GridBoard {
             vsync_line_high: false,
             gpib: Gpib::new(),
             rtc: Rtc::new(),
+            keyboard: None,
+            kbd_irq: false,
             machine_id: [0; 16],
             gpib_int: false,
             dma_wait_limit: 20_000_000,
@@ -125,6 +131,23 @@ impl GridBoard {
         let now = self.clocks;
         self.gpib.advance(now);
         self.sync_gpib_int();
+        self.kbd_at(0);
+    }
+
+    /// Run the keyboard MCU up to the current time and follow its IRQ line.
+    fn kbd_at(&mut self, cycles: u32) {
+        let t = self.clocks + cycles as u64;
+        if let Some(k) = &mut self.keyboard {
+            k.run_to(t);
+            let l = k.irq();
+            if l && !self.kbd_irq {
+                self.pic.request_interrupt(IR_KEYBOARD);
+            }
+            else if !l && self.kbd_irq {
+                self.pic.clear_interrupt(IR_KEYBOARD);
+            }
+            self.kbd_irq = l;
+        }
     }
 
     fn sync_gpib_int(&mut self) {
@@ -173,6 +196,12 @@ impl ExternalBoard for GridBoard {
     fn mem_read_u8(&mut self, address: usize, _cycles: u32) -> u8 {
         match address {
             0xFC000..=0xFFFFF => self.prom[(address - 0xFC000) % self.prom.len()],
+            0xDFFC0..=0xDFFCF if self.keyboard.is_some() => {
+                self.kbd_at(_cycles);
+                let a0 = (address >> 1) & 1 == 1;
+                let v = self.keyboard.as_mut().unwrap().mcu.host_read(a0);
+                v
+            }
             0xDFFC0..=0xDFFCF => {
                 match address & 0xF {
                     0x0 => {
@@ -233,6 +262,12 @@ impl ExternalBoard for GridBoard {
                 if off & 0x6 != 0 && off & 1 == 0 {
                     self.dac_writes.push((self.clocks, data));
                 }
+            }
+            0xDFFC0..=0xDFFCF if self.keyboard.is_some() => {
+                self.kbd_at(_cycles);
+                let a0 = (address >> 1) & 1 == 1;
+                self.kbd_commands.push((self.clocks, data, a0));
+                self.keyboard.as_mut().unwrap().mcu.host_write(a0, data);
             }
             0xDFFC0..=0xDFFCF => {
                 let cmd = address & 0xF == 0x2;

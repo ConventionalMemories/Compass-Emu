@@ -6,6 +6,8 @@
 
 pub mod board;
 pub mod gpib;
+pub mod keyboard;
+pub mod upi41;
 pub mod rtc;
 pub mod machine;
 pub mod screen;

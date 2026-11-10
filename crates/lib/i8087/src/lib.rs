@@ -4,8 +4,9 @@
 //! multiply, divide, compares, rounding and conversions are bit-exact in all four rounding
 //! modes). Square root is within 1 ulp; FPTAN, FPATAN, F2XM1, FYL2X and FYL2XP1 are computed in
 //! quad precision (113 bits) and rounded once, so they are the correctly rounded 80-bit result
-//! (the real 8087 matches that in most cases, but is sometimes 1 ulp off, and FPTAN's Y/X pair
-//! is returned as Y = tan, X = 1 rather than the chip's partial pair).
+//! (the real 8087 matches that in most cases, but is sometimes 1 ulp off). FPTAN follows the
+//! chip's own CORDIC + rational method (fptan.rs): its partial Y/X pair (X near 3, not 1) and
+//! a busy time that depends on the argument.
 //!
 //! Timing: each instruction keeps the 8087 busy for its typical execution time from the Intel
 //! 8087 data sheet (FADD, FLD/FST m64, FILD/FIST m16 and the transcendentals adjusted to the
@@ -19,6 +20,7 @@ use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
 use rustc_apfloat::ieee::Quad;
 
 mod trans;
+pub mod fptan;
 
 fn to_q(x: F80) -> Quad {
     x.convert(&mut false).value
@@ -992,13 +994,28 @@ impl I8087 {
                     1078
                 }
                 2 => {
-                    // FPTAN: replace ST with Y, push X; Y/X = tan(ST)
+                    // FPTAN: replace ST with Y, push X; Y/X = tan(ST). 0 < |ST| < 2 the way
+                    // the chip computes it (fptan.rs: its partial pair and time), zero exact,
+                    // anything larger (outside the documented range) as tan with X = 1.
+                    let mut clocks = 527;
                     if let Some(x) = self.src(0) {
-                        self.set_st(0, self.from_q(trans::tan(to_q(x))));
-                        self.push(F80::from_u128(1).value);
-                        self.sw |= SW_PE;
+                        if x.is_zero() {
+                            self.push(F80::from_u128(1).value);
+                            clocks = fptan::CLK_ZERO;
+                        }
+                        else if let Some((y, xr, c)) = fptan::fptan(x.to_bits()) {
+                            self.set_st(0, F80::from_bits(y));
+                            self.push(F80::from_bits(xr));
+                            self.sw |= SW_PE;
+                            clocks = c;
+                        }
+                        else {
+                            self.set_st(0, self.from_q(trans::tan(to_q(x))));
+                            self.push(F80::from_u128(1).value);
+                            self.sw |= SW_PE;
+                        }
                     }
-                    527
+                    clocks
                 }
                 3 => {
                     // FPATAN: ST1 = atan(ST1/ST0), pop

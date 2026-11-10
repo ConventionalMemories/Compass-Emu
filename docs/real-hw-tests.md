@@ -68,3 +68,22 @@ Note: GRiDBench "c" values are scaled by AAM = 83; the emulator (validated again
 | A3 | DTMF loudness compared with a full-scale DAC square wave | Mix level in the emulator | Record both |
 | A4 | Speaker frequency response (lowest/highest audible tone) | Optional filter in the emulator | Sweep with SoundTest test 2 |
 | A5 | Sample-rate limit: does a 22 kHz PCM loop sound the same | Checks the emulator's per-sample averaging | SoundTest test 5, record and compare |
+
+## 8087 FPTAN (chip's own partial tangent)
+
+FPTAN now follows the chip's method (crates/lib/i8087/src/fptan.rs, after Ken Shirriff's
+2026 microcode study): CORDIC with 16 arctan constants, 3r/(3-r^2) for the rest, rotations
+applied back. Its Y/X pair and its time depend on the argument. The algorithm is known but
+the last bits (constant rounding, register widths, truncation) are assumed; GRiDBench f02 is
+the only real data so far (model 6 ulps off after FSTP qword X; the old X = 1 was 73 off).
+
+| # | What | Why | How |
+|---|------|-----|-----|
+| T1 | ST0 (X) and ST1 (Y) as 80-bit TBYTEs after FPTAN, for the inputs below | Fixes the last bits: constant rounding, widths of X and Y, rounding when stored | FLD TBYTE x; FPTAN; FSTP TBYTE X; FSTP TBYTE Y; print both in hex (FSTP TBYTE keeps all 64 bits, unlike f02's qword) |
+| T2 | FPTAN time per input (loop of 100, as GRiDBench g06) | Per-input busy time (data sheet 30-540 clocks; model 36-543) | FLD ST(0); FPTAN; FSTP ST(0); FSTP ST(0) loop, minus the same loop without FPTAN |
+
+Inputs (exact 80-bit values, from the test program's own table): 0.5, 0.95, 0.75, 0.3, 0.1,
+0.01, 0.001, 1/4096, 2^-15 * 1.5, 2^-16 * 1.25 (last CORDIC exponent), 2^-17 * 1.5 (first
+without CORDIC), 1e-10, 2^-63 * 1.5 (last with 3x/(3-x^2)), 2^-64 * 1.5 (Y = x, X = 1),
+0.785 (near pi/4), 1.0, 1.5 (outside the documented range), 0, -0.5. With T1 for these, the
+model's free choices can be pinned down and FPTAN made bit-exact.

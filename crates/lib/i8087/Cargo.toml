@@ -1,0 +1,9 @@
+[package]
+name = "i8087"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Intel 8087 numeric coprocessor emulation (80-bit, cycle counts) for Compass-Emu"
+
+[dependencies]
+rustc_apfloat = "0.2"

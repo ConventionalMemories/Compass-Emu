@@ -559,6 +559,7 @@ impl NecVx0 {
             segment_override: None,
             operand1_type,
             operand2_type,
+            modrm: 0,
         })
     }
 }

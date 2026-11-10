@@ -285,6 +285,11 @@ impl ModRmByte {
 
     /// Read the modrm byte and look up the appropriate value from the modrm table.
     /// Load any displacement, then return modrm struct and size of modrm + displacement.
+    /// The raw ModR/M byte.
+    pub fn byte(&self) -> u8 {
+        self._byte
+    }
+
     pub fn read(bytes: &mut impl ByteQueue) -> (&'static ModRmByte, Displacement, u32) {
         let byte = bytes.q_read_u8(QueueType::Subsequent, QueueReader::Biu);
         let modrm = &MODRM_TABLE[byte as usize];

@@ -32,6 +32,7 @@
 //! to memory and I/O ports.
 //! DMA-capable devices can also access memory directly.
 
+pub mod coproc;
 pub mod external;
 mod dispatch;
 mod io;
@@ -538,6 +539,7 @@ pub struct BusInterface {
     terminal_port: Option<u16>,
 
     external: Option<Box<dyn external::ExternalBoard>>,
+    coproc: Option<Box<dyn coproc::Coprocessor>>,
 }
 
 #[macro_export]
@@ -629,6 +631,7 @@ impl Default for BusInterface {
 
             terminal_port: None,
             external: None,
+            coproc: None,
         }
     }
 }
@@ -733,6 +736,36 @@ impl BusInterface {
     }
 
     /// Install an external board (non-PC machine hardware). Claims its memory ranges and IO ports.
+    pub fn install_coprocessor(&mut self, cp: Box<dyn coproc::Coprocessor>) {
+        self.coproc = Some(cp);
+    }
+
+    pub fn coprocessor(&self) -> Option<&dyn coproc::Coprocessor> {
+        self.coproc.as_deref()
+    }
+
+    pub fn coprocessor_mut(&mut self) -> Option<&mut (dyn coproc::Coprocessor + 'static)> {
+        self.coproc.as_deref_mut()
+    }
+
+    pub fn take_coprocessor(&mut self) -> Option<Box<dyn coproc::Coprocessor>> {
+        self.coproc.take()
+    }
+
+    pub fn put_coprocessor(&mut self, cp: Box<dyn coproc::Coprocessor>) {
+        self.coproc = Some(cp);
+    }
+
+    /// Coprocessor BUSY (8086 TEST pin); false when no coprocessor is fitted.
+    pub fn coprocessor_busy(&self, now: u64) -> bool {
+        self.coproc.as_ref().map(|c| c.busy(now)).unwrap_or(false)
+    }
+
+    /// Shortest WAIT, from the coprocessor's calibration (0 when none is fitted).
+    pub fn coprocessor_wait_min(&self) -> u32 {
+        self.coproc.as_ref().map(|c| c.wait_min_cycles()).unwrap_or(0)
+    }
+
     pub fn install_external(&mut self, board: Box<dyn external::ExternalBoard>) {
         for (address, size) in board.mem_ranges() {
             self.register_map(
@@ -2300,5 +2333,14 @@ mod tests {
 
         assert_eq!(bus.mmio_map_fast[segment].device, MmioDeviceType::Cga);
         assert_eq!(bus.mmio_map_fast[segment].priority, 1);
+    }
+}
+
+impl coproc::CoprocMem for BusInterface {
+    fn cp_read_u8(&mut self, addr: u32) -> u8 {
+        self.read_u8(addr as usize & 0xFFFFF, 0).map(|(v, _)| v).unwrap_or(0xFF)
+    }
+    fn cp_write_u8(&mut self, addr: u32, v: u8) {
+        let _ = self.write_u8(addr as usize & 0xFFFFF, v, 0);
     }
 }

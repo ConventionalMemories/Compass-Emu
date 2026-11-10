@@ -722,6 +722,7 @@ impl Intel808x {
             segment_override: op_segment_override,
             operand1_type,
             operand2_type,
+            modrm: modrm.byte(),
         })
     }
 }

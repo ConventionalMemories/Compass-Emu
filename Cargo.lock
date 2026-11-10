@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "grid_core",
  "marty_core",
@@ -2535,6 +2535,7 @@ dependencies = [
 name = "grid_core"
 version = "0.0.1"
 dependencies = [
+ "i8087",
  "log",
  "marty_core",
 ]
@@ -2553,6 +2554,14 @@ dependencies = [
  "grid_core",
  "marty_core",
  "png 0.17.16",
+]
+
+[[package]]
+name = "gridfrag"
+version = "0.0.1"
+dependencies = [
+ "grid_core",
+ "marty_core",
 ]
 
 [[package]]
@@ -2652,6 +2661,13 @@ name = "humantime"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
+
+[[package]]
+name = "i8087"
+version = "0.0.1"
+dependencies = [
+ "rustc_apfloat",
+]
 
 [[package]]
 name = "iana-time-zone"
@@ -5032,6 +5048,16 @@ name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
+name = "rustc_apfloat"
+version = "0.2.3+llvm-462a31f5a5ab"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "486c2179b4796f65bfe2ee33679acf0927ac83ecf583ad6c91c3b4570911b9ad"
+dependencies = [
+ "bitflags 2.11.1",
+ "smallvec",
+]
 
 [[package]]
 name = "rustc_version"

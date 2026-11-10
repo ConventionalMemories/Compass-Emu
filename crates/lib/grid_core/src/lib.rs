@@ -5,6 +5,7 @@
 //! Memory map follows MAME's gridcomp.cpp and GRiD's own CP sources.
 
 pub mod board;
+pub mod fpu;
 pub mod gpib;
 pub mod keyboard;
 pub mod upi41;

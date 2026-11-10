@@ -1,4 +1,4 @@
-//! Compass-Emu 0.0.3: GRiD Compass 1101 in a window.
+//! Compass-Emu 0.0.4: GRiD Compass 1101 in a window.
 //!
 //! compass [options]
 //!   --prom-even F --prom-odd F   boot PROM chips (default roms/1101even.rev3.bin, roms/1101odd.rev3.bin)
@@ -31,7 +31,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.0.3";
+const VERSION: &str = "0.0.4";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are

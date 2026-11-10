@@ -947,7 +947,16 @@ impl Intel808x {
     
     /// WAIT
     /// Opcode: 9B
-    pub fn mc_0f8(&mut self) {}
+    pub fn mc_0f8(&mut self) {
+        // While TEST (coprocessor BUSY) is active, WAIT idles and samples it every 5 clocks.
+        let mut guard = 0u32;
+        let start = self.cycle_num;
+        let min = self.bus.coprocessor_wait_min() as u64;
+        while (self.bus.coprocessor_busy(self.cycle_num) || self.cycle_num - start < min) && guard < 2_000_000 {
+            cycles!(self, 5);
+            guard += 1;
+        }
+    }
     
     /// SAHF - Store AH into Flags
     /// Opcode: 9E
@@ -967,7 +976,19 @@ impl Intel808x {
     /// Opcodes: D8-DF 
     pub fn mc_108(&mut self) {
         // Perform dummy read if memory operand
-        let _op1_value = self.read_operand16(self.i.operand1_type, self.i.segment_override);        
+        let _op1_value = self.read_operand16(self.i.operand1_type, self.i.segment_override);
+        // Hand the instruction to the coprocessor, if one is fitted.
+        let ea = match self.i.operand1_type {
+            OperandType::AddressingMode(..) => Some(self.calc_linear_address_seg(self.last_ea_seg, self.last_ea)),
+            _ => None,
+        };
+        if let Some(mut cp) = self.bus.take_coprocessor() {
+            let stolen = cp.esc(&mut self.bus, self.cycle_num, self.i.opcode, self.i.modrm, ea, self.instruction_address);
+            self.bus.put_coprocessor(cp);
+            for _ in 0..stolen {
+                self.cycle();
+            }
+        }
     }
     
     /// XLAT

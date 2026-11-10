@@ -59,6 +59,16 @@ impl GridMachine {
         }
     }
 
+    /// Screen RAM and everything below it (enough for screen::render).
+    pub fn screen_ram(&self) -> Vec<u8> {
+        let end = crate::screen::SCREEN_BASE + crate::screen::SCREEN_W * crate::screen::SCREEN_H / 8;
+        let mut v = vec![0u8; end];
+        for a in crate::screen::SCREEN_BASE..end {
+            v[a] = self.cpu.bus().peek_u8(a).unwrap_or(0);
+        }
+        v
+    }
+
     /// Plain RAM (first 256K) as a byte slice copy.
     pub fn ram(&self) -> Vec<u8> {
         (0..0x40000usize).map(|a| self.cpu.bus().peek_u8(a).unwrap_or(0)).collect()

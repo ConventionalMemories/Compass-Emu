@@ -22,9 +22,18 @@ All Compass models eventually; the 1101 comes first.
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.
 
 Not yet: bubble memory, serial, modem/sound, display RAM contention, 8087, 1139 and
-later models, a window frontend.
+later models.
 
-## Build and run
+## Window version
+
+    cargo build --release -p compass
+    compass --hd disk.img      # ROMs from a roms folder next to the program
+
+Windows build from Linux: `rustup target add x86_64-pc-windows-gnu`, install mingw-w64, then
+`cargo build --release -p compass --target x86_64-pc-windows-gnu`. PC keys map to Compass
+keys by position (Alt = CODE), F12 turbo, F11 screenshot.
+
+## Headless runner
 
     apt install libudev-dev pkg-config     # Linux, for the MartyPC workspace
     cargo build --release -p gridemu

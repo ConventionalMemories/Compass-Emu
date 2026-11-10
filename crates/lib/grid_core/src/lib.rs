@@ -16,6 +16,7 @@ pub mod upi41;
 pub mod rtc;
 pub mod machine;
 pub mod screen;
+pub mod roms;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};

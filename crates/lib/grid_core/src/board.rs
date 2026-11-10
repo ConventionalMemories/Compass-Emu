@@ -109,6 +109,9 @@ pub struct GridBoard {
     pub split_regs: [u8; 4],
     /// 113x large screen switched on.
     wide: bool,
+    /// Split board only: also answer the 1101's GPIB DMA window at E0000, so a 1101 boot
+    /// PROM can stand in for a missing 1121/1129 PROM.
+    pub e0000_dma: bool,
 }
 
 impl GridBoard {
@@ -159,6 +162,7 @@ impl GridBoard {
             ram_extra_wait: 0,
             split_regs: [0; 4],
             wide: false,
+            e0000_dma: false,
         }
     }
 
@@ -181,7 +185,7 @@ impl GridBoard {
 
     fn is_dma_window(&self, address: usize) -> bool {
         if self.model.split_board() {
-            (0xDFA00..=0xDFDFF).contains(&address)
+            (0xDFA00..=0xDFDFF).contains(&address) || (self.e0000_dma && (0xE0000..=0xEFFFF).contains(&address))
         }
         else {
             (0xE0000..=0xEFFFF).contains(&address)

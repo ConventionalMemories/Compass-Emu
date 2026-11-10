@@ -29,6 +29,8 @@ fn main() {
     let model = std::env::var("GRID_MODEL").ok().and_then(|s| GridModel::parse(&s)).unwrap_or(GridModel::Compass1101);
     println!("model: Compass {}", model.name());
     let mut m = GridMachine::new(model, &even, &odd);
+    // GRID_E0000_DMA=1: split board also answers the 1101 DMA window (1101 PROM stand-in).
+    m.board_mut().e0000_dma = std::env::var("GRID_E0000_DMA").is_ok();
     // Drives: GRID_FLOP (2102, addr 6), GRID_FLOP2101 (addr 5), GRID_HD (2101 hard disk, addr 4).
     for (var, kind) in [
         ("GRID_HD", DriveKind::Hdd2101),

@@ -21,6 +21,8 @@ use std::any::Any;
 use marty_core::bus::external::ExternalBoard;
 use marty_core::devices::pic::Pic;
 
+use crate::gpib::Gpib;
+use crate::rtc::Rtc;
 use crate::screen::{Beam, FRAME_CLOCKS, LINE_CLOCKS, VISIBLE_LINES};
 
 pub const IR_SERIAL: u8 = 0;
@@ -61,6 +63,13 @@ pub struct GridBoard {
     pub unhandled: Vec<IoLog>,
     last_vsync_frame: u64,
     vsync_line_high: bool,
+    pub gpib: Gpib,
+    pub rtc: Rtc,
+    /// X2210 machine ID / serial number nibbles (16 bytes).
+    pub machine_id: [u8; 16],
+    gpib_int: bool,
+    /// Longest pseudo-DMA wait per access (stands in for the watchdog), CPU clocks.
+    pub dma_wait_limit: u64,
 }
 
 impl GridBoard {
@@ -86,6 +95,11 @@ impl GridBoard {
             unhandled: Vec::new(),
             last_vsync_frame: u64::MAX,
             vsync_line_high: false,
+            gpib: Gpib::new(),
+            rtc: Rtc::new(),
+            machine_id: [0; 16],
+            gpib_int: false,
+            dma_wait_limit: 20_000_000,
         }
     }
 
@@ -108,6 +122,25 @@ impl GridBoard {
             self.pic.clear_interrupt(IR_VSYNC);
         }
         let _ = self.last_vsync_frame;
+        let now = self.clocks;
+        self.gpib.advance(now);
+        self.sync_gpib_int();
+    }
+
+    fn sync_gpib_int(&mut self) {
+        let l = self.gpib.int_line();
+        if l && !self.gpib_int {
+            self.pic.request_interrupt(IR_GPIB);
+        }
+        else if !l && self.gpib_int {
+            self.pic.clear_interrupt(IR_GPIB);
+        }
+        self.gpib_int = l;
+    }
+
+    fn gpib_at(&mut self, cycles: u32) {
+        let t = self.clocks + cycles as u64;
+        self.gpib.advance(t);
     }
 
     /// Queue a byte from the keyboard (HLE): sets OBF and raises IR4.
@@ -117,7 +150,7 @@ impl GridBoard {
     }
 
     fn log(&mut self, address: usize, write: bool, data: u8) {
-        if self.log_unhandled && self.unhandled.len() < 10000 {
+        if self.log_unhandled && self.unhandled.len() < 100000 && !(address == 0xDFE82 && !write) {
             self.unhandled.push(IoLog { clock: self.clocks, address, write, data });
         }
     }
@@ -153,9 +186,26 @@ impl ExternalBoard for GridBoard {
                     _ => 0xFF,
                 }
             }
-            0xDFF40..=0xDFF5F => {
-                // RTC low nibble (0 = stopped clock, never "updating"), machine ID high nibble 0.
-                0x00
+            0xDFF80..=0xDFF8F if address & 1 == 0 => {
+                self.gpib_at(_cycles);
+                let v = self.gpib.read((address & 0xF) >> 1);
+                self.sync_gpib_int();
+                v
+            }
+            0xE0000..=0xEFFFF => {
+                self.gpib_at(_cycles);
+                let v = self.gpib.read(7);
+                self.sync_gpib_int();
+                v
+            }
+            0xDFF40..=0xDFF5F if address & 1 == 1 => {
+                // MAME: RTC in the low nibble, X2210 machine ID nibble in the high nibble.
+                let off = (address - 0xDFF40) >> 1;
+                let now = self.clocks + _cycles as u64;
+                self.rtc.tick(now);
+                let idb = self.machine_id[off >> 1];
+                let idn = if off & 1 == 1 { idb & 0xF0 } else { (idb & 0x0F) << 4 };
+                idn | (self.rtc.read(off) & 0x0F)
             }
             0xC0000..=0xCFFFF => 0xFF,
             0xDFE00..=0xDFFFF | 0xE0000..=0xEFFFF => {
@@ -188,9 +238,33 @@ impl ExternalBoard for GridBoard {
                 let cmd = address & 0xF == 0x2;
                 self.kbd_commands.push((self.clocks, data, cmd));
             }
-            0xDFE00..=0xDFFFF | 0xE0000..=0xEFFFF => self.log(address, true, data),
+            0xDFF40..=0xDFF5F if address & 1 == 1 => {
+                let now = self.clocks + _cycles as u64;
+                self.rtc.tick(now);
+                self.rtc.write((address - 0xDFF40) >> 1, data);
+            }
+            0xDFF80..=0xDFF8F if address & 1 == 0 => {
+                self.gpib_at(_cycles);
+                self.gpib.write((address & 0xF) >> 1, data);
+                self.sync_gpib_int();
+            }
+            0xE0000..=0xEFFFF => {
+                self.gpib_at(_cycles);
+                self.gpib.write(7, data);
+                self.sync_gpib_int();
+            }
+            0xDFE00..=0xDFFFF => self.log(address, true, data),
             _ => {}
         }
+    }
+
+    fn mem_wait(&mut self, address: usize, cycles: u32, write: bool) -> u32 {
+        if (0xE0000..=0xEFFFF).contains(&address) {
+            self.gpib_at(cycles);
+            let lim = self.dma_wait_limit;
+            return self.gpib.dma_wait(write, lim) as u32;
+        }
+        0
     }
 
     fn io_read_u8(&mut self, port: u16, _cycles: u32) -> u8 {

@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.0: a GRiD Compass in a window.
+//! Compass-Emu 0.3.1: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -40,7 +40,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.3.1";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -165,14 +165,15 @@ fn main() {
             }
         }
         (
-            read(&prom_even.unwrap_or(roms.prom_even.clone()), "boot PROM (even)"),
+            read(prom_even.as_ref().unwrap_or(&roms.prom_even), "boot PROM (even)"),
             read(&prom_odd.unwrap_or(roms.prom_odd.clone()), "boot PROM (odd)"),
         )
     };
     let kbd = kbd.unwrap_or(roms.keyboard.clone());
     let mut m = GridMachine::new(model, &even, &odd);
-    // A 1101 PROM on a split board needs the 1101's DMA window too.
-    m.board_mut().e0000_dma = model.split_board() && !model.wide_screen();
+    // A 1101 PROM standing in on a split board needs the 1101's DMA window too (also on for a
+    // PROM given on the command line: it does no harm there).
+    m.board_mut().e0000_dma = roms.e0000_dma || (model.split_board() && !model.wide_screen() && (prom.is_some() || prom_even.is_some()));
     m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")));
     let (sw, sh) = m.screen_size();
     let title = format!("Compass-Emu {VERSION} - GRiD Compass {}", model.name());

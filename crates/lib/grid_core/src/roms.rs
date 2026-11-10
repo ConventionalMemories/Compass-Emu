@@ -1,10 +1,11 @@
 //! Which ROM files a model boots from, looked up in a roms folder under MAME's names.
 //!
 //! Boot PROM: the model's own pair (`1129even.ccprom.bin` ...) when present. Otherwise the
-//! nearest dump we have: the 1101 rev 3 for the 1109, 1121 and 1129, and the 1139's for the
-//! 1131. The 1139 PROM can't stand in for the 1121/1129: it keeps its data at 0440:0, where
-//! the 11xx build of CCOS loads. The 1101 PROM can, if the split board also answers the
-//! 1101's GPIB DMA window at E0000 (`GridBoard::e0000_dma`).
+//! nearest dump: the 1101 rev 3 for the 1109, the 1129's for the 1121 (never dumped), the
+//! 1139's for the 1131 (never dumped). The 1139 PROM can't stand in for the 1121/1129: it
+//! keeps its data at 0440:0, where the 11xx build of CCOS loads. Without the 1129 PROM the
+//! 1101 PROM stands in, with the split board also answering the 1101's GPIB DMA window at
+//! E0000 (`GridBoard::e0000_dma`).
 
 use std::path::{Path, PathBuf};
 
@@ -22,22 +23,22 @@ pub struct RomSet {
 
 pub fn find(model: GridModel, dir: &Path) -> RomSet {
     let p = |n: &str| dir.join(n);
-    let own = (p(&format!("{}even.ccprom.bin", model.name())), p(&format!("{}odd.ccprom.bin", model.name())));
+    let pair = |m: &str| (p(&format!("{m}even.ccprom.bin")), p(&format!("{m}odd.ccprom.bin")));
+    let have = |x: &(PathBuf, PathBuf)| x.0.exists() && x.1.exists();
     let r1101 = (p("1101even.rev3.bin"), p("1101odd.rev3.bin"));
-    let r1139 = (p("1139even.ccprom.bin"), p("1139odd.ccprom.bin"));
-    let (prom, e0000_dma, note) = if own.0.exists() && own.1.exists() || matches!(model, GridModel::Compass1101 | GridModel::Compass1139) {
-        match model {
-            GridModel::Compass1101 if !(own.0.exists() && own.1.exists()) => (r1101, false, None),
-            GridModel::Compass1139 => (r1139, false, None),
-            _ => (own, false, None),
-        }
-    }
-    else if model.wide_screen() {
-        (r1139, false, Some(format!("no {} boot PROM in roms, using the 1139's", model.name())))
-    }
-    else {
-        let split = model.split_board();
-        (r1101, split, Some(format!("no {} boot PROM in roms, using the 1101 rev 3", model.name())))
+    let own = pair(model.name());
+    let (prom, e0000_dma, note) = match model {
+        _ if have(&own) => (own, false, None),
+        GridModel::Compass1101 => (r1101, false, None),
+        GridModel::Compass1109 => (r1101, false, Some("no 1109 boot PROM in roms, using the 1101 rev 3".to_string())),
+        GridModel::Compass1121 if have(&pair("1129")) => (pair("1129"), false, Some("no 1121 boot PROM in roms, using the 1129's".to_string())),
+        GridModel::Compass1121 | GridModel::Compass1129 => (
+            r1101,
+            true,
+            Some(format!("no {} boot PROM in roms, using the 1101 rev 3 (put 1129even/odd.ccprom.bin in roms)", model.name())),
+        ),
+        GridModel::Compass1131 => (pair("1139"), false, Some("no 1131 boot PROM in roms, using the 1139's".to_string())),
+        GridModel::Compass1139 => (own, false, None),
     };
     let k2 = p("300001-02.bin");
     let keyboard = if model.split_board() && k2.exists() { k2 } else { p("300067-01.bin") };
@@ -52,6 +53,6 @@ pub fn machine(model: GridModel, dir: &Path) -> Result<crate::GridMachine, Strin
     let (even, odd, kbd) = (rd(&r.prom_even)?, rd(&r.prom_odd)?, rd(&r.keyboard)?);
     let mut m = crate::GridMachine::new(model, &even, &odd);
     m.board_mut().keyboard = Some(crate::keyboard::Keyboard::new(kbd));
-    m.board_mut().e0000_dma = model.split_board() && !model.wide_screen();
+    m.board_mut().e0000_dma = r.e0000_dma;
     Ok(m)
 }

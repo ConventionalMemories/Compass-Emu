@@ -23,7 +23,10 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02).
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact
   arithmetic in all rounding modes, all instructions, exceptions to IR6. Transcendentals
-  are computed in 113-bit precision and rounded once. Busy time per instruction is fitted
+  are computed in 113-bit precision and rounded once, except FPTAN, which follows the
+  chip's own CORDIC + 3r/(3-r^2) method (`fptan.rs`): its partial Y/X pair (X near 3) and
+  a busy time that depends on the argument (last bits still to be pinned down on hardware,
+  test T1 in docs/real-hw-tests.md). Busy time per instruction is fitted
   to GRiDBench measurements of a real 1101 (mean error 1.8% over 16 tests; a bare FWAIT
   costs ~90 clocks there).
 - Display timing (`DisplayTiming` in grid_core/src/screen.rs): 309 clocks a line, 266

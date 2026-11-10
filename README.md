@@ -1,3 +1,5 @@
+> **Compass-Emu**: this repository is a fork of MartyPC with GRiD Compass support. See [COMPASS.md](COMPASS.md).
+
 ![oo](./doc/img/martypc_logo.png)
 
 MartyPC is an emulator of early IBM PCs and compatibles. It supports Windows, Linux and macOS.

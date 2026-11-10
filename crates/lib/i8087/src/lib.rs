@@ -663,7 +663,7 @@ impl I8087 {
                     if reg == 3 {
                         self.pop();
                     }
-                    (if reg == 2 { 93 } else { 95 }, 4)
+                    (if reg == 2 { 85 } else { 87 }, 4)
                 }
                 4 => {
                     // FRSTOR: environment + 8 registers in stack order
@@ -706,7 +706,7 @@ impl I8087 {
                     if reg == 3 {
                         self.pop();
                     }
-                    (if reg == 2 { 78 } else { 80 }, 1)
+                    (if reg == 2 { 72 } else { 74 }, 1)
                 }
                 4 => {
                     let v = Self::load_bcd(mem, a);
@@ -764,7 +764,7 @@ impl I8087 {
                     138
                 }
                 else {
-                    [73, 97, 45, 47, 73, 73, 198, 199][reg as usize]
+                    [77, 97, 45, 47, 77, 77, 198, 199][reg as usize]
                 }
             }
             4 | 6 => {
@@ -973,7 +973,7 @@ impl I8087 {
                         self.set_st(0, r);
                         self.sw |= SW_PE;
                     }
-                    652
+                    618
                 }
                 1 => {
                     // FYL2X: ST1 = ST1 * log2(ST0), pop
@@ -987,7 +987,7 @@ impl I8087 {
                         self.sw |= SW_PE;
                     }
                     self.pop();
-                    1147
+                    1078
                 }
                 2 => {
                     // FPTAN: replace ST with Y, push X; Y/X = tan(ST)
@@ -996,7 +996,7 @@ impl I8087 {
                         self.push(F80::from_u128(1).value);
                         self.sw |= SW_PE;
                     }
-                    555
+                    527
                 }
                 3 => {
                     // FPATAN: ST1 = atan(ST1/ST0), pop
@@ -1006,7 +1006,7 @@ impl I8087 {
                         self.sw |= SW_PE;
                     }
                     self.pop();
-                    729
+                    684
                 }
                 4 => {
                     // FXTRACT: ST = exponent, push significand
@@ -1074,7 +1074,7 @@ impl I8087 {
                         self.sw |= SW_PE;
                     }
                     self.pop();
-                    850
+                    790
                 }
                 2 => {
                     // FSQRT

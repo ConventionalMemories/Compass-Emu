@@ -3,7 +3,9 @@
 //! runs until it reaches a HLT (not executed). The board (display timing, devices) runs as
 //! normal, but no PROM code runs.
 //!   gridfrag code.bin [max-clocks]
-//! Prints clocks used, instructions, and the 8087 state.
+//! Prints clocks used, instructions, and the 8087 state. Environment: FPU_EXTRA, FPU_WAITMIN
+//! (8087 timing), DISP_CONTENTION (0 = off), DISP_FETCH_LEN, DISP_FETCH_PERIOD,
+//! FRAG_PNG=file saves the last displayed frame. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states).
 
 use grid_core::{GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, CpuAddress, Register16};
@@ -25,6 +27,29 @@ fn main() {
         }
         if let Ok(v) = std::env::var("FPU_WAITMIN") {
             f.wait_min = v.parse().unwrap();
+        }
+    }
+    {
+        let d = &mut m.board_mut().display;
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+        if let Some(v) = env("DISP_CONTENTION") {
+            d.contention = v != 0;
+        }
+        if let Some(v) = env("DISP_FETCH_LEN") {
+            d.fetch_len = v;
+        }
+        if let Some(v) = env("DISP_FETCH_PERIOD") {
+            d.fetch_period = v;
+        }
+        if let Some(v) = env("DISP_FETCH_OFFSET") {
+            d.fetch_offset = v;
+        }
+        if let Some(v) = env("DISP_CPU_LEN") {
+            d.cpu_len = v;
+            d.cpu_write_len = v;
+        }
+        if let Some(v) = env("DISP_CPU_WRITE_LEN") {
+            d.cpu_write_len = v;
         }
     }
     for (i, b) in code.iter().enumerate() {
@@ -50,8 +75,19 @@ fn main() {
         instr += 1;
     }
     let clocks = m.board().clocks - start;
+    if let Ok(path) = std::env::var("FRAG_PNG") {
+        // The last complete frame as the beam showed it.
+        let pix = grid_core::screen::render(&m.display_frame());
+        let f = std::fs::File::create(&path).expect("png file");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), 320, 240);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::Eight);
+        let data: Vec<u8> = pix.iter().map(|&p| if p != 0 { 0xFF } else { 0x10 }).collect();
+        enc.write_header().unwrap().write_image_data(&data).unwrap();
+    }
     println!("clocks {}", clocks);
     println!("instructions {}", instr);
+    println!("frames {}", m.frames);
     if let Some(f) = m.fpu() {
         println!("fpu sw {:04X} cw {:04X} tw {:04X} busy_until {}", f.sw, f.cw, f.tw, f.busy_until());
         for i in 0..8 {

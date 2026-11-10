@@ -24,7 +24,7 @@ use marty_core::devices::pic::Pic;
 use crate::gpib::Gpib;
 use crate::rtc::Rtc;
 use crate::keyboard::Keyboard;
-use crate::screen::{Beam, FRAME_CLOCKS, LINE_CLOCKS, VISIBLE_LINES};
+use crate::screen::{Beam, DisplayTiming, FRAME_CLOCKS, LINE_CLOCKS};
 
 pub const IR_SERIAL: u8 = 0;
 pub const IR_BUBBLE: u8 = 1;
@@ -75,6 +75,8 @@ pub struct GridBoard {
     gpib_int: bool,
     /// Longest pseudo-DMA wait per access (stands in for the watchdog), CPU clocks.
     pub dma_wait_limit: u64,
+    /// Display timing and RAM contention.
+    pub display: DisplayTiming,
 }
 
 impl GridBoard {
@@ -108,6 +110,7 @@ impl GridBoard {
             machine_id: [0; 16],
             gpib_int: false,
             dma_wait_limit: 20_000_000,
+            display: DisplayTiming::default(),
         }
     }
 
@@ -117,10 +120,15 @@ impl GridBoard {
 
     /// Advance board time by `cycles` CPU clocks.
     pub fn tick(&mut self, cycles: u32) {
-        self.clocks += cycles as u64;
-        // IR3: rising edge at the start of vertical blank (line 240), low again at frame start.
+        self.tick_to(self.clocks + cycles as u64);
+    }
+
+    /// Advance board time to CPU clock `now`.
+    pub fn tick_to(&mut self, now: u64) {
+        self.clocks = now.max(self.clocks);
+        // IR3: rising edge at the start of line ir3_line (vertical blank), low again at frame start.
         let in_frame = self.clocks % FRAME_CLOCKS;
-        let vblank = in_frame >= VISIBLE_LINES * LINE_CLOCKS;
+        let vblank = in_frame >= self.display.ir3_line * LINE_CLOCKS;
         if vblank && !self.vsync_line_high {
             self.vsync_line_high = true;
             self.pic.request_interrupt(IR_VSYNC);
@@ -313,6 +321,15 @@ impl ExternalBoard for GridBoard {
             return self.gpib.dma_wait(write, lim) as u32;
         }
         0
+    }
+
+    fn ram_wait(&mut self, address: usize, now: u64, write: bool) -> u32 {
+        if address < RAM_TOP {
+            self.display.ram_wait(now, write)
+        }
+        else {
+            0
+        }
     }
 
     fn io_read_u8(&mut self, port: u16, _cycles: u32) -> u8 {

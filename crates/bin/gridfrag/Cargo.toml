@@ -8,3 +8,4 @@ description = "Run a code fragment on the emulated Compass and count clocks"
 [dependencies]
 grid_core = { path = "../../lib/grid_core" }
 marty_core = { path = "../../lib/marty_core", default-features = false }
+png = "0.17"

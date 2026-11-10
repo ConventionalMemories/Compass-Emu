@@ -372,6 +372,7 @@ impl Intel808x {
         self.device_cycles += 1;
 
         self.cycle_num += 1;
+        self.bus.set_cpu_now(self.cycle_num);
         if self.cycle_num & 1 == 0 {
             self.clk0 = !self.clk0;
         }

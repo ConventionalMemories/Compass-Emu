@@ -540,6 +540,8 @@ pub struct BusInterface {
 
     external: Option<Box<dyn external::ExternalBoard>>,
     coproc: Option<Box<dyn coproc::Coprocessor>>,
+    /// CPU clock count (cycle_num), kept current by the 808x core every cycle.
+    cpu_now: u64,
 }
 
 #[macro_export]
@@ -632,6 +634,7 @@ impl Default for BusInterface {
             terminal_port: None,
             external: None,
             coproc: None,
+            cpu_now: 0,
         }
     }
 }
@@ -736,6 +739,17 @@ impl BusInterface {
     }
 
     /// Install an external board (non-PC machine hardware). Claims its memory ranges and IO ports.
+    /// Absolute CPU clock count, as of the current bus cycle.
+    #[inline(always)]
+    pub fn cpu_now(&self) -> u64 {
+        self.cpu_now
+    }
+
+    #[inline(always)]
+    pub fn set_cpu_now(&mut self, now: u64) {
+        self.cpu_now = now;
+    }
+
     pub fn install_coprocessor(&mut self, cp: Box<dyn coproc::Coprocessor>) {
         self.coproc = Some(cp);
     }

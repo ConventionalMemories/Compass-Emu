@@ -1,9 +1,10 @@
 //! A runnable Compass: MartyPC 8086 core + GridBoard, with a simple run loop.
 
 use marty_core::bus::external::ExternalBoard;
-use marty_core::cpu_common::{builder::CpuBuilder, Cpu, CpuDispatch, CpuType};
+use marty_core::cpu_common::{builder::CpuBuilder, Cpu, CpuDispatch, CpuOption, CpuType};
 
 use crate::board::GridBoard;
+use crate::screen::{FRAME_CLOCKS, LINE_CLOCKS, LINE_WORDS, SCREEN_BASE, SCREEN_H, SCREEN_W, VISIBLE_LINES};
 
 #[derive(Copy, Clone, Debug)]
 pub enum GridModel {
@@ -14,6 +15,16 @@ pub struct GridMachine {
     pub cpu: CpuDispatch,
     pub model: GridModel,
     pub instructions: u64,
+    /// Screen RAM as the display fetched it, word by word as the beam passed (the frame being
+    /// drawn now), and the last complete frame.
+    beam_frame: Vec<u8>,
+    shown_frame: Vec<u8>,
+    /// Frames completed so far.
+    pub frames: u64,
+    /// Next display fetch: absolute CPU clock, line and word.
+    next_fetch: u64,
+    fetch_line: u64,
+    fetch_word: usize,
 }
 
 impl GridMachine {
@@ -24,14 +35,59 @@ impl GridMachine {
             let _ = cpu.bus_mut().write_u8(a, 0, 0);
         }
         cpu.bus_mut().install_external(Box::new(GridBoard::new(prom_even, prom_odd)));
-        // Calibrated against GRiDBench on a real 1101: every 8087 instruction takes ~50 clocks
-        // more than its data-sheet time there, and a bare FWAIT costs ~100 clocks.
+        // Calibrated against GRiDBench on a real 1101 (times scaled by its AAM, with display
+        // contention on): every 8087 instruction takes ~35 clocks more than its data-sheet
+        // time there, and a bare FWAIT costs ~90 clocks.
         let mut fpu = i8087::I8087::new();
-        fpu.extra_busy = 50;
-        fpu.wait_min = 100;
+        fpu.extra_busy = 35;
+        fpu.wait_min = 89;
         cpu.bus_mut().install_coprocessor(Box::new(crate::fpu::Fpu(fpu)));
         cpu.reset();
-        GridMachine { cpu, model, instructions: 0 }
+        // Wait states on: display contention and the GPIB pseudo-DMA window need them.
+        cpu.set_option(CpuOption::EnableWaitStates(true));
+        let size = SCREEN_W * SCREEN_H / 8;
+        let mut m = GridMachine {
+            cpu,
+            model,
+            instructions: 0,
+            beam_frame: vec![0; size],
+            shown_frame: vec![0; size],
+            frames: 0,
+            next_fetch: 0,
+            fetch_line: 0,
+            fetch_word: 0,
+        };
+        m.next_fetch = m.fetch_time(0, 0, 0);
+        m
+    }
+
+    /// Absolute clock of the fetch of word `w` on line `line` of frame `frame`.
+    fn fetch_time(&self, frame: u64, line: u64, w: usize) -> u64 {
+        frame * FRAME_CLOCKS + line * LINE_CLOCKS + self.board().display.fetch_clock(w)
+    }
+
+    /// Capture the display fetches up to the current time.
+    fn run_display(&mut self, now: u64) {
+        while self.next_fetch <= now {
+            let a = (self.fetch_line as usize * LINE_WORDS + self.fetch_word) * 2;
+            for i in 0..2 {
+                self.beam_frame[a + i] = self.cpu.bus().peek_u8(SCREEN_BASE + a + i).unwrap_or(0);
+            }
+            let frame = self.next_fetch / FRAME_CLOCKS;
+            self.fetch_word += 1;
+            if self.fetch_word == LINE_WORDS {
+                self.fetch_word = 0;
+                self.fetch_line += 1;
+                if self.fetch_line == VISIBLE_LINES {
+                    self.fetch_line = 0;
+                    self.shown_frame.copy_from_slice(&self.beam_frame);
+                    self.frames += 1;
+                    self.next_fetch = self.fetch_time(frame + 1, 0, 0);
+                    continue;
+                }
+            }
+            self.next_fetch = self.fetch_time(frame, self.fetch_line, self.fetch_word);
+        }
     }
 
     pub fn board(&self) -> &GridBoard {
@@ -51,11 +107,15 @@ impl GridMachine {
         let _ = self.cpu.step_finish(None);
         self.instructions += 1;
         let fpu_int = self.cpu.bus().coprocessor().map(|c| c.irq()).unwrap_or(false);
+        let now = self.cpu.bus().cpu_now();
         let board = self.board_mut();
         board.set_fpu_int(fpu_int);
-        board.tick(c);
+        board.tick_to(now);
         let intr = board.intr();
         self.cpu.set_intr(intr);
+        if now >= self.next_fetch {
+            self.run_display(now);
+        }
         c
     }
 
@@ -74,6 +134,15 @@ impl GridMachine {
         while self.board().clocks < end {
             self.step();
         }
+    }
+
+    /// The last complete frame as the display showed it (screen RAM fetched as the beam
+    /// passed, so racing the beam shows as it would on the real screen), in the layout of
+    /// screen_ram() (for screen::render).
+    pub fn display_frame(&self) -> Vec<u8> {
+        let mut v = vec![0u8; SCREEN_BASE];
+        v.extend_from_slice(&self.shown_frame);
+        v
     }
 
     /// Screen RAM and everything below it (enough for screen::render).

@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "grid_core",
  "marty_core",
@@ -2562,6 +2562,7 @@ version = "0.0.1"
 dependencies = [
  "grid_core",
  "marty_core",
+ "png 0.17.16",
 ]
 
 [[package]]

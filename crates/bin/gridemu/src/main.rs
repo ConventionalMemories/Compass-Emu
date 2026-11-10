@@ -38,6 +38,24 @@ fn main() {
             m.board_mut().gpib.drives.push(Drive::new(kind, img));
         }
     }
+    if let Ok(p) = std::env::var("GRID_BUBBLE") {
+        let img = fs::read(&p).expect("bubble image");
+        println!("bubble: {} ({} bytes)", p, img.len());
+        let mut bub = grid_core::bubble::Bubble::new(img);
+        bub.log = std::env::var("GRID_BUBBLE_LOG").is_ok();
+        m.board_mut().bubble = Some(bub);
+    }
+    // Serial: GRID_SERIAL_IN = file whose bytes are sent to the Compass (from 1 s on),
+    // GRID_SERIAL_OUT = file for what the Compass sends.
+    if let Ok(p) = std::env::var("GRID_SERIAL_IN") {
+        let d = fs::read(&p).expect("serial input");
+        m.board_mut().serial.rx_in.extend(d);
+        m.board_mut().serial.set_modem_lines(true, true);
+    }
+    m.board_mut().serial.log = std::env::var("GRID_SERIAL_LOG").is_ok();
+    let wav = std::env::var("GRID_WAV").ok();
+    let mut samples: Vec<f32> = Vec::new();
+    let mut serial_out: Vec<u8> = Vec::new();
     if let Ok(p) = std::env::var("GRID_KBD_ROM") {
         let rom = fs::read(&p).expect("keyboard ROM");
         println!("keyboard: 8741 LLE with {}", p);
@@ -82,6 +100,18 @@ fn main() {
     while m.board().clocks < total {
         let chunk = if ev < events.len() { 10_000 } else { 500_000 };
         m.run_clocks(chunk);
+        {
+            let b = m.board_mut();
+            if wav.is_some() {
+                samples.extend(b.sound.out.drain(..));
+            }
+            else {
+                b.sound.out.clear();
+            }
+            while let Some((_, c)) = b.serial.tx_out.pop_front() {
+                serial_out.push(c);
+            }
+        }
         while ev < events.len() && events[ev].0 <= m.board().clocks {
             let (_, key, mods) = events[ev];
             if let Some(k) = &mut m.board_mut().keyboard {
@@ -104,7 +134,7 @@ fn main() {
     println!("ran {:.1} emulated s in {:.2} s ({:.1}x real time)", secs, el, secs / el);
     let b = m.board();
     println!("keyboard writes: {:?}", &b.kbd_commands.iter().take(20).collect::<Vec<_>>());
-    println!("DAC writes: {}", b.dac_writes.len());
+    println!("sound samples queued: {}", b.sound.out.len());
     let mut uniq: std::collections::BTreeMap<(usize, bool), usize> = Default::default();
     for l in &b.unhandled {
         *uniq.entry((l.address, l.write)).or_default() += 1;
@@ -127,6 +157,43 @@ fn main() {
     if let Ok(p) = std::env::var("GRID_DUMP") {
         fs::write(&p, m.ram()).unwrap();
         println!("RAM dumped to {}", p);
+    }
+    if let Some(p) = &wav {
+        let rate = m.board().sound.rate;
+        let mut d = Vec::new();
+        let n = samples.len() as u32;
+        d.extend_from_slice(b"RIFF");
+        d.extend_from_slice(&(36 + n * 2).to_le_bytes());
+        d.extend_from_slice(b"WAVEfmt ");
+        d.extend_from_slice(&16u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&rate.to_le_bytes());
+        d.extend_from_slice(&(rate * 2).to_le_bytes());
+        d.extend_from_slice(&2u16.to_le_bytes());
+        d.extend_from_slice(&16u16.to_le_bytes());
+        d.extend_from_slice(b"data");
+        d.extend_from_slice(&(n * 2).to_le_bytes());
+        for s in &samples {
+            d.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32000.0) as i16).to_le_bytes());
+        }
+        fs::write(p, d).unwrap();
+        println!("sound: {} samples to {}", n, p);
+    }
+    if let Ok(p) = std::env::var("GRID_SERIAL_OUT") {
+        fs::write(&p, &serial_out).unwrap();
+        println!("serial: {} bytes sent by the Compass, in {}", serial_out.len(), p);
+    }
+    if let Some(bub) = &m.board().bubble {
+        if bub.dirty {
+            if let Ok(p) = std::env::var("GRID_BUBBLE_SAVE") {
+                fs::write(&p, &bub.image).unwrap();
+                println!("bubble written to {}", p);
+            }
+            else {
+                println!("bubble changed (GRID_BUBBLE_SAVE=file to keep it)");
+            }
+        }
     }
     save_png(&a[4], &screen::render(&m.ram()));
     println!("screen saved to {}", a[4]);

@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 All Compass models eventually; the 1101 comes first.
 
-## Status (0.0.5, test build)
+## Status (0.1.0)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -31,9 +31,17 @@ All Compass models eventually; the 1101 comes first.
   and memory numbers (mean error 2.0% over 27 tests) until they are measured directly.
   The window shows each screen word as the beam fetched it, so racing the beam (and
   tearing) looks as on the real screen.
+- 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
+  interrupt-driven driver (DRQ on IR1) reads and writes it. A blank image must be
+  formatted with Initialize Media.
+- 8274 serial controller, asynchronous mode, IR0, bit rate from the 80130 baud timer;
+  the window version connects it to a TCP port (`--serial tcp:2323`) or a real serial
+  port (`--serial COM3`). Synchronous (GRiDLink SDLC) modes are not modelled.
+- Sound: the sound DAC (DFE4:2), volume DAC (DFE4:4) and the DTMF chip on 8255 port B,
+  played through the PC's sound card (`--mute` to turn it off).
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.
 
-Not yet: bubble memory, serial, modem/sound, 1139 and
+Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, 1139 and
 later models.
 
 ## Window version
@@ -62,11 +70,16 @@ Environment variables: `GRID_HD`, `GRID_FLOP` (2102), `GRID_FLOP2101` for drive 
 the 8087 state (`FPU_EXTRA`, `FPU_WAITMIN` override the 8087 timing fit; `DISP_CONTENTION=0`,
 `DISP_FETCH_LEN`, `DISP_CPU_LEN`, `DISP_CPU_WRITE_LEN` the display contention).
 
+Headless extras: `GRID_BUBBLE` (+ `GRID_BUBBLE_SAVE`, `GRID_BUBBLE_LOG`), `GRID_SERIAL_IN`
+/ `GRID_SERIAL_OUT` files, `GRID_WAV` to record the sound.
+
+Timings still to be measured on real hardware are listed in docs/real-hw-tests.md.
+
 ROMs and disk images are not included.
 
 ## Credits
 
 Compass support by Conventional Memories (C.M._), MIT license. Device behaviour is based
 on GRiD's own documentation and sources and on MAME's gridcomp, tms9914, grid2102 and
-mm58174 drivers (BSD-3-Clause). 8087 arithmetic uses rustc_apfloat (Apache-2.0 WITH
+mm58174, i7220 and z80sio drivers (BSD-3-Clause). 8087 arithmetic uses rustc_apfloat (Apache-2.0 WITH
 LLVM-exception).

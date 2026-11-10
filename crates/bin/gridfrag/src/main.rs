@@ -88,6 +88,12 @@ fn main() {
     println!("clocks {}", clocks);
     println!("instructions {}", instr);
     println!("frames {}", m.frames);
+    {
+        let b = m.board();
+        let tx: Vec<u8> = b.serial.tx_out.iter().map(|x| x.1).collect();
+        println!("sound dac {} volume {} port_b {:02X} samples {}", b.sound.dac, b.sound.volume, b.sound.port_b, b.sound.out.len());
+        println!("serial tx {:?} rate {:.0}", String::from_utf8_lossy(&tx), b.serial.bit_rate());
+    }
     if let Some(f) = m.fpu() {
         println!("fpu sw {:04X} cw {:04X} tw {:04X} busy_until {}", f.sw, f.cw, f.tw, f.busy_until());
         for i in 0..8 {

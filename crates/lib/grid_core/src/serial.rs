@@ -320,9 +320,14 @@ impl Serial8274 {
         self.advance(now);
         let c = reg & 1;
         if reg < 2 {
+            // The byte reaches the shift register on a later transmit clock edge, not in the
+            // same instant: INT drops for at least that long, so an edge-triggered IR0 sees
+            // a new edge even when the shifter was already idle (a late interrupt routine
+            // writing the next byte; GRiDSound's sample clock stopped without this gap).
+            let gap = (self.baud_count.max(1) as u64).min(64);
             let ch = &mut self.ch[c];
             ch.tx_buf = Some(v);
-            ch.tx_buf_time = now;
+            ch.tx_buf_time = now + gap;
             ch.tx_int_pending = false;
             if self.log {
                 eprintln!("serial {} tx {:02X} at {}", if c == 0 { 'A' } else { 'B' }, v, now);

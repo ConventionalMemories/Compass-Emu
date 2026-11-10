@@ -2,8 +2,11 @@
 //! Alt+key as "system" keys: releasing Alt opens the window's menu mode (the next keys go to
 //! the menu) and Alt+key beeps. We subclass the window to swallow SC_KEYMENU and WM_SYSCHAR,
 //! and read the keys straight from GetAsyncKeyState so Alt combinations and quick taps are seen.
+//! A low-level keyboard hook keeps Windows from acting on Alt+Esc (send window back) and
+//! Alt+Space (window menu) while the emulator has focus; those keys then go to the Compass
+//! as CODE-Esc and CODE-Space. Alt+Tab and Alt+F4 still work.
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 type Hwnd = *mut core::ffi::c_void;
 
@@ -13,6 +16,56 @@ extern "system" {
     fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
     fn CallWindowProcW(prev: isize, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
     fn GetForegroundWindow() -> Hwnd;
+    fn SetWindowsHookExW(id: i32, proc_: usize, hmod: Hwnd, thread: u32) -> Hwnd;
+    fn CallNextHookEx(hook: Hwnd, code: i32, wparam: usize, lparam: isize) -> isize;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> Hwnd;
+}
+
+const WH_KEYBOARD_LL: i32 = 13;
+const LLKHF_ALTDOWN: u32 = 0x20;
+const VK_ESCAPE: u32 = 0x1B;
+const VK_SPACE: u32 = 0x20;
+
+#[repr(C)]
+struct KbdLl {
+    vk: u32,
+    scan: u32,
+    flags: u32,
+    time: u32,
+    extra: usize,
+}
+
+/// Esc and Space as the hook saw them while it kept them from Windows: (down, pressed since
+/// last poll).
+static ESC: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+static SPACE: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+unsafe extern "system" fn kbd_hook(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code == 0 && lparam != 0 {
+        let k = &*(lparam as *const KbdLl);
+        let st = match k.vk {
+            VK_ESCAPE => Some(&ESC),
+            VK_SPACE => Some(&SPACE),
+            _ => None,
+        };
+        if let Some(st) = st {
+            let up = wparam == 0x101 || wparam == 0x105;
+            let held_here = st[0].load(Ordering::Relaxed);
+            // swallow Alt+key while we have focus, and its key-up whatever Alt does by then
+            if (focused() && k.flags & LLKHF_ALTDOWN != 0 && !up) || (held_here && up) {
+                st[0].store(!up, Ordering::Relaxed);
+                if !up {
+                    st[1].store(true, Ordering::Relaxed);
+                }
+                return 1;
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
 const GWLP_WNDPROC: i32 = -4;
@@ -38,6 +91,8 @@ pub fn install(hwnd: *mut core::ffi::c_void) {
         HWND_MAIN = hwnd as usize;
         let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
         OLD_PROC.store(old, Ordering::Relaxed);
+        // (runs on this thread's message loop, which minifb pumps every frame)
+        SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
     }
 }
 
@@ -51,7 +106,17 @@ pub fn vk(vk: i32) -> (bool, bool) {
         return (false, false);
     }
     let s = unsafe { GetAsyncKeyState(vk) } as u16;
-    (s & 0x8000 != 0, s & 0x0001 != 0)
+    let (mut d, mut t) = (s & 0x8000 != 0, s & 0x0001 != 0);
+    let hooked = match vk as u32 {
+        VK_ESCAPE => Some(&ESC),
+        VK_SPACE => Some(&SPACE),
+        _ => None,
+    };
+    if let Some(h) = hooked {
+        d |= h[0].load(Ordering::Relaxed);
+        t |= h[1].swap(false, Ordering::Relaxed);
+    }
+    (d, t)
 }
 
 /// Compass characters (as used by keyboard::key_for_char) and their Windows virtual keys.

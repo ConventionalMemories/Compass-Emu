@@ -29,6 +29,8 @@ pub struct Session {
     keys: VecDeque<(u64, Option<(usize, u8)>, u8)>,
     /// The prompt seen by wait_prompt (top row).
     prompt: Option<(usize, Vec<Vec<u8>>)>,
+    /// Keep sound and serial output for the caller (normally dropped).
+    pub keep_output: bool,
 }
 
 /// Parse key text: plain characters plus {ret} {esc} {tab} {bs} {space} {left} {right} {up}
@@ -84,7 +86,7 @@ pub fn parse_keys(text: &str) -> Result<Vec<(char, u8)>, String> {
 
 impl Session {
     pub fn new(m: GridMachine) -> Session {
-        Session { m, keys: VecDeque::new(), prompt: None }
+        Session { m, keys: VecDeque::new(), prompt: None, keep_output: false }
     }
 
     pub fn clocks(&self) -> u64 {
@@ -139,9 +141,12 @@ impl Session {
                     }
                 }
             }
+            let keep = self.keep_output;
             let b = self.m.board_mut();
-            b.sound.out.clear();
-            b.serial.tx_out.clear();
+            if !keep {
+                b.sound.out.clear();
+                b.serial.tx_out.clear();
+            }
             b.unhandled.clear();
         }
     }

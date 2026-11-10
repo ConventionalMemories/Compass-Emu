@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.4: a GRiD Compass in a window.
+//! Compass-Emu 0.3.5: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -40,7 +40,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.4";
+pub const VERSION: &str = "0.3.5";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -76,6 +76,7 @@ fn read(path: &Path, what: &str) -> Vec<u8> {
 }
 
 /// PC key -> (column, bit) in the Compass matrix.
+#[cfg_attr(windows, allow(dead_code))]
 fn matrix_pos(k: Key) -> Option<(usize, u8)> {
     let c = match k {
         Key::A => 'a', Key::B => 'b', Key::C => 'c', Key::D => 'd', Key::E => 'e', Key::F => 'f',
@@ -242,6 +243,11 @@ fn main() {
         let mut mods = 0u8;
         let mut down: Vec<(usize, u8)> = Vec::new();
         let mut tapped: Vec<(usize, u8)> = Vec::new();
+        // On Windows the keys come only from GetAsyncKeyState (winkeys): minifb's own key
+        // list misses key-up messages (focus lost while a key is down, Alt+Esc sending the
+        // window back, Alt combinations), so a key could stay "down" for good: Shift stuck
+        // on, or three keys held so the 8741 stops reporting keys at all.
+        #[cfg(not(windows))]
         for k in win.get_keys() {
             match k {
                 Key::LeftShift | Key::RightShift => mods |= keyboard::MOD_SHIFT,
@@ -254,6 +260,7 @@ fn main() {
                 }
             }
         }
+        #[cfg(not(windows))]
         for k in win.get_keys_pressed(KeyRepeat::No) {
             if let Some(p) = matrix_pos(k) {
                 tapped.push(p);

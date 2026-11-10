@@ -19,6 +19,7 @@ pub mod screen;
 pub mod roms;
 pub mod session;
 pub mod fragment;
+pub mod fast86;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};

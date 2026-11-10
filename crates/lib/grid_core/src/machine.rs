@@ -4,6 +4,7 @@ use marty_core::bus::external::ExternalBoard;
 use marty_core::cpu_common::{builder::CpuBuilder, Cpu, CpuDispatch, CpuOption, CpuType};
 
 use crate::board::GridBoard;
+use crate::fast86::{Bus86, Fast86};
 use crate::screen::{self, SCREEN_BASE, SCREEN_H, SCREEN_W, WIDE_H, WIDE_W};
 
 /// The Compass models. The 110x have the original board; the 112x and 113x (Compass II) the
@@ -92,6 +93,85 @@ pub struct GridMachine {
     next_fetch: u64,
     fetch_line: u64,
     fetch_word: usize,
+    /// Fast mode: the fast interpreter runs instead of MartyPC's cycle-exact core (builds).
+    fast: Option<Fast86>,
+}
+
+/// The fast core's view of the bus: plain RAM direct, the board's memory and ports through
+/// MartyPC's bus (with the GPIB DMA window's wait states, so block transfers pace right).
+struct FastBus<'a> {
+    bus: &'a mut marty_core::bus::BusInterface,
+    /// Plain RAM (0 .. ram_top), read and written directly.
+    ram: *mut u8,
+    ram_top: usize,
+    /// Wait clocks met during this instruction.
+    waits: u32,
+}
+
+impl FastBus<'_> {
+    /// Only the board's I/O area (DFxxx, the E0000 DMA window) can hold the CPU: skip the
+    /// wait lookup for the PROM and empty space.
+    #[inline]
+    fn may_wait(a: usize) -> bool {
+        (0xDF000..0xF0000).contains(&a)
+    }
+}
+
+impl Bus86 for FastBus<'_> {
+    #[inline]
+    fn read8(&mut self, a: u32) -> u8 {
+        let a = a as usize;
+        if a < self.ram_top {
+            // SAFETY: `ram` points at the bus's memory (at least ram_top bytes), which is not
+            // resized or otherwise touched while this FastBus lives (plain RAM has no mmio).
+            return unsafe { *self.ram.add(a) };
+        }
+        if Self::may_wait(a) {
+            self.waits += self.bus.get_read_wait(a, self.waits).unwrap_or(0);
+        }
+        self.bus.read_u8(a, self.waits).map(|v| v.0).unwrap_or(0xFF)
+    }
+    #[inline]
+    fn write8(&mut self, a: u32, v: u8) {
+        let a = a as usize;
+        if a < self.ram_top {
+            // SAFETY: as in read8
+            unsafe { *self.ram.add(a) = v };
+            return;
+        }
+        if Self::may_wait(a) {
+            self.waits += self.bus.get_write_wait(a, self.waits).unwrap_or(0);
+        }
+        let _ = self.bus.write_u8(a, v, self.waits);
+    }
+    fn io_in8(&mut self, port: u16) -> u8 {
+        self.bus.io_read_u8(port, self.waits)
+    }
+    fn io_out8(&mut self, port: u16, v: u8) {
+        self.bus.io_write_u8(port, v, self.waits, None)
+    }
+    fn intr(&mut self) -> bool {
+        self.bus.external().map(|e| e.intr()).unwrap_or(false)
+    }
+    fn inta(&mut self) -> u8 {
+        self.bus.external_mut().and_then(|e| e.inta()).unwrap_or(0xFF)
+    }
+    fn esc(&mut self, now: u64, opcode: u8, modrm: u8, ea: Option<u32>, ip: u32) -> u32 {
+        match self.bus.take_coprocessor() {
+            Some(mut cp) => {
+                let n = cp.esc(self.bus, now, opcode, modrm, ea, ip);
+                self.bus.put_coprocessor(cp);
+                n
+            }
+            None => 0,
+        }
+    }
+    fn fpu_busy(&mut self, now: u64) -> bool {
+        self.bus.coprocessor_busy(now)
+    }
+    fn wait_min(&mut self) -> u64 {
+        self.bus.coprocessor_wait_min() as u64
+    }
 }
 
 impl GridMachine {
@@ -123,6 +203,7 @@ impl GridMachine {
             next_fetch: 0,
             fetch_line: 0,
             fetch_word: 0,
+            fast: None,
         };
         m.next_fetch = m.fetch_time(0, 0, 0);
         m
@@ -159,6 +240,20 @@ impl GridMachine {
         }
     }
 
+    /// Fast mode's display capture: the whole screen RAM once per frame (no racing the beam).
+    fn run_display_frames(&mut self, now: u64) {
+        let d = self.board().display;
+        let frame = now / d.frame_clocks();
+        let n = self.beam_frame.len();
+        let ram = self.cpu.bus().get_slice_at(SCREEN_BASE, n);
+        self.beam_frame[..ram.len()].copy_from_slice(ram);
+        self.shown_frame.copy_from_slice(&self.beam_frame);
+        self.frames += 1;
+        self.fetch_line = 0;
+        self.fetch_word = 0;
+        self.next_fetch = self.fetch_time(frame + 1, 0, 0);
+    }
+
     pub fn board(&self) -> &GridBoard {
         self.cpu.bus().external().unwrap().as_any().downcast_ref::<GridBoard>().unwrap()
     }
@@ -167,8 +262,109 @@ impl GridMachine {
         self.cpu.bus_mut().external_mut().unwrap().as_any_mut().downcast_mut::<GridBoard>().unwrap()
     }
 
+    /// Is fast mode on?
+    pub fn is_fast(&self) -> bool {
+        self.fast.is_some()
+    }
+
+    /// Fast mode on or off. Fast mode runs a whole-instruction interpreter with approximate
+    /// clock counts (no prefetch queue, wait states or display contention): several times
+    /// quicker, for builds, never for timing. Switch between instructions only.
+    pub fn set_fast(&mut self, on: bool) {
+        if on == self.fast.is_some() {
+            return;
+        }
+        if on {
+            let (regs, ip, flags, clocks) = self.exact_regs();
+            let mut f = Fast86::new();
+            // regs: AX BX CX DX SP BP SI DI ES CS SS DS; Fast86 keeps ModRM order
+            f.r = [regs[0], regs[2], regs[3], regs[1], regs[4], regs[5], regs[6], regs[7]];
+            f.s = [regs[8], regs[9], regs[10], regs[11]];
+            f.ip = ip;
+            f.flags = flags;
+            f.clocks = clocks;
+            self.fast = Some(f);
+        }
+        else {
+            let (regs, ip, flags, clocks) = self.regs();
+            self.fast = None;
+            self.set_exact_regs(&regs, ip, flags, clocks);
+        }
+    }
+
+    fn exact_regs(&mut self) -> ([u16; 12], u16, u16, u64) {
+        let mut regs = [0; 12];
+        for (i, &r) in STATE_REGS.iter().enumerate() {
+            regs[i] = self.cpu.get_register16(r);
+        }
+        (regs, self.cpu.get_ip(), self.cpu.get_flags(), self.cpu.bus().cpu_now())
+    }
+
+    /// AX BX CX DX SP BP SI DI ES CS SS DS, IP, flags, clock: from whichever core runs.
+    fn regs(&mut self) -> ([u16; 12], u16, u16, u64) {
+        match &self.fast {
+            Some(f) => {
+                let r = &f.r;
+                ([r[0], r[3], r[1], r[2], r[4], r[5], r[6], r[7], f.s[0], f.s[1], f.s[2], f.s[3]], f.ip, f.flags, f.clocks)
+            }
+            None => self.exact_regs(),
+        }
+    }
+
+    fn set_exact_regs(&mut self, regs: &[u16], ip: u16, flags: u16, clocks: u64) {
+        self.cpu.set_reset_vector(marty_core::cpu_common::CpuAddress::Segmented(regs[9], ip));
+        self.cpu.reset();
+        for (&r, &v) in STATE_REGS.iter().zip(regs.iter()) {
+            self.cpu.set_register16(r, v);
+        }
+        self.cpu.set_flags(flags);
+        self.cpu.set_cycle_num(clocks);
+        let intr = self.board().intr();
+        self.cpu.set_intr(intr);
+    }
+
+    /// One instruction on the fast core.
+    fn step_fast(&mut self) -> u32 {
+        let mut f = self.fast.take().unwrap();
+        let start = f.clocks;
+        let ram_top = self.model.ram_size();
+        let bus = self.cpu.bus_mut();
+        bus.set_cpu_now(f.clocks);
+        let ram = bus.memory_mut();
+        assert!(ram.len() >= ram_top);
+        let ram = ram.as_mut_ptr();
+        let mut fb = FastBus { bus, ram, ram_top, waits: 0 };
+        if f.halted {
+            // idle until an interrupt: skip ahead in larger steps
+            f.step(&mut fb);
+            if f.halted {
+                f.clocks += 60;
+            }
+        }
+        else {
+            f.step(&mut fb);
+        }
+        f.clocks += fb.waits as u64;
+        let now = f.clocks;
+        self.instructions += 1;
+        self.fast = Some(f);
+        let bus = self.cpu.bus_mut();
+        bus.set_cpu_now(now);
+        let fpu_int = bus.coprocessor().map(|c| c.irq()).unwrap_or(false);
+        let board = self.board_mut();
+        board.set_fpu_int(fpu_int);
+        board.tick_to(now);
+        if now >= self.next_fetch {
+            self.run_display_frames(now);
+        }
+        (now - start) as u32
+    }
+
     /// Execute one instruction; returns CPU clocks used.
     pub fn step(&mut self) -> u32 {
+        if self.fast.is_some() {
+            return self.step_fast();
+        }
         let c = match self.cpu.step(false) {
             Ok((_, c)) => c,
             Err(e) => panic!("CPU error: {:?}", e),
@@ -295,9 +491,8 @@ impl GridMachine {
     /// Save the whole machine (between instructions) except the drive images.
     pub fn save_state(&mut self) -> Vec<u8> {
         let ram = self.ram();
-        let regs = STATE_REGS.iter().map(|&r| self.cpu.get_register16(r)).collect();
-        let ip = self.cpu.get_ip();
-        let flags = self.cpu.get_flags();
+        let (regs, ip, flags, _) = self.regs();
+        let regs = regs.to_vec();
         let board = self.board();
         let st = SavedState {
             format: STATE_FORMAT,
@@ -336,13 +531,7 @@ impl GridMachine {
         if let (Some(f), Some(saved)) = (m.fpu_mut(), st.fpu) {
             *f = saved;
         }
-        m.cpu.set_reset_vector(marty_core::cpu_common::CpuAddress::Segmented(st.regs[9], st.ip));
-        m.cpu.reset();
-        for (&r, &v) in STATE_REGS.iter().zip(st.regs.iter()) {
-            m.cpu.set_register16(r, v);
-        }
-        m.cpu.set_flags(st.flags);
-        m.cpu.set_cycle_num(st.clocks);
+        m.set_exact_regs(&st.regs, st.ip, st.flags, st.clocks);
         m.instructions = st.instructions;
         m.beam_frame = st.beam_frame;
         m.shown_frame = st.shown_frame;
@@ -350,8 +539,6 @@ impl GridMachine {
         m.next_fetch = st.next_fetch;
         m.fetch_line = st.fetch_line;
         m.fetch_word = st.fetch_word;
-        let intr = m.board().intr();
-        m.cpu.set_intr(intr);
         Ok(m)
     }
 }

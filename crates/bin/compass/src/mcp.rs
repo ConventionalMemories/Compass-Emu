@@ -46,7 +46,8 @@ fn tools() -> Value {
                 "hd": {"type": "string", "description": "hard disk image file"},
                 "model": model,
                 "seconds": {"type": "number", "description": "run exactly this many emulated seconds instead of waiting for a prompt"},
-                "max_seconds": {"type": "number", "description": "limit when waiting for the prompt (default 300)"}
+                "max_seconds": {"type": "number", "description": "limit when waiting for the prompt (default 300)"},
+                "fast": {"type": "boolean", "description": "fast CPU core (about 5x quicker, approximate timing: fine for builds and file work, not for timing or racing the beam). Default false"}
             }, "required": ["hd"]}
         },
         {
@@ -200,6 +201,7 @@ impl Server {
                 m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(vec![0u8; 3 * grid_core::bubble::MBM_SIZE]));
                 m.board_mut().sound.enabled = false;
                 m.board_mut().log_unhandled = false;
+                m.set_fast(a.get("fast").and_then(|v| v.as_bool()).unwrap_or(false));
                 let mut s = Session::new(m);
                 let note = if let Some(t) = num(a, "seconds") {
                     s.run_seconds(t);

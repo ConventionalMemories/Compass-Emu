@@ -1,4 +1,4 @@
-//! Compass-Emu 0.0.2: GRiD Compass 1101 in a window.
+//! Compass-Emu 0.0.3: GRiD Compass 1101 in a window.
 //!
 //! compass [options]
 //!   --prom-even F --prom-odd F   boot PROM chips (default roms/1101even.rev3.bin, roms/1101odd.rev3.bin)
@@ -31,7 +31,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.0.2";
+const VERSION: &str = "0.0.3";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -158,7 +158,9 @@ fn main() {
 
     let mut buf = vec![DARK; screen::SCREEN_W * screen::SCREEN_H];
     let mut turbo = false;
-    let start = Instant::now();
+    // Real-time pacing: emulated clock `base_clock` matched wall time `base_wall`.
+    let mut base_wall = Instant::now();
+    let mut base_clock = 0u64;
     let mut last_title = Instant::now();
     let mut last_clock = 0u64;
     let mut shot = 0;
@@ -226,6 +228,8 @@ fn main() {
         }
         if win.is_key_pressed(Key::F12, KeyRepeat::No) {
             turbo = !turbo;
+            base_wall = Instant::now();
+            base_clock = m.board().clocks;
         }
 
         // Run the emulation: real time, or as much as fits in ~15 ms in turbo.
@@ -236,10 +240,16 @@ fn main() {
             }
         }
         else {
-            let wall = start.elapsed().as_secs_f64();
-            let target = (wall * screen::CPU_HZ) as u64;
+            let target = base_clock + (base_wall.elapsed().as_secs_f64() * screen::CPU_HZ) as u64;
             let now = m.board().clocks;
-            let behind = target.saturating_sub(now).min((0.1 * screen::CPU_HZ) as u64);
+            let max_step = (0.1 * screen::CPU_HZ) as u64;
+            let behind = target.saturating_sub(now);
+            if behind > max_step || now > target + max_step {
+                // Too far behind (slow PC, window dragged) or ahead: start pacing afresh.
+                base_wall = Instant::now();
+                base_clock = now + behind.min(max_step);
+            }
+            let behind = behind.min(max_step);
             if behind > 0 {
                 m.run_clocks(behind);
             }

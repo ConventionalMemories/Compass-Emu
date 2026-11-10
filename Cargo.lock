@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "grid_core",
  "marty_core",

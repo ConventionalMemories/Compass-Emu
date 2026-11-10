@@ -87,3 +87,16 @@ Inputs (exact 80-bit values, from the test program's own table): 0.5, 0.95, 0.75
 without CORDIC), 1e-10, 2^-63 * 1.5 (last with 3x/(3-x^2)), 2^-64 * 1.5 (Y = x, X = 1),
 0.785 (near pi/4), 1.0, 1.5 (outside the documented range), 0, -0.5. With T1 for these, the
 model's free choices can be pinned down and FPTAN made bit-exact.
+
+## Real-time clock (MM58174) as a time base
+
+Kurt's 1101 has a new RTC battery (2026-11-10), so absolute times no longer need the AAM
+scaling. The clock's crystal is 32.768 kHz, normally within 0.01 percent; its tenths
+register gives 0.1 s steps, so timing over 60 s or more is good to about 0.2 percent.
+
+| # | What | Why | How |
+|---|------|-----|-----|
+| R1 | RTC drift against a phone clock over 24 h | Trust the time base | Set the time, compare after a day (seconds off / 86400) |
+| R2 | CPU clock in Hz (is it 5.000 MHz?) | Every clock count in the emulator assumes 5 MHz | Count a loop of known clocks between two tenths-register changes, over 60 s |
+| R3 | Frame rate in Hz (IR3 per second) | 56 vs 61 Hz estimates disagree | Count IR3 ticks over 60 s of RTC time |
+| R4 | OsGetTime against the RTC | GRiD-OS time calls were 200-430 ms with a dead clock | Time OsGetTime calls with the RTC running |

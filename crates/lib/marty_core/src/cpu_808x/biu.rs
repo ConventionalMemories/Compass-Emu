@@ -935,6 +935,7 @@ impl Intel808x {
         }
 
         let mut fetch_abort = false;
+        let mut fetch_committed = false;
 
         match self.t_cycle {
             TCycle::Ti => {
@@ -943,7 +944,25 @@ impl Intel808x {
                 // if self.ta_cycle.in_address_cycle() && self.queue.at_policy_len() {
                 //     self.biu_bus_wait_t0();
                 // }
-                self.biu_address_start(new_bus_status);
+                if matches!(self.bus_width, BusWidth::Word)
+                    && matches!(new_bus_status, BusStatus::MemWrite)
+                    && matches!(self.i.opcode, 0x80..=0x83)
+                    && self.pl_status == BusStatus::CodeFetch
+                    && matches!(self.ta_cycle, TaCycle::Ts | TaCycle::T0)
+                {
+                    // 8086, ALU r/m,imm write-back (80-83): on hardware the fetch already in its
+                    // address cycle runs T1-T4 before the write (SingleStepTests 8086: the
+                    // emulator was 2 clocks short when the next instruction starts at an even
+                    // address). MOV r/m,imm (C7) and POP do abort the fetch, so this is scoped
+                    // to 80-83 until the real cause in the EU timing is found.
+                    self.trace_comment("FETCH_COMMITTED");
+                    self.biu_bus_wait_address();
+                    self.bus_pending = BusPendingType::EuEarly;
+                    fetch_committed = true;
+                }
+                else {
+                    self.biu_address_start(new_bus_status);
+                }
             }
             TCycle::T1 | TCycle::T2 => {
                 // We can enter Tr state immediately since we are requesting the bus before a
@@ -984,7 +1003,7 @@ impl Intel808x {
 
         // If there was an active bus cycle, we're now on T4 - tick over to T1 to get
         // ready to start the new bus cycle.
-        if self.t_cycle == TCycle::T4 && self.bus_status_latch != BusStatus::CodeFetch {
+        if self.t_cycle == TCycle::T4 && (self.bus_status_latch != BusStatus::CodeFetch || fetch_committed) {
             // We should be in a T0 or Td address state now; with any prefetch aborted.
             //assert_eq!(self.ta_cycle, TaCycle::Td);
             self.cycle();

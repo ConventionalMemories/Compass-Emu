@@ -4,11 +4,78 @@ use marty_core::bus::external::ExternalBoard;
 use marty_core::cpu_common::{builder::CpuBuilder, Cpu, CpuDispatch, CpuOption, CpuType};
 
 use crate::board::GridBoard;
-use crate::screen::{FRAME_CLOCKS, LINE_CLOCKS, LINE_WORDS, SCREEN_BASE, SCREEN_H, SCREEN_W, VISIBLE_LINES};
+use crate::screen::{self, SCREEN_BASE, SCREEN_H, SCREEN_W, WIDE_H, WIDE_W};
 
-#[derive(Copy, Clone, Debug)]
+/// The Compass models. The 110x have the original board; the 112x and 113x (Compass II) the
+/// split board (video/memory board + CPU board). The 113x have the 512 x 256 screen; the
+/// xxx9 models 512K of RAM, the others 256K.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GridModel {
     Compass1101,
+    Compass1109,
+    Compass1121,
+    Compass1129,
+    Compass1131,
+    Compass1139,
+}
+
+impl GridModel {
+    pub const ALL: [GridModel; 6] = [
+        GridModel::Compass1101,
+        GridModel::Compass1109,
+        GridModel::Compass1121,
+        GridModel::Compass1129,
+        GridModel::Compass1131,
+        GridModel::Compass1139,
+    ];
+
+    /// "1101", "1139" ...
+    pub fn name(self) -> &'static str {
+        match self {
+            GridModel::Compass1101 => "1101",
+            GridModel::Compass1109 => "1109",
+            GridModel::Compass1121 => "1121",
+            GridModel::Compass1129 => "1129",
+            GridModel::Compass1131 => "1131",
+            GridModel::Compass1139 => "1139",
+        }
+    }
+
+    /// Accepts "1139", "grid1139", "compass1139".
+    pub fn parse(s: &str) -> Option<GridModel> {
+        let s = s.trim().to_ascii_lowercase();
+        let s = s.trim_start_matches("grid").trim_start_matches("compass");
+        GridModel::ALL.iter().copied().find(|m| m.name() == s)
+    }
+
+    /// RAM in bytes.
+    pub fn ram_size(self) -> usize {
+        match self {
+            GridModel::Compass1101 | GridModel::Compass1121 | GridModel::Compass1131 => 0x40000,
+            _ => 0x80000,
+        }
+    }
+
+    /// Compass II split board (memory map differs: GPIB DMA window at DFA00, video/memory
+    /// control at DFE00, application ROM sockets at 80000).
+    pub fn split_board(self) -> bool {
+        !matches!(self, GridModel::Compass1101 | GridModel::Compass1109)
+    }
+
+    /// 512 x 256 screen (113x).
+    pub fn wide_screen(self) -> bool {
+        matches!(self, GridModel::Compass1131 | GridModel::Compass1139)
+    }
+
+    /// Size of the panel in pixels.
+    pub fn screen_size(self) -> (usize, usize) {
+        if self.wide_screen() {
+            (WIDE_W, WIDE_H)
+        }
+        else {
+            (SCREEN_W, SCREEN_H)
+        }
+    }
 }
 
 pub struct GridMachine {
@@ -30,11 +97,11 @@ pub struct GridMachine {
 impl GridMachine {
     pub fn new(model: GridModel, prom_even: &[u8], prom_odd: &[u8]) -> GridMachine {
         let mut cpu = CpuBuilder::new().with_cpu_type(CpuType::Intel8086).build().expect("cpu");
-        // Plain RAM: clear the whole bus memory.
-        for a in 0..0x40000usize {
+        // Plain RAM: clear it.
+        for a in 0..model.ram_size() {
             let _ = cpu.bus_mut().write_u8(a, 0, 0);
         }
-        cpu.bus_mut().install_external(Box::new(GridBoard::new(prom_even, prom_odd)));
+        cpu.bus_mut().install_external(Box::new(GridBoard::new_model(model, prom_even, prom_odd)));
         // Calibrated against GRiDBench on a real 1101 (times scaled by its AAM, with display
         // contention on): every 8087 instruction takes ~35 clocks more than its data-sheet
         // time there, and a bare FWAIT costs ~90 clocks.
@@ -45,7 +112,7 @@ impl GridMachine {
         cpu.reset();
         // Wait states on: display contention and the GPIB pseudo-DMA window need them.
         cpu.set_option(CpuOption::EnableWaitStates(true));
-        let size = SCREEN_W * SCREEN_H / 8;
+        let size = if model.wide_screen() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
         let mut m = GridMachine {
             cpu,
             model,
@@ -63,22 +130,24 @@ impl GridMachine {
 
     /// Absolute clock of the fetch of word `w` on line `line` of frame `frame`.
     fn fetch_time(&self, frame: u64, line: u64, w: usize) -> u64 {
-        frame * FRAME_CLOCKS + line * LINE_CLOCKS + self.board().display.fetch_clock(w)
+        let d = &self.board().display;
+        frame * d.frame_clocks() + line * d.line_clocks + d.fetch_clock(w)
     }
 
     /// Capture the display fetches up to the current time.
     fn run_display(&mut self, now: u64) {
+        let d = self.board().display;
         while self.next_fetch <= now {
-            let a = (self.fetch_line as usize * LINE_WORDS + self.fetch_word) * 2;
+            let a = (self.fetch_line as usize * d.line_words + self.fetch_word) * 2;
             for i in 0..2 {
                 self.beam_frame[a + i] = self.cpu.bus().peek_u8(SCREEN_BASE + a + i).unwrap_or(0);
             }
-            let frame = self.next_fetch / FRAME_CLOCKS;
+            let frame = self.next_fetch / d.frame_clocks();
             self.fetch_word += 1;
-            if self.fetch_word == LINE_WORDS {
+            if self.fetch_word == d.line_words {
                 self.fetch_word = 0;
                 self.fetch_line += 1;
-                if self.fetch_line == VISIBLE_LINES {
+                if self.fetch_line == d.visible_lines {
                     self.fetch_line = 0;
                     self.shown_frame.copy_from_slice(&self.beam_frame);
                     self.frames += 1;
@@ -147,16 +216,48 @@ impl GridMachine {
 
     /// Screen RAM and everything below it (enough for screen::render).
     pub fn screen_ram(&self) -> Vec<u8> {
-        let end = crate::screen::SCREEN_BASE + crate::screen::SCREEN_W * crate::screen::SCREEN_H / 8;
+        let end = SCREEN_BASE + self.board().display.frame_bytes();
         let mut v = vec![0u8; end];
-        for a in crate::screen::SCREEN_BASE..end {
+        for a in SCREEN_BASE..end {
             v[a] = self.cpu.bus().peek_u8(a).unwrap_or(0);
         }
         v
     }
 
-    /// Plain RAM (first 256K) as a byte slice copy.
+    /// Plain RAM (all of it) as a byte slice copy.
     pub fn ram(&self) -> Vec<u8> {
-        (0..0x40000usize).map(|a| self.cpu.bus().peek_u8(a).unwrap_or(0)).collect()
+        (0..self.model.ram_size()).map(|a| self.cpu.bus().peek_u8(a).unwrap_or(0)).collect()
+    }
+
+    /// Panel size in pixels (512 x 256 on a 113x, else 320 x 240).
+    pub fn screen_size(&self) -> (usize, usize) {
+        self.model.screen_size()
+    }
+
+    /// The bitmap mode the screen is in now: (width, height) of the picture in screen RAM.
+    /// A 113x shows 320 x 240 centred until the OS switches the large screen on.
+    pub fn screen_mode(&self) -> (usize, usize) {
+        if self.board().wide_mode() {
+            (WIDE_W, WIDE_H)
+        }
+        else {
+            (SCREEN_W, SCREEN_H)
+        }
+    }
+
+    fn render_ram(&self, ram: &[u8]) -> Vec<u8> {
+        let (w, h) = self.screen_mode();
+        let (pw, ph) = self.screen_size();
+        screen::render_into(ram, w, h, pw, ph)
+    }
+
+    /// The last complete frame, rendered: one byte per pixel (0/1), screen_size() pixels.
+    pub fn render_display(&self) -> Vec<u8> {
+        self.render_ram(&self.display_frame())
+    }
+
+    /// Screen RAM as it is now, rendered like render_display().
+    pub fn render_now(&self) -> Vec<u8> {
+        self.render_ram(&self.screen_ram())
     }
 }

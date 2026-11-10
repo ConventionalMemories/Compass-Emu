@@ -21,7 +21,10 @@ use std::any::Any;
 use marty_core::bus::external::ExternalBoard;
 use marty_core::devices::pic::Pic;
 
+use crate::bubble::Bubble;
 use crate::gpib::Gpib;
+use crate::serial::Serial8274;
+use crate::sound::Sound;
 use crate::rtc::Rtc;
 use crate::keyboard::Keyboard;
 use crate::screen::{Beam, DisplayTiming, FRAME_CLOCKS, LINE_CLOCKS};
@@ -50,15 +53,24 @@ pub struct GridBoard {
     /// CPU clocks since power-on (advanced by tick()).
     pub clocks: u64,
     pic: Pic,
-    /// 80130 timer registers, stored only (no 80130 timer output reaches an IRQ on the Compass).
+    /// 80130 timers (8254-like at ports 08-0E). Only the counts are kept: timer 2 is the baud
+    /// clock for the 8274; no timer output reaches an IRQ on the Compass.
     timer_regs: [u8; 4],
+    pit_count: [u16; 3],
+    pit_lsb_next: [bool; 3],
+    pit_rl: [u8; 3],
     // 8741 keyboard (HLE for now)
     kbd_status: u8,
     kbd_queue: std::collections::VecDeque<u8>,
     pub kbd_commands: Vec<(u64, u8, bool)>,
-    // sound
-    pub dac_writes: Vec<(u64, u8)>,
-    pub volume: u8,
+    /// Sound DAC, volume DAC and DTMF (modem board).
+    pub sound: Sound,
+    /// 7220 bubble memory (None = no bubble image given: reads return FFh).
+    pub bubble: Option<Bubble>,
+    bubble_irq: bool,
+    /// 8274 serial controller.
+    pub serial: Serial8274,
+    serial_irq: bool,
     // Unknown/unhandled accesses
     pub log_unhandled: bool,
     pub unhandled: Vec<IoLog>,
@@ -93,11 +105,17 @@ impl GridBoard {
             clocks: 0,
             pic: Pic::new(),
             timer_regs: [0; 4],
+            pit_count: [0; 3],
+            pit_lsb_next: [true; 3],
+            pit_rl: [3; 3],
             kbd_status: 0,
             kbd_queue: Default::default(),
             kbd_commands: Vec::new(),
-            dac_writes: Vec::new(),
-            volume: 0,
+            sound: Sound::new(crate::screen::CPU_HZ, 44100),
+            bubble: None,
+            bubble_irq: false,
+            serial: Serial8274::new(),
+            serial_irq: false,
             log_unhandled: true,
             unhandled: Vec::new(),
             last_vsync_frame: u64::MAX,
@@ -139,6 +157,17 @@ impl GridBoard {
         }
         let _ = self.last_vsync_frame;
         let now = self.clocks;
+        if now >= self.sound.next_event() {
+            self.sound.advance(now);
+        }
+        if now >= self.serial.next_event() {
+            self.serial.advance(now);
+        }
+        self.sync_serial_int();
+        if let Some(b) = &mut self.bubble {
+            b.advance(now);
+        }
+        self.sync_bubble_int();
         self.gpib.advance(now);
         self.sync_gpib_int();
         self.kbd_at(0);
@@ -169,6 +198,28 @@ impl GridBoard {
             self.pic.clear_interrupt(IR_8087);
         }
         self.fpu_int = l;
+    }
+
+    fn sync_serial_int(&mut self) {
+        let l = self.serial.int_line();
+        if l && !self.serial_irq {
+            self.pic.request_interrupt(IR_SERIAL);
+        }
+        else if !l && self.serial_irq {
+            self.pic.clear_interrupt(IR_SERIAL);
+        }
+        self.serial_irq = l;
+    }
+
+    fn sync_bubble_int(&mut self) {
+        let l = self.bubble.as_ref().map(|b| b.drq()).unwrap_or(false);
+        if l && !self.bubble_irq {
+            self.pic.request_interrupt(IR_BUBBLE);
+        }
+        else if !l && self.bubble_irq {
+            self.pic.clear_interrupt(IR_BUBBLE);
+        }
+        self.bubble_irq = l;
     }
 
     fn sync_gpib_int(&mut self) {
@@ -258,6 +309,19 @@ impl ExternalBoard for GridBoard {
                 idn | (self.rtc.read(off) & 0x0F)
             }
             0xC0000..=0xCFFFF => 0xFF,
+            0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
+                let now = self.clocks + _cycles as u64;
+                let v = self.bubble.as_mut().unwrap().read((address >> 1) & 1, now);
+                self.sync_bubble_int();
+                v
+            }
+            0xDFF00..=0xDFF1F if address & 1 == 0 => {
+                let now = self.clocks + _cycles as u64;
+                let v = self.serial.read((address >> 1) & 3, now);
+                self.sync_serial_int();
+                v
+            }
+            0xDFEC0..=0xDFECF if address & 1 == 0 => self.sound.read_8255((address >> 1) & 3),
             0xDFE00..=0xDFFFF => {
                 self.log(address, false, 0xFF);
                 0xFF
@@ -275,14 +339,28 @@ impl ExternalBoard for GridBoard {
 
     fn mem_write_u8(&mut self, address: usize, data: u8, _cycles: u32) {
         match address {
+            // DFE4:2 sound DAC, DFE4:4 volume DAC (SoundTest on a real 1101).
             0xDFE40..=0xDFE4F => {
-                let off = address & 0xF;
-                if off & 1 != 0 {
-                    self.volume = data;
+                let now = self.clocks + _cycles as u64;
+                match address & 0xF {
+                    0x2 => self.sound.write_dac(data, now),
+                    0x4 => self.sound.write_volume(data, now),
+                    _ => self.log(address, true, data),
                 }
-                if off & 0x6 != 0 && off & 1 == 0 {
-                    self.dac_writes.push((self.clocks, data));
-                }
+            }
+            0xDFEC0..=0xDFECF if address & 1 == 0 => {
+                let now = self.clocks + _cycles as u64;
+                self.sound.write_8255((address >> 1) & 3, data, now);
+            }
+            0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
+                let now = self.clocks + _cycles as u64;
+                self.bubble.as_mut().unwrap().write((address >> 1) & 1, data, now);
+                self.sync_bubble_int();
+            }
+            0xDFF00..=0xDFF1F if address & 1 == 0 => {
+                let now = self.clocks + _cycles as u64;
+                self.serial.write((address >> 1) & 3, data, now);
+                self.sync_serial_int();
             }
             0xDFFC0..=0xDFFCF if self.keyboard.is_some() => {
                 self.kbd_at(_cycles);
@@ -345,7 +423,39 @@ impl ExternalBoard for GridBoard {
         match port {
             0x00 => self.pic.handle_command_register_write(data),
             0x02 => self.pic.handle_data_register_write(data),
-            0x08 | 0x0A | 0x0C | 0x0E => self.timer_regs[((port - 8) / 2) as usize] = data,
+            0x08 | 0x0A | 0x0C | 0x0E => {
+                let r = ((port - 8) / 2) as usize;
+                self.timer_regs[r] = data;
+                if r == 3 {
+                    // control word: counter in bits 6-7, read/load mode in bits 4-5
+                    let c = (data >> 6) as usize;
+                    if c < 3 && (data >> 4) & 3 != 0 {
+                        self.pit_rl[c] = (data >> 4) & 3;
+                        self.pit_lsb_next[c] = true;
+                    }
+                }
+                else {
+                    match self.pit_rl[r] {
+                        1 => self.pit_count[r] = data as u16,
+                        2 => self.pit_count[r] = (data as u16) << 8,
+                        _ => {
+                            if self.pit_lsb_next[r] {
+                                self.pit_count[r] = (self.pit_count[r] & 0xFF00) | data as u16;
+                            }
+                            else {
+                                self.pit_count[r] = (self.pit_count[r] & 0x00FF) | (data as u16) << 8;
+                            }
+                            self.pit_lsb_next[r] = !self.pit_lsb_next[r];
+                        }
+                    }
+                    if r == 2 {
+                        let now = self.clocks;
+                        self.serial.advance(now);
+                        let c = self.pit_count[2];
+                        self.serial.baud_count = if c == 0 { 65536 } else { c as u32 };
+                    }
+                }
+            }
             _ => {}
         }
     }

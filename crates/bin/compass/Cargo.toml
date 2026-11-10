@@ -1,6 +1,6 @@
 [package]
 name = "compass"
-version = "0.0.5"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Compass-Emu: GRiD Compass emulator with a window"
@@ -10,3 +10,5 @@ grid_core = { path = "../../lib/grid_core" }
 marty_core = { path = "../../lib/marty_core", default-features = false }
 minifb = "0.27"
 png = "0.17"
+cpal = "0.15"
+serialport = { version = "4.7", default-features = false }

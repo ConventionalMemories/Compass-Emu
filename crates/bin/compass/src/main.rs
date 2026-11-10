@@ -1,4 +1,4 @@
-//! Compass-Emu 0.0.5: GRiD Compass 1101 in a window.
+//! Compass-Emu 0.1.0: GRiD Compass 1101 in a window.
 //!
 //! compass [options]
 //!   --prom-even F --prom-odd F   boot PROM chips (default roms/1101even.rev3.bin, roms/1101odd.rev3.bin)
@@ -6,6 +6,9 @@
 //!   --hd F                       2101 hard disk image (GPIB 4)
 //!   --flop F                     2102 floppy image (GPIB 6)
 //!   --flop2101 F                 2101 floppy image (GPIB 5)
+//!   --bubble F                   bubble memory image (384K; a new blank one is made if F is missing)
+//!   --serial S                   serial port: tcp:PORT (listen on localhost) or a port name (COM3)
+//!   --mute                       no sound
 //!   --readonly                   never write disk changes back to the image files
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
 //! Keys: PC keys map to the Compass keys by position; Alt = CODE, Ctrl = CTRL.
@@ -26,12 +29,13 @@ use grid_core::{
     GridMachine,
     GridModel,
 };
+mod host;
 #[cfg(windows)]
 mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.0.5";
+const VERSION: &str = "0.1.0";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -40,7 +44,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]\n       [--prom-even F --prom-odd F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program."
+        "Compass-Emu {VERSION}\nusage: compass [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program."
     );
     std::process::exit(1)
 }
@@ -105,6 +109,9 @@ fn main() {
     let mut kbd = default_path("300067-01.bin");
     let mut drives: Vec<(DriveKind, PathBuf)> = Vec::new();
     let mut readonly = false;
+    let mut bubble: Option<PathBuf> = None;
+    let mut serial_spec: Option<String> = None;
+    let mut mute = false;
     let mut scale = 4u32;
     while let Some(a) = args.next() {
         let mut val = || args.next().map(PathBuf::from).unwrap_or_else(|| usage());
@@ -116,6 +123,9 @@ fn main() {
             "--flop" => drives.push((DriveKind::Floppy2102, val())),
             "--flop2101" => drives.push((DriveKind::Floppy2101, val())),
             "--readonly" => readonly = true,
+            "--bubble" => bubble = Some(val()),
+            "--serial" => serial_spec = Some(val().to_string_lossy().to_string()),
+            "--mute" => mute = true,
             "--scale" => scale = val().to_string_lossy().parse().unwrap_or(4),
             _ => usage(),
         }
@@ -129,6 +139,24 @@ fn main() {
         let img = read(path, "disk image");
         m.board_mut().gpib.drives.push(Drive::new(*kind, img));
     }
+
+    if let Some(p) = &bubble {
+        let img = fs::read(p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]);
+        m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(img));
+    }
+    let mut serial = serial_spec.as_deref().map(|sp| match host::SerialLink::open(sp) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("cannot open serial {sp}: {e}");
+            std::process::exit(1)
+        }
+    });
+    let audio = if mute { None } else { host::Audio::open() };
+    match &audio {
+        Some(a) => m.board_mut().sound = grid_core::sound::Sound::new(screen::CPU_HZ, a.rate),
+        None => m.board_mut().sound.enabled = false,
+    }
+    let mut serial_out: Vec<u8> = Vec::new();
 
     let scale_opt = match scale {
         1 => Scale::X1,
@@ -255,6 +283,25 @@ fn main() {
             }
         }
 
+        // Sound and serial port.
+        {
+            let b = m.board_mut();
+            if let Some(a) = &audio {
+                a.push(b.sound.out.drain(..));
+            }
+            if let Some(link) = &mut serial {
+                serial_out.clear();
+                serial_out.extend(b.serial.tx_out.drain(..).map(|(_, c)| c));
+                let rate = b.serial.bit_rate();
+                link.pump(&serial_out, &mut b.serial.rx_in, rate);
+                let up = link.connected();
+                b.serial.set_modem_lines(up, up);
+            }
+            else {
+                b.serial.tx_out.clear();
+            }
+        }
+
         let pix = screen::render(&m.display_frame());
         for (o, &p) in buf.iter_mut().zip(pix.iter()) {
             *o = if p != 0 { AMBER } else { DARK };
@@ -281,6 +328,14 @@ fn main() {
 
     if !readonly {
         let b = m.board();
+        if let (Some(p), Some(bub)) = (&bubble, &b.bubble) {
+            if bub.dirty {
+                match fs::write(p, &bub.image) {
+                    Ok(_) => println!("saved {}", p.display()),
+                    Err(e) => eprintln!("could not save {}: {}", p.display(), e),
+                }
+            }
+        }
         for ((_, path), d) in drives.iter().zip(b.gpib.drives.iter()) {
             if d.dirty {
                 match fs::write(path, &d.image) {

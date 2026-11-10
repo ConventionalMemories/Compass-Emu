@@ -1,4 +1,4 @@
-//! Compass-Emu 0.0.1: GRiD Compass 1101 in a window.
+//! Compass-Emu 0.0.2: GRiD Compass 1101 in a window.
 //!
 //! compass [options]
 //!   --prom-even F --prom-odd F   boot PROM chips (default roms/1101even.rev3.bin, roms/1101odd.rev3.bin)
@@ -26,11 +26,17 @@ use grid_core::{
     GridMachine,
     GridModel,
 };
+#[cfg(windows)]
+mod winkeys;
+
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.0.1";
+const VERSION: &str = "0.0.2";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
+/// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
+/// seen by the 8741 scan.
+const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
@@ -140,6 +146,15 @@ fn main() {
         std::process::exit(1)
     });
     win.set_target_fps(60);
+    #[cfg(windows)]
+    {
+        winkeys::install(win.get_window_handle());
+        for &(_, vk) in winkeys::KEYS {
+            let _ = winkeys::vk(vk); // clear stale "pressed since" bits
+        }
+    }
+    // key position -> (press clock, still held)
+    let mut held: std::collections::HashMap<(usize, u8), (u64, bool)> = Default::default();
 
     let mut buf = vec![DARK; screen::SCREEN_W * screen::SCREEN_H];
     let mut turbo = false;
@@ -149,20 +164,62 @@ fn main() {
     let mut shot = 0;
 
     while win.is_open() {
-        // Keyboard matrix from the keys held right now.
-        let mut cols = [0u8; 8];
+        // Keyboard: keys held now plus keys tapped since the last frame, each kept down at
+        // least MIN_HOLD so the 8741 scan sees it.
+        let now = m.board().clocks;
         let mut mods = 0u8;
+        let mut down: Vec<(usize, u8)> = Vec::new();
+        let mut tapped: Vec<(usize, u8)> = Vec::new();
         for k in win.get_keys() {
             match k {
                 Key::LeftShift | Key::RightShift => mods |= keyboard::MOD_SHIFT,
                 Key::LeftCtrl | Key::RightCtrl => mods |= keyboard::MOD_CTRL,
                 Key::LeftAlt | Key::RightAlt => mods |= keyboard::MOD_CODE,
                 _ => {
-                    if let Some((c, b)) = matrix_pos(k) {
-                        cols[c] |= b;
+                    if let Some(p) = matrix_pos(k) {
+                        down.push(p);
                     }
                 }
             }
+        }
+        for k in win.get_keys_pressed(KeyRepeat::No) {
+            if let Some(p) = matrix_pos(k) {
+                tapped.push(p);
+            }
+        }
+        #[cfg(windows)]
+        {
+            for &(c, vk) in winkeys::KEYS {
+                let (d, t) = winkeys::vk(vk);
+                if let Some((col, bit, _)) = keyboard::key_for_char(c) {
+                    if d {
+                        down.push((col, bit));
+                    }
+                    if t {
+                        tapped.push((col, bit));
+                    }
+                }
+            }
+            if winkeys::vk(winkeys::VK_SHIFT).0 {
+                mods |= keyboard::MOD_SHIFT;
+            }
+            if winkeys::vk(winkeys::VK_CONTROL).0 {
+                mods |= keyboard::MOD_CTRL;
+            }
+            if winkeys::vk(winkeys::VK_MENU).0 {
+                mods |= keyboard::MOD_CODE;
+            }
+        }
+        for p in tapped.iter().chain(down.iter()) {
+            held.entry(*p).or_insert((now, true));
+        }
+        for (p, st) in held.iter_mut() {
+            st.1 = down.contains(p);
+        }
+        held.retain(|_, st| st.1 || now.saturating_sub(st.0) < MIN_HOLD);
+        let mut cols = [0u8; 8];
+        for (c, b) in held.keys() {
+            cols[*c] |= *b;
         }
         if let Some(k) = &mut m.board_mut().keyboard {
             k.set_matrix(cols, mods);

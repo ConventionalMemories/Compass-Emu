@@ -1,4 +1,4 @@
-//! Compass-Emu 0.2.0: a GRiD Compass in a window.
+//! Compass-Emu 0.3.0: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -32,13 +32,15 @@ use grid_core::{
     GridMachine,
     GridModel,
 };
+mod headless;
+mod mcp;
 mod host;
 #[cfg(windows)]
 mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -47,7 +49,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program."
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -106,6 +108,13 @@ fn save_png(path: &str, pix: &[u8], w: usize, h: usize) {
 }
 
 fn main() {
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if all.first().map(|a| a == "do").unwrap_or(false) {
+        std::process::exit(headless::run(all[1..].to_vec(), default_path("")));
+    }
+    if all.first().map(|a| a == "mcp").unwrap_or(false) {
+        std::process::exit(mcp::run(default_path("")));
+    }
     let mut args = std::env::args().skip(1);
     let mut model = GridModel::Compass1101;
     let mut prom_even: Option<PathBuf> = None;

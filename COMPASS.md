@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.2.0)
+## Status (0.3.0)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -68,6 +68,48 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
 Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, application
 ROM sockets.
+
+## Build mode
+
+`compass do` runs one command on the Development Executive command line, headless and as
+fast as the PC allows (about 6x real time), then saves the screen and writes the disk back:
+
+    compass do [--model M] --hd disk.img [--roms DIR] [--shot screen.png] [--start S] \
+               [--max-seconds N] [--bubble F] "Do build"
+
+The model defaults to the 1129 (512K, 11xx build of GRiD-OS). It waits for a steady `=>`
+prompt, types the command, and stops when a new prompt ends the screen ("GRIDBUILD done
+after N emulated seconds"; exit code 2 at the time limit). Code: `grid_core::session`.
+
+`tools/gridbuild.py` (the one-click build of the dev environment) uses it in place of MAME
+when `compass-emu\compass.exe` is in the GRiD-MAME folder: it switches its temporary disk
+copy to the build of GRiD-OS the model needs (gridmodel.py), unpacks MAME's ROM sets into
+`compass-emu\roms` and calls `compass do`. `GRID_MODEL` picks another model, `GRID_EMU`
+another compass.exe; without compass.exe it falls back to MAME's grid1139 as before. The
+disk needs `Do~Run~` from the 3.1.5 floppy in Programs (the disk's own `Do~Run Com~` gives
+"33 File is not available"). hello.pas builds, runs and returns its output in ~38 s.
+
+## Claude Code hook (MCP server)
+
+`compass mcp` is an MCP server on stdin/stdout. Add it to Claude Code with
+
+    claude mcp add compass -- C:\GRiD-MAME\compass-emu\compass.exe mcp
+
+or in `.mcp.json`: `{"mcpServers": {"compass": {"command": "C:\\GRiD-MAME\\compass-emu\\compass.exe", "args": ["mcp"]}}}`.
+
+| Tool | What it does |
+|------|--------------|
+| `grid_build` | gridbuild.py build SOURCE: compiler/linker messages plus the GRiD screen at the end |
+| `grid_boot` | start a Compass from a hard disk image (a copy in memory), wait for the prompt, return the screen |
+| `grid_type` | type keys (`{ret}`, `{code+x}` ...), optionally wait for the next `=>` prompt; returns the screen |
+| `grid_run` | run N emulated seconds, return the screen |
+| `grid_screen` | the screen (PNG), emulated time, CS:IP, screen mode |
+| `grid_read_memory` | hex dump at SSSS:OOOO or a linear address |
+| `grid_save_disk` | write the running Compass's disk to a file |
+| `grid_fragment` | time 8086/8087 machine code (hex or .bin) in CPU clocks, cycle-accurate with display contention |
+
+`GRID_ROOT` = the GRiD-MAME folder (default: the folder above compass.exe), `GRID_MODEL` =
+default model (1129). Code: crates/bin/compass/src/mcp.rs.
 
 ## Window version
 

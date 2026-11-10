@@ -8,3 +8,4 @@ license = "MIT"
 i8087 = { path = "../i8087" }
 marty_core = { path = "../marty_core", default-features = false }
 log = "0.4"
+png = "0.17"

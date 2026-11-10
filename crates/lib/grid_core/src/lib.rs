@@ -17,6 +17,8 @@ pub mod rtc;
 pub mod machine;
 pub mod screen;
 pub mod roms;
+pub mod session;
+pub mod fragment;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};

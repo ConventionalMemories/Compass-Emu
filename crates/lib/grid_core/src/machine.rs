@@ -24,6 +24,12 @@ impl GridMachine {
             let _ = cpu.bus_mut().write_u8(a, 0, 0);
         }
         cpu.bus_mut().install_external(Box::new(GridBoard::new(prom_even, prom_odd)));
+        // Calibrated against GRiDBench on a real 1101: every 8087 instruction takes ~50 clocks
+        // more than its data-sheet time there, and a bare FWAIT costs ~100 clocks.
+        let mut fpu = i8087::I8087::new();
+        fpu.extra_busy = 50;
+        fpu.wait_min = 100;
+        cpu.bus_mut().install_coprocessor(Box::new(crate::fpu::Fpu(fpu)));
         cpu.reset();
         GridMachine { cpu, model, instructions: 0 }
     }
@@ -44,11 +50,22 @@ impl GridMachine {
         };
         let _ = self.cpu.step_finish(None);
         self.instructions += 1;
+        let fpu_int = self.cpu.bus().coprocessor().map(|c| c.irq()).unwrap_or(false);
         let board = self.board_mut();
+        board.set_fpu_int(fpu_int);
         board.tick(c);
         let intr = board.intr();
         self.cpu.set_intr(intr);
         c
+    }
+
+    /// The 8087.
+    pub fn fpu(&self) -> Option<&i8087::I8087> {
+        self.cpu.bus().coprocessor().and_then(|c| c.as_any().downcast_ref::<crate::fpu::Fpu>()).map(|f| &f.0)
+    }
+
+    pub fn fpu_mut(&mut self) -> Option<&mut i8087::I8087> {
+        self.cpu.bus_mut().coprocessor_mut().and_then(|c| c.as_any_mut().downcast_mut::<crate::fpu::Fpu>()).map(|f| &mut f.0)
     }
 
     /// Run for `clocks` CPU clocks.

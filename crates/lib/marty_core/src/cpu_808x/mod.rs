@@ -485,6 +485,7 @@ pub struct Intel808x {
     data_bus: u16,
     bhe: bool,         // Bus High Enable. Set when the high (odd) byte of the data bus is valid.
     last_ea: u16,      // Last calculated effective address. Used by 0xFE instructions
+    last_ea_seg: Segment, // Segment of the last calculated EA (for the 8087)
     bus: BusInterface, // CPU owns Bus
     i8288: I8288,      // Intel 8288 Bus Controller
     pc: u16,           // Program counter points to the next instruction to be fetched

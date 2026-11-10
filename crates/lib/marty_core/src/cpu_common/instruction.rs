@@ -106,6 +106,8 @@ pub struct Instruction {
     pub segment_override: Option<Segment>,
     pub operand1_type: OperandType,
     pub operand2_type: OperandType,
+    /// Raw ModR/M byte (0 when the instruction has none).
+    pub modrm: u8,
 }
 
 impl Default for Instruction {
@@ -122,6 +124,7 @@ impl Default for Instruction {
             segment_override: None,
             operand1_type: OperandType::NoOperand,
             operand2_type: OperandType::NoOperand,
+            modrm: 0,
         }
     }
 }

@@ -119,6 +119,7 @@ impl Intel808x {
             _ => panic!("Can't calculate EA for register")
         };
 
+        self.last_ea_seg = seg;
         self.last_ea = offset; // Save last EA to do voodoo when LEA is called with reg, reg operands
         (seg, offset)
     }

@@ -69,6 +69,7 @@ pub struct GridBoard {
     /// 8741 keyboard MCU (LLE). When None, a simple HLE queue answers DFFC0/DFFC2.
     pub keyboard: Option<Keyboard>,
     kbd_irq: bool,
+    fpu_int: bool,
     /// X2210 machine ID / serial number nibbles (16 bytes).
     pub machine_id: [u8; 16],
     gpib_int: bool,
@@ -103,6 +104,7 @@ impl GridBoard {
             rtc: Rtc::new(),
             keyboard: None,
             kbd_irq: false,
+            fpu_int: false,
             machine_id: [0; 16],
             gpib_int: false,
             dma_wait_limit: 20_000_000,
@@ -148,6 +150,17 @@ impl GridBoard {
             }
             self.kbd_irq = l;
         }
+    }
+
+    /// 8087 INT line (IR6).
+    pub fn set_fpu_int(&mut self, l: bool) {
+        if l && !self.fpu_int {
+            self.pic.request_interrupt(IR_8087);
+        }
+        else if !l && self.fpu_int {
+            self.pic.clear_interrupt(IR_8087);
+        }
+        self.fpu_int = l;
     }
 
     fn sync_gpib_int(&mut self) {

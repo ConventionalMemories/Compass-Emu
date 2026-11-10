@@ -22,7 +22,8 @@ pub trait ExternalBoard: Any {
         0
     }
     /// Extra wait states (CPU cycles) for an access to plain RAM (not a claimed range).
-    fn ram_wait(&mut self, _address: usize, _cycles: u32, _write: bool) -> u32 {
+    /// `now` is the absolute CPU clock count at T2 of the bus cycle.
+    fn ram_wait(&mut self, _address: usize, _now: u64, _write: bool) -> u32 {
         0
     }
 

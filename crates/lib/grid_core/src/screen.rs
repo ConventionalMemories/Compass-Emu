@@ -16,6 +16,72 @@ pub const SCREEN_BASE: usize = 0x400;
 pub const SCREEN_W: usize = 320;
 pub const SCREEN_H: usize = 240;
 
+/// Words the display fetches per visible line (320 pixels / 16).
+pub const LINE_WORDS: usize = SCREEN_W / 16;
+
+/// Display RAM contention (patent US 4,571,456): one arbiter, clocked at 15 MHz (3 states per
+/// CPU clock), shares the whole RAM between the CPU and the display. The display fetches one
+/// 16-bit word every `fetch_period` states during the visible part of a visible line and holds
+/// the RAM for `fetch_len` states; it always wins. A CPU memory access that would need the RAM
+/// during a display slot waits (whole CPU clocks) until the slot is over. During horizontal and
+/// vertical blank the CPU runs at full speed. All values are adjustable until they are measured
+/// on a real 1101.
+#[derive(Copy, Clone, Debug)]
+pub struct DisplayTiming {
+    pub contention: bool,
+    /// 15 MHz states between display fetches (36 = 2.4 us = 12 CPU clocks).
+    pub fetch_period: u32,
+    /// 15 MHz states the display holds the RAM for each fetch (~7 = 0.47 us).
+    pub fetch_len: u32,
+    /// 15 MHz states from the start of a line to its first fetch.
+    pub fetch_offset: u32,
+    /// 15 MHz states a CPU read needs the RAM, counted from the start of its T2.
+    pub cpu_len: u32,
+    /// The same for a CPU write.
+    pub cpu_write_len: u32,
+    /// Line on which IR3 (vertical sync) rises; it falls at the start of line 0.
+    pub ir3_line: u64,
+}
+
+impl Default for DisplayTiming {
+    fn default() -> Self {
+        DisplayTiming { contention: true, fetch_period: 36, fetch_len: 6, fetch_offset: 0, cpu_len: 3, cpu_write_len: 2, ir3_line: VISIBLE_LINES }
+    }
+}
+
+impl DisplayTiming {
+    /// Wait states for a CPU RAM access whose T2 starts at CPU clock `now`.
+    #[inline]
+    pub fn ram_wait(&self, now: u64, write: bool) -> u32 {
+        if !self.contention {
+            return 0;
+        }
+        let in_frame = now % FRAME_CLOCKS;
+        if in_frame >= VISIBLE_LINES * LINE_CLOCKS {
+            return 0;
+        }
+        let x = (in_frame % LINE_CLOCKS) as i64 * 3 - self.fetch_offset as i64;
+        let w = if write { self.cpu_write_len } else { self.cpu_len } as i64;
+        let (p, l) = (self.fetch_period as i64, self.fetch_len as i64);
+        let k0 = if x < 0 { 0 } else { x / p };
+        for k in [k0, k0 + 1] {
+            if k >= LINE_WORDS as i64 {
+                break;
+            }
+            let s = k * p;
+            if x < s + l && x + w > s {
+                return ((s + l - x + 2) / 3) as u32;
+            }
+        }
+        0
+    }
+
+    /// CPU clock (within a line) at which the display fetches word `k` of the line.
+    pub fn fetch_clock(&self, k: usize) -> u64 {
+        (self.fetch_offset as u64 + k as u64 * self.fetch_period as u64) / 3
+    }
+}
+
 /// Beam position at a given CPU clock count since power-on.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Beam {

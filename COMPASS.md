@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 All Compass models eventually; the 1101 comes first.
 
-## Status (0.0.4, test build)
+## Status (0.0.5, test build)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -22,11 +22,18 @@ All Compass models eventually; the 1101 comes first.
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact
   arithmetic in all rounding modes, all instructions, exceptions to IR6. Transcendentals
   are computed in 113-bit precision and rounded once. Busy time per instruction is fitted
-  to GRiDBench measurements of a real 1101 (mean error 1.9% over 15 tests; a bare FWAIT
-  costs ~100 clocks there).
+  to GRiDBench measurements of a real 1101 (mean error 1.8% over 16 tests; a bare FWAIT
+  costs ~90 clocks there).
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 309 clocks a line, 266
+  lines (60.8 Hz), IR3 at the start of vertical blank, and display RAM contention: the
+  display takes one RAM slot every 12 clocks in the visible part of each line, and a CPU
+  access that collides waits. The settings are adjustable and fitted to GRiDBench's 8086
+  and memory numbers (mean error 2.0% over 27 tests) until they are measured directly.
+  The window shows each screen word as the beam fetched it, so racing the beam (and
+  tearing) looks as on the real screen.
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.
 
-Not yet: bubble memory, serial, modem/sound, display RAM contention, 1139 and
+Not yet: bubble memory, serial, modem/sound, 1139 and
 later models.
 
 ## Window version
@@ -52,7 +59,8 @@ Environment variables: `GRID_HD`, `GRID_FLOP` (2102), `GRID_FLOP2101` for drive 
 `GRID_GPIB_TRACE=1` writes gpib_trace.txt; `GRID_DUMP=file` saves RAM at the end.
 
 `gridfrag code.bin` runs a code fragment at 1000:0000 until HLT and prints the clocks and
-the 8087 state (`FPU_EXTRA`, `FPU_WAITMIN` override the 8087 timing fit).
+the 8087 state (`FPU_EXTRA`, `FPU_WAITMIN` override the 8087 timing fit; `DISP_CONTENTION=0`,
+`DISP_FETCH_LEN`, `DISP_CPU_LEN`, `DISP_CPU_WRITE_LEN` the display contention).
 
 ROMs and disk images are not included.
 

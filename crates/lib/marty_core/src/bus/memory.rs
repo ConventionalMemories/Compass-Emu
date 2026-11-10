@@ -165,7 +165,7 @@ impl BusInterface {
             if self.memory_mask[address] & MEM_MMIO_BIT == 0 {
                 // Address is not mapped.
                 if let Some(ext) = &mut self.external {
-                    return Ok(ext.ram_wait(address, cycles, false));
+                    return Ok(ext.ram_wait(address, self.cpu_now, false));
                 }
                 return Ok(DEFAULT_WAIT_STATES);
             }
@@ -208,7 +208,7 @@ impl BusInterface {
             if self.memory_mask[address] & MEM_MMIO_BIT == 0 {
                 // Address is not mapped.
                 if let Some(ext) = &mut self.external {
-                    return Ok(ext.ram_wait(address, cycles, true));
+                    return Ok(ext.ram_wait(address, self.cpu_now, true));
                 }
                 return Ok(DEFAULT_WAIT_STATES);
             }

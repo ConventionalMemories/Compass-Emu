@@ -99,6 +99,11 @@ impl BusInterface {
         Ok(())
     }
 
+    /// All of memory as a mutable slice (no mmio): for a core that reads plain RAM directly.
+    pub fn memory_mut(&mut self) -> &mut [u8] {
+        &mut self.memory
+    }
+
     /// Return a slice of memory at the specified location and length.
     /// Does not resolve mmio addresses.
     pub fn get_slice_at(&self, start: usize, len: usize) -> &[u8] {

@@ -8,11 +8,13 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.0)
+## Status (0.3.3)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
   errors, about 94.5% of tests with exact clock counts.
+- A fast whole-instruction 8086 core for build mode (`grid_core::fast86`), switchable at any
+  instruction boundary; same SingleStepTests results for registers, flags and memory.
 - 1101 board (`crates/lib/grid_core`): 16K boot PROM, 256K RAM, 80130 interrupt
   controller, IR3 vertical blank, 320x240 screen at 0400h.
 - TMS9914 GPIB with the pseudo-DMA window at E0000h; 2101 hard disk (address 4), 2101
@@ -73,10 +75,21 @@ ROM sockets.
 ## Build mode
 
 `compass do` runs one command on the Development Executive command line, headless and as
-fast as the PC allows (about 6x real time), then saves the screen and writes the disk back:
+fast as the PC allows, then saves the screen and writes the disk back:
 
     compass do [--model M] --hd disk.img [--roms DIR] [--shot screen.png] [--start S] \
-               [--max-seconds N] [--bubble F] "Do build"
+               [--max-seconds N] [--bubble F] [--state F] [--exact] "Do build"
+
+It runs on the fast CPU core (`grid_core::fast86`, about 60x real time) unless `--exact` is
+given (MartyPC's cycle-exact core, about 8x). The fast core executes whole instructions with
+approximate clock counts: no prefetch queue, display contention or RAM wait states, and the
+display is captured once per frame instead of as the beam passes. Devices still run on the
+same clock (the GPIB DMA window keeps its wait states, so disk transfers pace as before), so
+GRiD-OS, the compiler and the linker behave the same; only timing differs. It passes all
+630,000 SingleStepTests 8086 v1 tests (`SST_DIR=.../8086/v1 cargo test -p grid_core --test
+fast86_sst`), except the flags a divide error pushes (the real CPU pushes what its divide
+microcode left, the fast core its own). hello.run and GRiDTiles (11 modules) build
+byte-identical on both cores. `GridMachine::set_fast` switches cores between instructions.
 
 The model defaults to the 1129 (512K, 11xx build of GRiD-OS). It waits for a steady `=>`
 prompt, types the command, and stops when a new prompt ends the screen ("GRIDBUILD done
@@ -94,7 +107,10 @@ another compass.exe; without compass.exe it falls back to MAME's grid1139 as bef
 gridbuild.py keeps the saved state and the prepared disk it booted from in
 `compass-emu\states` (one pair per model, merged disk and compass.exe), and checks the disk
 with `gridfs check` after each resumed build (on failure it builds again with a full boot).
-hello.pas: 15 s per build (the compile itself is 125 emulated seconds). The
+hello.pas: 3.3 s per build on the fast core (the compile itself is 112 emulated seconds;
+15 s with `GRID_EXACT=1`, which passes `--exact`). GRiDTiles: 48 s (exact: 6 min). 256K
+models (1101, 1121, 1131) can't build: the compiler stops with "Main memory (RAM) is full".
+The
 disk needs `Do~Run~` from the 3.1.5 floppy in Programs (the disk's own `Do~Run Com~` gives
 "33 File is not available"). 
 
@@ -109,7 +125,7 @@ or in `.mcp.json`: `{"mcpServers": {"compass": {"command": "C:\\GRiD-MAME\\compa
 | Tool | What it does |
 |------|--------------|
 | `grid_build` | gridbuild.py build SOURCE: compiler/linker messages plus the GRiD screen at the end |
-| `grid_boot` | start a Compass from a hard disk image (a copy in memory), wait for the prompt, return the screen |
+| `grid_boot` | start a Compass from a hard disk image (a copy in memory), wait for the prompt, return the screen; `fast: true` uses the fast core |
 | `grid_type` | type keys (`{ret}`, `{code+x}` ...), optionally wait for the next `=>` prompt; returns the screen |
 | `grid_run` | run N emulated seconds, return the screen |
 | `grid_screen` | the screen (PNG), emulated time, CS:IP, screen mode |

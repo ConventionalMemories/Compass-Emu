@@ -10,6 +10,9 @@
 //! the changed disk back to the image. Prints "GRIDBUILD done after N emulated seconds".
 //! Exit code 0 when the prompt came back, 2 at the time limit (default 10800 s), 1 on errors.
 //!
+//! Runs on the fast CPU core (whole instructions, approximate clocks) unless --exact is
+//! given; build output does not depend on timing, so builds take the fast path.
+//!
 //! --state F: if F exists, start from that saved state (taken at the prompt) instead of
 //! booting, with the disk image from --hd attached; otherwise boot and save the state at the
 //! prompt into F. The disk may have gained files since the state was saved (GRiD-OS reads
@@ -33,6 +36,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     let mut bubble: Option<PathBuf> = None;
     let mut state: Option<PathBuf> = None;
     let mut command: Option<String> = None;
+    let mut exact = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| fail(&format!("{a} needs a value")));
@@ -45,6 +49,8 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             "--max-seconds" => max_s = val().parse().unwrap_or(10800.0),
             "--bubble" => bubble = Some(val().into()),
             "--state" => state = Some(val().into()),
+            "--exact" => exact = true,
+            "--fast" => exact = false,
             _ if a.starts_with("--") => fail(&format!("unknown option {a}")),
             _ => command = Some(a),
         }
@@ -86,6 +92,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     if std::env::var("GRID_NO_CONTENTION").is_ok() {
         m.board_mut().display.contention = false;
     }
+    m.set_fast(!exact);
     let mut s = Session::new(m);
 
     if from_state {
@@ -122,8 +129,9 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
         }
     };
     eprintln!(
-        "Compass {}: {:.0} emulated seconds in {:.1} s ({:.0}x)",
+        "Compass {} ({} core): {:.0} emulated seconds in {:.1} s ({:.0}x)",
         model.name(),
+        if exact { "exact" } else { "fast" },
         s.seconds(),
         wall.elapsed().as_secs_f64(),
         s.seconds() / wall.elapsed().as_secs_f64().max(0.001)

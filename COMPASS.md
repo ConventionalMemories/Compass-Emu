@@ -47,8 +47,8 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   |-------|-------|-----|--------|----------------|
   | 1101 | original | 256K | 320 x 240 | 1101 rev 3 |
   | 1109 | original | 512K | 320 x 240 | its own if present, else 1101 rev 3 |
-  | 1121 | split | 256K | 320 x 240 | its own if present (never dumped), else 1139 |
-  | 1129 | split | 512K | 320 x 240 | its own if present, else 1139 |
+  | 1121 | split | 256K | 320 x 240 | its own if present (never dumped), else 1101 rev 3 |
+  | 1129 | split | 512K | 320 x 240 | its own if present, else 1101 rev 3 |
   | 1131 | split | 256K | 512 x 256 | its own if present (never dumped), else 1139 |
   | 1139 | split | 512K | 512 x 256 | 1139 |
 
@@ -59,10 +59,12 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   113x shows the 320 x 240 picture centred. Large-screen timing is estimated (the same
   309-clock line, 269 lines, 32 display fetches a line, one every 8 clocks) and fits
   GRiDBench on a real 1137 at 3.1% mean error.
-  1101, 1109, 1131 and 1139 boot to the Executive (1131/1139 with the 113x build). The
-  1121/1129 need their own boot PROM for the 11xx build: the 1139 PROM keeps its data at
-  0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum error
-  in CCOS". The 113x build needs the large screen.
+  All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
+  build). The 1139 PROM can't stand in for the missing 1121/1129 PROMs: it keeps its data
+  at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
+  error in CCOS". So the 1121/1129 boot the 1101 rev 3 PROM, with the split board also
+  answering the 1101's DMA window at E0000h (`GridBoard::e0000_dma`). ROM choice:
+  grid_core/src/roms.rs.
 
 Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, application
 ROM sockets.

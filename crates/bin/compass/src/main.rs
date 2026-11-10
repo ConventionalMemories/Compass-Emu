@@ -63,32 +63,6 @@ fn default_path(name: &str) -> PathBuf {
     PathBuf::from("roms").join(name)
 }
 
-/// Boot PROM chips for `model`: the model's own dump when it is in the roms folder (MAME
-/// names), else the nearest one we have: 1101 rev 3 for the 1109, the 1139's for the split
-/// board models (1121 and 1131 were never dumped).
-fn default_prom(model: GridModel) -> (PathBuf, PathBuf) {
-    let own = (
-        default_path(&format!("{}even.ccprom.bin", model.name())),
-        default_path(&format!("{}odd.ccprom.bin", model.name())),
-    );
-    if own.0.exists() && own.1.exists() {
-        return own;
-    }
-    if model.split_board() {
-        let p = (default_path("1139even.ccprom.bin"), default_path("1139odd.ccprom.bin"));
-        if model != GridModel::Compass1139 {
-            eprintln!("no {} boot PROM in roms, using the 1139's", model.name());
-        }
-        p
-    }
-    else {
-        if model != GridModel::Compass1101 {
-            eprintln!("no {} boot PROM in roms, using the 1101 rev 3", model.name());
-        }
-        (default_path("1101even.rev3.bin"), default_path("1101odd.rev3.bin"))
-    }
-}
-
 fn read(path: &Path, what: &str) -> Vec<u8> {
     match fs::read(path) {
         Ok(d) => d,
@@ -170,27 +144,26 @@ fn main() {
         }
     }
 
+    let roms = grid_core::roms::find(model, &default_path(""));
     let (even, odd) = if let Some(p) = &prom {
         let d = read(p, "boot PROM");
         (d.iter().step_by(2).copied().collect(), d.iter().skip(1).step_by(2).copied().collect())
     }
     else {
-        let (de, dodd) = default_prom(model);
+        if prom_even.is_none() {
+            if let Some(n) = &roms.note {
+                eprintln!("{n}");
+            }
+        }
         (
-            read(&prom_even.unwrap_or(de), "boot PROM (even)"),
-            read(&prom_odd.unwrap_or(dodd), "boot PROM (odd)"),
+            read(&prom_even.unwrap_or(roms.prom_even.clone()), "boot PROM (even)"),
+            read(&prom_odd.unwrap_or(roms.prom_odd.clone()), "boot PROM (odd)"),
         )
     };
-    let kbd = kbd.unwrap_or_else(|| {
-        let k2 = default_path("300001-02.bin");
-        if model.split_board() && k2.exists() {
-            k2
-        }
-        else {
-            default_path("300067-01.bin")
-        }
-    });
+    let kbd = kbd.unwrap_or(roms.keyboard.clone());
     let mut m = GridMachine::new(model, &even, &odd);
+    // A 1101 PROM on a split board needs the 1101's DMA window too.
+    m.board_mut().e0000_dma = model.split_board() && !model.wide_screen();
     m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")));
     let (sw, sh) = m.screen_size();
     let title = format!("Compass-Emu {VERSION} - GRiD Compass {}", model.name());

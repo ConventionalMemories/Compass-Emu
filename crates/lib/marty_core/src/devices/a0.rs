@@ -1,0 +1,192 @@
+/*
+    MartyPC
+    https://github.com/dbalsom/martypc
+
+    Copyright 2022-2026 Daniel Balsom
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the “Software”),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+    --------------------------------------------------------------------------
+
+    devices::a0.rs
+
+    Implements the A0 NMI port
+
+    // TODO: Move this a component model, and make it part of a motherboard type
+*/
+
+#[derive(Copy, Clone, Debug)]
+pub enum A0Type {
+    PCXT,
+    PCJr,
+    Tandy1000,
+}
+
+use crate::{
+    bus::{BusInterface, DeviceRunTimeUnit, IoDevice},
+    cpu_common::LogicAnalyzer,
+    devices::pit::Pit,
+};
+
+pub struct A0Register {
+    a0type:  A0Type,
+    a0_byte: u8,
+
+    // PCJr specific
+    kbd_latch: bool,
+    // register bits 0-3
+    nmi_enabled: bool,
+    ir_test_ena: bool,
+    clock_1_select: bool,
+    hrq_disable: bool,
+
+    clear_kbd_latch:    bool,
+    tandy_aperture_sel: u8,
+    tandy_enable_256k:  bool,
+}
+
+impl IoDevice for A0Register {
+    fn read_u8(&mut self, _port: u16, _delta: DeviceRunTimeUnit) -> u8 {
+        // Catch up to CPU state.
+        //self.catch_up(delta);
+
+        match self.a0type {
+            A0Type::PCJr => {
+                log::trace!("Flagging kbd_latch to be cleared.");
+                self.clear_kbd_latch = true;
+                // Value returned not important?
+                0xFF
+            }
+            _ => 0xFF,
+        }
+    }
+
+    fn write_u8(
+        &mut self,
+        _port: u16,
+        data: u8,
+        _bus_opt: Option<&mut BusInterface>,
+        _delta: DeviceRunTimeUnit,
+        _analyzer: Option<&mut LogicAnalyzer>,
+    ) {
+        self.a0_byte = data;
+        log::debug!("A0 NMI Control Register Write: {:08b}", data);
+        match self.a0type {
+            A0Type::PCJr => {
+                self.nmi_enabled = (data & 0x80) != 0;
+                self.ir_test_ena = (data & 0x40) != 0;
+                self.clock_1_select = (data & 0x20) != 0;
+                self.hrq_disable = (data & 0x10) != 0;
+            }
+            A0Type::Tandy1000 => {
+                self.nmi_enabled = (data & 0x80) != 0;
+                self.tandy_aperture_sel = (data >> 1) & 0x07;
+                self.tandy_enable_256k = (data >> 4) & 0x01 != 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn port_list(&self) -> Vec<(String, u16)> {
+        vec![(String::from("A0 NMI Control"), 0xA0)]
+    }
+}
+
+impl A0Register {
+    pub fn new(a0type: A0Type) -> A0Register {
+        A0Register {
+            a0type,
+            a0_byte: 0,
+            kbd_latch: false,
+            // ZD7 / D1 - NMI Enable (PCjr)
+            nmi_enabled: false,
+            ir_test_ena: false,
+            clock_1_select: false,
+            hrq_disable: false,
+            clear_kbd_latch: false,
+            tandy_aperture_sel: 0,
+            tandy_enable_256k: false,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.a0_byte = 0;
+        self.kbd_latch = false;
+        self.nmi_enabled = false;
+        self.ir_test_ena = false;
+        self.clock_1_select = false;
+        self.hrq_disable = false;
+        self.clear_kbd_latch = false;
+        self.tandy_aperture_sel = 0;
+        self.tandy_enable_256k = false;
+    }
+
+    pub fn enable_nmi(&mut self, state: bool) {
+        self.nmi_enabled = state;
+    }
+
+    // Tell the A0 register the state of the keyboard latch. The latch is not actually owned by the
+    // A0 register - this should be updated in the keyboard handling code.
+    pub fn set_kbd_latch(&mut self, state: bool) {
+        log::debug!("Setting kb_latch: {}", state);
+        self.kbd_latch = state;
+    }
+
+    pub fn is_nmi_enabled(&self) -> bool {
+        self.nmi_enabled
+    }
+
+    pub fn ir_test_ena(&self) -> bool {
+        self.ir_test_ena
+    }
+
+    pub fn clock_1_select(&self) -> bool {
+        self.clock_1_select
+    }
+
+    pub fn hrq_disable(&self) -> bool {
+        self.hrq_disable
+    }
+
+    pub fn tandy_256k_enabled(&self) -> bool {
+        self.tandy_enable_256k
+    }
+
+    pub fn tandy_aperture_sel(&self) -> u8 {
+        self.tandy_aperture_sel
+    }
+
+    pub fn read(&self) -> u8 {
+        self.a0_byte
+    }
+
+    pub fn run(&mut self, _pit: &mut Pit, _us: f64) -> (bool, bool) {
+        // The run method doesn't need to process time. If the clear_kbd_latch flag is set, then we
+        // clear the NMI latch.
+        // Otherwise, return the new value of the keyboard latch and NMI line.
+
+        if self.clear_kbd_latch {
+            log::debug!("Clearing NMI latch");
+            self.clear_kbd_latch = false;
+            self.kbd_latch = false;
+        }
+
+        (self.kbd_latch, self.kbd_latch & self.nmi_enabled)
+    }
+}

@@ -81,14 +81,22 @@ fast as the PC allows (about 6x real time), then saves the screen and writes the
 The model defaults to the 1129 (512K, 11xx build of GRiD-OS). It waits for a steady `=>`
 prompt, types the command, and stops when a new prompt ends the screen ("GRIDBUILD done
 after N emulated seconds"; exit code 2 at the time limit). Code: `grid_core::session`.
+`--state F` boots once and saves the machine at the prompt into F (`GridMachine::save_state`:
+RAM, CPU, all devices, 8087; not the disk image); later runs resume from F in under a
+second with the disk from `--hd` attached, which may have gained files since (GRiD-OS
+re-reads the bitmap on every attach).
 
 `tools/gridbuild.py` (the one-click build of the dev environment) uses it in place of MAME
 when `compass-emu\compass.exe` is in the GRiD-MAME folder: it switches its temporary disk
 copy to the build of GRiD-OS the model needs (gridmodel.py), unpacks MAME's ROM sets into
 `compass-emu\roms` and calls `compass do`. `GRID_MODEL` picks another model, `GRID_EMU`
 another compass.exe; without compass.exe it falls back to MAME's grid1139 as before. The
+gridbuild.py keeps the saved state and the prepared disk it booted from in
+`compass-emu\states` (one pair per model, merged disk and compass.exe), and checks the disk
+with `gridfs check` after each resumed build (on failure it builds again with a full boot).
+hello.pas: 15 s per build (the compile itself is 125 emulated seconds). The
 disk needs `Do~Run~` from the 3.1.5 floppy in Programs (the disk's own `Do~Run Com~` gives
-"33 File is not available"). hello.pas builds, runs and returns its output in ~38 s.
+"33 File is not available"). 
 
 ## Claude Code hook (MCP server)
 

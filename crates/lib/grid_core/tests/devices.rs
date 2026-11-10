@@ -70,14 +70,16 @@ fn serial_loopback_timing() {
         s.write(2, r, 0);
         s.write(2, v, 0);
     }
+    // a byte reaches the shift register one transmit clock (33) after the write; the buffer
+    // is free again then, so B goes in after that
     s.write(0, b'A', 0);
-    s.write(0, b'B', 0);
+    s.write(0, b'B', 100);
     s.advance(1_000_000);
     let out: Vec<_> = s.tx_out.iter().cloned().collect();
     assert_eq!(out.len(), 2);
     let cc = 33 * 16 * 10;
-    assert_eq!(out[0], (cc, b'A'));
-    assert_eq!(out[1], (2 * cc, b'B'));
+    assert_eq!(out[0], (33 + cc, b'A'));
+    assert_eq!(out[1], (33 + 2 * cc, b'B'));
     s.rx_in.extend(b"hi");
     s.advance(1_000_000);
     s.advance(1_000_000 + cc);

@@ -1,35 +1,21 @@
 ---
 name: Bug report
-about: Create a bug report for a current feature that isn't working properly
+about: Something behaves differently from a real GRiD Compass, or doesn't work
 title: ''
 labels: bug
-assignees: dbalsom
+assignees: ''
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+**What happened**
+What you saw, and what you expected (or what a real Compass does).
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '...'
-3. Scroll down to '...'
-4. See error
+**How to reproduce**
+1. Model (`--model`) and how you started it (which .bat or command line)
+2. Disk image / GRiD-OS version, and any ROMs given with `--rom0..3`
+3. Steps in GRiD-OS
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+**Version**
+Compass-Emu version (window title), and Windows or Linux.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
-
-**Environment (please complete the following information):**
- - OS Version / Distribution: [e.g., Windows 10, Linux / Ubuntu 23 ]
- - CPU model
- - GPU model
-
-**Build info**
-  - Using a binary release? If so, list version
-  - Built from source? If so, indicate branch / commit / tag
-
-**Additional context**
-Add any other context about the problem here.
+**Screenshots or files**
+F11 saves a screenshot. A small disk image or program that shows the problem helps most.

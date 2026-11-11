@@ -1,0 +1,677 @@
+
+## [0.5.0](https://github.com/dbalsom/martypc/releases/tag/0.4.2) (2026-XX-XX)
+
+## New Features
+
+### Multi-head Support
+
+MartyPC once again supports multiple display windows and multiple render targets per video adapter. Each configured window can select its own video card, aperture, scaler mode, scaler preset, size, and window behavior.
+
+A single video adapter can also feed multiple render targets, allowing the same output to be visualized with different monitor and shader configurations. Display targets can be reassigned between windows at runtime, with unassigned targets displayed in the main viewport.
+
+### Sampled Machine Sounds
+
+MartyPC can now play sampled physical-machine sound effects, beginning with TEAC FD-55 floppy drive motor effects. Machine sounds appear as a separate source in the sound mixer and can be independently muted or adjusted.
+
+The `machine_sounds` and `floppy_sounds` configuration options control these effects.
+
+### VHD Creation and Management
+
+The VHD Creator can now produce fixed-size, partitioned FAT hard-disk images using geometries supported by the active controller. Images can now be formatted, assigned a volume label, populated from a host directory, and immediately mounted after creation.
+
+Bootable DOS images can be created from directories containing the appropriate DOS system files, with optional custom MBR and boot-sector data.
+
+### On-Screen Keyboard
+
+An on-screen keyboard for the IBM Model F is now available that can be used with the IBM 5150 and IBM 5160 machines.
+
+It can be enabled from the Input or Show menus, with `osd_keyboard` in `martypc.toml`, with `--osd-keyboard` on desktop, or with the `?osd_keyboard` web parameter.
+
+### Drag-and-Drop Media
+
+Dragging a supported media file onto MartyPC now opens a destination-selection modal. Disk images can be directed to a specific floppy drive, and JRC cartridge images can be directed to either IBM PCjr cartridge slot.
+
+### Monitor Emulation
+
+MartyPC now emulates a monitor at a fairly low level, running a horizontal and vertical PLL to synchronize with the horizontal and vertical sync timings emitted by the virtual card. Currently, this is only simulated for cards that emit digital RGBI signals, so the MDA, CGA, and EGA.
+
+This can accurately simulate the brief 'bounce' seen when changing video modes, as well as simulating loss of vertical and horizontal sync in certain scenarios. This also helps emulate tweaked video modes that rely on non-standard interactions between the card and monitor.
+
+There is a new `monitor_emulation` flag in video card overlay configurations that  can disable this feature.
+
+### Fantasy EMS
+
+This release adds a new Fantasy EMS device courtsey of sqpat, author of RealDOOM and expert in all things EMS.  I am very grateful for his contribution.
+
+## Frontend Bug Fixes / Improvements
+ - Disabled eframe's persistence feature to prevent it from making files in user directories even in portable mode.
+ - Revamped and refactored multi-head support for dual video cards, supporting up to 16 monitors
+ - New logo type and fancy new plasma effect in the About dialog
+ - WASM: Added a new system selector carousel interface.
+ - WASM: Fixed file-open dialog triggers on Safari.
+ - Added a Hotkeys window with human-readable descriptions of configured key combinations
+ - Fixed the GUI visibility hotkey
+ - Added mouse-release hotkey hint to the title bar and toast notification when the mouse is captured.
+ - Added `--scaler-preset` command-line argument to override configured scaler preset.
+ - Added the ability to take post-shader screenshots 
+ - Improved VHD creator with partitioning, formatting, and file population support.
+ - Fixed a bug where alternate ROM dumps were not handled correctly (mostly encountered with EGA ROMs)
+ - Fixed the Amber CRT shader being blue
+ - Improved scanline rendering in CRT shader
+ - Added interlacing support to CRT shader
+ - Added IBM PCjr keyboard mapping file
+ - Fixed bad md5 in PCjr ROM definition for 64K ROM image
+ - Updated GLaBIOS to 0.4
+ - Added build ID to title bar / About window
+ - Restored Backend debug string in the Performance window
+ - Improved oscilloscope level logic in SN76489 viewer window
+
+## Core Bug Fixes / Improvements
+ - WASM: Fixed ROM patches not being re-applied on reboot
+ - Refactored video card overlay support with optional slot parameter
+ - Refactored floppy drive overlay support with optional slot parameter
+ - Add Fantasy EMS device (thanks sqpat)
+ - VGA: Fix Miscellaneous Output Register not being readable
+ - V20: Fix bug in BINS instruction
+ - PCjr: Implemented IBM keyboard including the `Function` key (Mapped to F12)
+ - PCjr: Fixed a rendering bug in low-resolution 2bpp mode
+ - PCjr: Fixed a keyboard handling bug that prevented movement in Keyboard Adventure
+ - Tandy: Fixed mapping of backslash key
+ - Adlib: Run at cycle-accurate resolution to support advanced DAC effects.
+ - Adlib: Migrate to rust-native `nuked-opl3` crate.
+ - EGA/VGA: many miscellaneous fixes to CRTC register handling
+ - CGA/TGA: Factored out common MC6845 implementation
+ - CGA: Improved emulation of sync timings, hsync phase
+ - CGA: Improved light pen emulation
+ - MC6845: Added support for interlaced sync and video modes (ISAV)
+
+
+## [0.4.1](https://github.com/dbalsom/martypc/releases/tag/0.4.1) (2025-05-31)
+
+This is mostly a bugfix release, although there is one new feature: the V20's 8080 emulation mode is now supported.
+This hasn't been as rigorously tested as I'd like, so please report any issues you may encounter.
+
+## Frontend Bug Fixes / Improvements
+ - Added 'custom' ROM feature flag to make it easier to load custom ROM extensions.
+ - Removed bad IBM ROM definition file
+ - Added 'repeat' field to ROM definitions and changed IBM ROM definitions to use it - fixes 1982 5160 BIOSes
+ - Fixed CPU Status window updating when paused/stepping
+ - Fixed PIQ flush on V20 CPU
+ - Added Mode flag to CPU Status Window when using a V20 CPU
+ - Fixed --machinescan option
+ - Improved unique filename generation function - avoids O(n) behavior as file list grows (now O(log N), O(1) with hint)
+
+## Core Bug Fixes / Improvements
+ - Preliminary support for the V20's 8080 emulation mode
+ - Fixed VGA cursor disable bit (Ferraro reference had it backwards)
+ - Fixed controller support on Windows 7
+
+## [0.4.0](https://github.com/dbalsom/martypc/releases/tag/0.4.0) (2025-05-11)
+
+This update brings a massive list of new features, so here's a quick summary:
+ - New sound system and sound devices including Adlib, Disney Sound Source, and SN76489 3-voice sound
+ - New floppy disk image library enabling a ton of new floppy disk image types and support for several copy protections
+ - New frontend supporting both native and WASM, support for native file dialogs
+ - ATA device emulation, supported by XT-IDE and jr-IDE devices for larger hard disk support
+ - VGA support and improved PCjr and TGA video emulation
+ - Memory and register editing
+
+## New `eframe` Frontend
+
+Some dependency API changes prompted me to switch window frameworks. The active Desktop frontend for MartyPC is now
+based on a customized fork of [eframe](https://github.com/emilk/egui/tree/master/crates/eframe).
+
+## Native File Dialogs
+ - The RFD crate provides access to native file dialogs for your particular OS, including File Open and Save dialogs.
+ - Startup errors are now reported via a system MessageBox. You should no longer
+   have to rely on the command line output to tell why MartyPC didn't start.
+
+## New Devices
+
+* ### VGA
+  - The IBM VGA card is emulated at last. MartyPC's VGA is based off its EGA implementation, with appropriate changes
+    and additions. Clocked up to 28Mhz, the VGA is an expensive device to run at a character-clock accurate rate, so you
+    may need a fast computer. Mode 13h and ModeX/Y are supported (Wolfenstein 3D's 'ModeY' works!).
+  - The Video Card debugger window will show you the VGA's register state, including the current palette in realtime.
+
+* ### XTIDE Hard Disk Controller
+  - An XTIDE Rev 2 device can now be emulated. Since this BIOS is open-source, a machine configuration that includes
+    hard drive support is now the default: `ibm5160_xtide`.
+  - If you want the 'authentic retro' experience, the IBM/Xebec controller is still available as `ibm5160_hdd` as usual.
+  - The VHD creator has been updated to support the wide selection of common hard drive geometries that the XTIDE can
+    support. You'll need to be running a machine with the XTIDE configured to see them.
+  - It is now possible to take a VHD file from 86Box (assuming you created it as a 'fixed' VHD) and use it in MartyPC
+    (and vice versa!).
+
+* ### jr-IDE Hard Disk Controller
+  - To go along with the XTIDE, you can now emulate the jr-IDE. This gives you LBA-enabled ATA hard disk
+    support and 736k of conventional memory backfill for your PCjr.
+
+* ### Adlib Music Card
+  -  The first audio device in MartyPC besides the PC speaker is the Adlib Music Card. OPL2 emulation is provided by the
+     highly-accurate [nuked-opl3](https://github.com/nukeykt/Nuked-OPL3) library. This marks the first device I have not
+     emulated myself, but the time it would take to research FM synthesis and produce anything near nuked-opl3 quality
+     would have you waiting for OPL2 emulation for another decade.
+
+* ### SN76489
+  - The 3-voice sound chip found in the IBM PCjr and Tandy 1000 is now emulated! These machines will automatically
+    get this new audio device installed by default with no configuration changes necessary.
+
+* ### Disney Sound Source
+  - If you have a parallel adapter specified, you can attach a Disney Sound Source, and enjoy various squawky digitized
+    sounds in games that support it (Mostly Disney titles, Wolf 3d, Prince of Persia, and a few others. See Mobygames
+    for a list of supported titles).
+
+* ### Memory Expansion Cards
+  - Conventional memory expansion cards can now be specified, at any address and with any capacity. It is possible
+    to have non-contiguous memory regions if you decide to do so, but caveat emptor.
+  - An overlay for the IBM PCjr called 'pcjr_memory_sidecar' will provide an extra 512k to bring your PCjr up to 640k.
+
+## Bitstream-level Disk Image Emulation
+
+The inclusion of the [fluxfox](https://github.com/dbalsom/fluxfox) disk image library has greatly expanded MartyPC's
+floppy disk image support, and enabled support for several copy protection schemes.
+
+### Disk Image Support
+
+Fluxfox supports reading a wide array of disk image formats:
+* TD0 (TeleDisk)
+* IMD (ImageDisk)
+* PSI (PCE Sector Image)
+* TC (TransCopy Image)
+* PRI (PCE Bitstream Image)
+* MFM (HxC/MFM Bitstream Image)
+* HFE (v1) (HxC Bitstream Image)
+* 86f (86Box Disk Image)
+* MFI (Mame Floppy Image)
+* SCP (SuperCardPro Image)
+* RAW (Kryoflux stream file set)
+
+Disk image loading is multithreaded so large disk images can be loaded without pausing the emulator.
+
+### Bitstream Image Writing
+
+Fluxfox can write bitstream images to 86f and PRI formats.
+
+### Disk Image Visualization
+
+fluxfox also enables a new Floppy Image info window, including a Disk View that shows a graphical visualization of the
+disk surface.
+
+### Directory & Zip Floppy Mounting
+
+* Thanks to [rust-fatfs](https://github.com/rafalh/rust-fatfs), we can now dynamically build FAT12 images. This enables
+  mounting both directories and ZIP archives as floppy images. Of course the contents must fit! By default, an image of
+  the largest supported size for the applicable drive will be created. There are a few options as well to enable
+  creation of bootable diskettes.
+    * See the Wiki for more information.
+* Added a basic file browser for opening and saving files, so you can do so outside MartyPC's /media/ directory.
+
+## Memory Visualizer
+
+* Using the new Memory Visualizer window, you can now view the contents of memory graphically, interpreting raw
+  bytes as rendered text mode, or 1,2,4 or 8bpp pixels. This is a good way to explore the contents of memory, and when
+  investigating a running game one can find things like the game's back buffer as well as sprites loaded into memory.
+
+## New Debugger Features
+- A floppy controller debug window shows operational state and command logs.
+- A debug window for the SN76489 shows channel state with optional UV meters and oscilloscope displays.
+- The memory viewer will now resolve memory-mapped addresses, although what is shown in those regions is device-specific.
+- The memory viewer now supports memory editing.
+- The CPU state viewer now supports editing registers and flags when the CPU is paused.
+- The Disassembly viewer will now disassemble instructions in memory-mapped regions, such as PCjr cartridges.
+- Display interrupt numbers as hex in the IVT viewer
+- Show both source and return address in the Call Stack
+
+## Frontend Bug Fixes / Improvements
+ - Mouse capture is even easier, with double-click to capture and middle-click to release implemented by default.
+ - The new Sound menu has been improved with the ability to mute and adjust the volume of sound sources.
+ - Toggle the display between the window background and a GUI widget window. Shaders are also available
+   in windowed mode (With the wgpu backend)!
+ - Apply a bezel overlay in windowed mode. This works best with a shader preset that applies curvature,
+   and the 'accurate' aperture selected. This isn't really a shader effect, just a GUI trick.
+ - Fixed an issue where MartyPC would receive keyboard events even though it didn't have keyboard focus.
+ - Prevent the emulated machine from receiving keyboard events when paused.
+ - Reset the keyboard on loss of window focus (prevents stuck keys).
+ - Revamped Input/Output menu allows control of peripherals:
+   - Mouse sensitivity/speed is now adjustable via the Mouse menu.
+   - The Keyboard menu allows for resetting the keyboard (clearing any stuck keys).
+   - Mouse capture mode can toggle between emulating Mouse or Light Pen
+   - Game port joysticks can be mapped to host controllers
+ - Performance Viewer: Show stats for Audio sources
+ - File tree browser:
+   - Refactored floppy media menu
+   - Added support for creating new disk images, formatted or unformatted
+   - Display directories before files
+   - Display correct icons for different file types
+
+## Core Bug Fixes / Improvements
+ - Improvements to TGA/PCjr video emulation
+   - Support for hi-res 2bpp mode (ColorPaint)
+   - Palette lookups in 2bpp modes
+   - Framerate fixes in low resolution (160x200) modes.
+   - Support for 256k TGA apertures (1000HX)
+ - Added 8086 subtype of 8088 CPU for 16-bit data bus support
+ - Improved accuracy of the Programmable Interrupt Timer (PIT)
+ - Reworked wait state calculations
+ - Improved DRAM refresh DMA emulation
+   - Removed timer hack for Area 5150 end credits as DMA accuracy is now sufficient.
+   - Many tests in Acid88 now pass
+ - BUS/PPI: Improve PCjr keyboard handling
+ - PPI: Fixed memory bank DIP switch masks for memory configurations less than <64K.
+ - Emulation speed improved overall by approximately 10%.
+
+## Distribution Changes
+
+ - Added new definition for an alternate 64K PCjr ROM dump (Thanks ImperatorBanana)
+ - Added new definition for an alternate 32K BASIC C1.0 ROM (thanks Torinde)
+ - Added XUB and jr-IDE BIOS images
+ - Added BOCHS VGA BIOS build for 8088 (thanks phix)
+
+## Dependency Updates
+ - Too many to list
+
+## Known Issues
+ - Multi-window support (and thereby multi-video-card support) is current unimplemented under `eframe`.
+   I hope to return this feature in 0.4.1.
+
+ - VGA is still a bit of a work in progress, and you may see display glitches in certain situations, especially
+   if scrolling is involved. Please report any issues you encounter.
+
+ - PCjr floppy disk support is incomplete, and floppy disk operation in general is much slower than real hardware.
+
+
+## [0.2.2](https://github.com/dbalsom/martypc/releases/tag/0.2.2) (2024-06-22)
+
+### New devices
+
+* #### LoTech 2MB EMS Board
+  * Added emulation of the [LoTech 2MB EMS Card](https://texelec.com/product/lo-tech-ems-2-mb/)
+    This card can be added to any machine configuration via the `lotech_ems` overlay. You can specify the window segment
+    and IO base address. However, these values must match one of the values supported by the real hardware or the driver
+    won't work with it.
+
+* #### Game Port and Joystick
+  * Added emulation of the IBM game port card, and basic keyboard-based joystick emulation. There is a new keyboard
+    hotkey (`JoyToggle`) to turn this on and off (provisionally defined as Ctrl-F9), as well as configurable
+    `joystick_keys` in the configuration you can use to define what keys control the joystick.
+  * PCJr and Tandy 1000 machines will have a game port installed automatically. You can add a game port to any PC or XT
+    configuration via the `game_port` overlay.
+  * Two two-button, two-axis joysticks are assumed to be connected when you specify a game port.
+    Different joystick configurations may be supported in the future.
+
+* #### PCJr Cartridge Slots
+  * Added support in the core, frontend, and GUI for PCJr cartridges in JRipCart format. Inserting or removing a cart
+    will reboot the machine. You will only see the cartridge slots when using the PCJr machine.
+
+### Frontend Bug Fixes / Improvements
+
+* Added a new resource type 'cartridge' and menu interface to browse and select PCJr Cartridges.
+
+### Core Bug Fixes / Improvements
+
+* SERIAL: Fixed many issues in MartyPC's 8250 UART emulation. PCjr now boots without error code 'D' and Checkit2 serial
+  diagnostics also pass.
+* BUS: Implemented a `terminal_port` configuration option under `[machine]` in the main configuration. Writes to this
+  port will be printed to the host's terminal.
+* MC6845: Fixed an issue preventing entering vertical total adjust period if vertical total was 127. Fixes some Hercules
+  display issues.
+* HERCULES: Increased the size of the Hercules' display field to accomodate some CGA emulators that drive the MDA
+  monitor slightly out of sync (Fixes BBSIMCGA)
+* CGA: Added CGA's external mode register to debug output
+* MACHINE: Added a facility to record disassembly listings from running code. The output filename is set by
+  `disassembly_file` under `[machine]` in the main configuration.
+  Basically, this feature saves instruction disassembly to a hash table by CS:IP.  Modification of code segments will
+  override previous disassembly, so it is most useful to toggle this feature on and off for specified periods.
+
+### Debugger Bug Fixes / Improvements
+
+* Serial Status window: Displays serial port registers and statistics.
+* IO Status Window
+  * Added a 'reset' button to reset all the port counters.
+  * Added the last read byte value for each port
+  * Fixed panic/crash when resetting machine with the IO Stats window open and scrolled.
+
+### Distribution Changes
+
+* Added a SvarDOS-based MartyPC boot diskette to media/floppies/boot.
+  This disk will load the LoTech EMS driver and CTmouse driver.
+* Moved FreeDOS to media/floppies/DOS
+* Added SvarDOS build 20240201 diskettes to media/floppies/DOS
+* Added ctmouse v1.91 (last working version for Non-VGA) to media/floppies/utilties/mouse
+* Added LoTech 2MB EMS card utilities to media/utilities/EMS
+* Added JOYCALIB to media/utilities/joystick
+* Updated GLaBIOS 0.2.6 ROMS for a bugfix when int 10h vector is overridden
+
+### Dependency Updates
+
+* Set rustc minimum version to 1.76
+* Update egui to 0.27.2
+* Update wgpu to 0.19.4
+
+## [0.2.1](https://github.com/dbalsom/martypc/releases/tag/0.2.1) (2024-06-09)
+
+### New BIU logic
+
+* 0.2.0 introduced new BIU logic. Unfortunately, 0.2.0 took so long that this 'new' logic already needed
+  replacement. With the discovery of the 8088's 7-cycle bus access time, far simpler BIU logic is possible and has been
+  implemented in 0.2.1. For more information, see
+  [my corresponding blog post](https://martypc.blogspot.com/2024/02/the-complete-bus-logic-of-intel-8088.html).
+
+* Along with this new logic comes a slightly different cycle log format; I'm probably the only person on earth that reads
+  these logs, but it's worth mentioning. Several old state columns are gone, and now bus and T-cycles are displayed within
+  two separate 'pipeline slots'.
+
+### New CPU Framework
+
+* MartyPC now has a framework to support multiple CPU types, so we can have CPUs other than the Intel 8088.
+  There is a slight performance hit involved in not hardcoding a specific CPU, but I believe there are some strategies
+  I can use to mitigate this.
+
+### New CPU Type
+
+* An initial implementation of the NEC V20 has been added. All native-mode V20 instructions are implemented (except BRKEM).
+  This is not cycle-accurate yet, as it was copied and modified from the 8088.
+* The Arduino8088 project and the test generation engine of MartyPC were refactored and
+  improved to enable generation of a CPU test suite for the V20, which will be used to incrementally improve V20 emulation
+  accuracy over time. 8080 emulation mode will be added in the future.
+  The V20 test suite can be found [here](https://github.com/singleStepTests/v20).
+* You can add a V20 to any 8088-based machine by adding the `cpu_v20` overlay.
+
+### New Machines
+
+* Added Tandy 1000 and IBM PCJr machine types and ROM definitions. These are still very much a work in progress.
+  * Tandy 1000 is mostly functional, and can accept a ibm_xebec hard disk controller (I will eventually dump the Tandy
+    hard disk controller ROM, but it is a Xebec controller).
+  * IBM PCJr needs cartridge browser support and PIO mode implemented for the floppy disk controller.
+    * RAW cartridge images can be loaded as ROMs using the standard ROM definitions; however this is less than ideal.
+      I will be adding support for standard PCJr ROM dump formats.
+
+### New Video Types
+
+* To go with these new systems, there is now a TGA graphics type. Again, a work in progress.
+  * Tandy BIOS identifies the TGA and will boot into 8x9 text mode. Display apertures were tweaked for TGA to support
+    this "tall" mode.
+  * TGA adapter operates very differently from other adapter types as it does not have its own VRAM.
+  * New core functionality was required to allow mapping of MMIO reads and writes back to system memory.
+  * High-resolution 640x200 2bpp mode not yet implemented.
+
+* PCJr graphics are implemented as a subtype of TGA adapter
+* Initial support for Hercules graphics card as a subtype of MDA adapter. Still a bit glitchy.
+
+### Frontend Bug Fixes / Improvements
+
+* Added missing overlay for dual 360k floppy configuration (thanks DragomirPazura)
+* Fixed loading of keyboard mapping files
+* Added CPI (Cycles Per Instruction) to benchmark mode.
+
+### Debugger Bug Fixes / Improvements
+
+* Added cycle stopwatch UI to CPU Control window. The stopwatch allows you to set two 'breakpoints' and measure execution
+  time between them.
+* 'Step-over' logic overhauled. Step-over cycle timeout removed. A step over may not terminate, but this is in line with
+  other debuggers. On further feedback, dropping you off in a random location after timeout was not useful.
+  * The expected return address will be displayed in the CPU Control window in the event a step over does not return.
+* You can now step-over `rep` string operations.
+* Re-entrant instructions such as `rep` string operations and `hlt` will remain at top of disassembly until completed
+  and will not flood the instruction history with repeated entries
+* Instruction history now shows when hardware interrupts, traps, and NMIs occur (in dark red)
+* Instruction history now shows when jumps were taken (in dark green)
+* New IO Statistics display
+    * Shows you each IO port accessed, port description, and number of reads and writes.
+* Overhauled PPI viewer (work in progress)
+* Added tooltips to CPU Control buttons to clarify operations
+
+### Core Bug Fixes / Improvements
+
+* VALIDATOR: Improvements to CPU validation system to support initial generation of V20 tests.
+* VALIDATOR: Improvements to test generation allow prefetched tests for 8088/V20
+* 8080: Fixed panic due to microcode slice overrun (Thanks Vutshi)
+* 8080: Implemented all undefined flags except for division
+* 8088/V20: Corrected Trap delay after trap flag pop (Fixes Landmark Service Diagnostics)
+* 8088: Refactored instruction decode to a table-based lookup, replaced custom flags with values from group decode ROM.
+* 8088: Converted SegmentOverride enum to Option<Segment>, simplifying segment resolution logic in many places
+* 8088: New 7-cycle bus access logic
+* 8088: Refactored CycleText log format
+* 8088: Added cyle stopwatch support
+* 8088: Don't count individual REP iterations toward instruction counter
+* 8088: Fixed call stack tracing (recursive calls will still cause overflow)
+  * Reduced size of call stack history to avoid ridiculously tall windows
+* 8088: Fixed cycle count reporting in Instruction History
+* 8088: Added Interrupt, Trap, and NMI history types
+* EGA: Can now specify EGA dipswitch in machine configuration.
+  * Added an `ibm_ega_on_cga` config overlay with the right dipswitch for running FantasyLand
+* BUS: Require IoDevice trait implementations to provide port description strings
+* BUS: Add new functionality for MMIO trait implementors to access main memory (Supports TGA)
+* BUS: Add PCJr-specific keyboard logic to generate NMI on keypress
+* PIT: Preserve latch value across mode changes (Fixes Tandy 1000 POST)
+* PPI: More accurate PPI emulation
+  * Tandy 1000 and IBM PCJr specific PPI details added
+  * Control register implemented, and PPI group modes are now tracked
+  * New state dump format for new frontend PPI Viewer
+  * Implemented keyboard scancode serializer for PCJr (Still has some bugs)
+* CGA: Fixed last-line CRTC flag logic. Fixes some severe glitches in Area 5150 I didn't notice because I have only been
+       testing the first and last effect. (Thanks Sudo)
+
+### Known Issues
+
+* Area5150: Some minor glitches during the Elephant effect text scroll (left side character glitch) and the end credits
+  have a periodic black scanline inserted. These were introduced with some new CRTC logic that is demonstrably more
+  correct in other scenarios, but clearly has a few bugs to iron out.
+
+## [0.2.0](https://github.com/dbalsom/martypc/releases/tag/0.2.0b) (2024-04-01)
+
+### New Features
+
+* #### New Display Manager Framework
+    * New graphics backend abstraction layer will eventually allow frontends built for other graphics backends such as
+      SDL
+    * New scaling modes: Choose from Fixed, Integer, Fit, and Stretch scaling options
+    * Display Apertures: Choose how much of the emulated display field you wish to see:
+        * No overscan
+        * 'Monitor-accurate' overscan
+        * Full overscan
+        * Full display field including hblank and vblank periods (for debugging)
+    * Hardware aspect correction: Aspect correction is now performed in the shader for reduced CPU load
+    * Multi-window support: Define additional output windows in the configuration file
+        * Multiple windows can display the same video card, with different display options
+        * Windows can be set to a fixed size or scale factor, or made completely resizable
+        * Windows can be pinned 'always on top'
+        * Windows can be toggled full-screen via CONTROL-ALT-ENTER hotkey
+    * Shader support: A basic CRT shader is built into the new display scaler
+        * Internal shader features:
+            * Barrel distortion
+            * Corner radius (rounded corners)
+            * Monochrome phosphor simulation
+            * Scanline emulation synchronized to emulated video resolution
+        * Presets for the internal scaler can be defined in configuration and applied to different windows
+
+* #### New ROM Definition Framework
+    * ROM set definitions are no longer hardcoded. They will be read from ROM set definition TOML files in the ROM
+      directory.
+    * Add your own custom ROM sets or contribute missing ROM definitions to MartyPC!
+
+* #### New Machine Configuration Framework
+    * Define multiple Machine hardware configurations, name them, select them in the main config or via command line
+      argument.
+    * Configure the amount of conventional memory, the number and type of floppy drives, video cards, serial ports, and
+      more!
+
+* #### New Resource Manager Framework
+    * Paths are to 'resource ids' are now fully configurable, and facilities to build file trees are provided.
+      MartyPC can create needed directories on startup. The Floppy and VHD browsers have been rewritten to take
+      advantage of this new system, and so now you can organize your media directories into subdirectories for
+      convenience.
+
+* #### EGA Video Card
+    * EGA is back! A character-clocked EGA implementation is here, although it may still be a bit rough around the
+      edges.
+      EGA will continue to be polished in upcoming releases.
+    * Features:
+        * Functional emulation of each of the 5 LSI chips on the EGA
+        * Per-scanline Pel panning - effects like the wibble in Beverly Hills Cop work
+        * Line compare register - See the status bar in Catacombs 3d!
+        * CGA compatibility mode - Play Alleycat!
+        * Software fonts - change your DOS font, or see a graphical mouse cursor in text mode (Norton Utilities 6.0)
+    * Known issues:
+        * Visual glitches with n0p's Windows 3.0 EGA driver patched for 8088
+        * Some more obscure registers not properly emulated / investigated (SOM, etc.)
+        * Aperture definitions / adjustments not final
+        * Implementation may be slow in parts - more optimization needed (SIMD?)
+
+* #### MDA Video Card
+    * Not quite as a flashy as EGA, but the MDA card type is now also supported, and moreover, you can install an MDA
+      alongside a CGA or EGA card for a dual head display.
+    * 9th column rendering and underline attributes supported
+    * Includes the framework for a LPT port, which will now be detected
+    * Known issues:
+        * Needs optimization - due to the 9-dot character clock making 64-bit aligned writes impossible, MDA is
+          currently slower to emulate than EGA.
+* #### New Keyboard System
+    * MartyPC now performs low-level emulation of a Model F keyboard instead of directly translating OS input events to
+      the core
+        * Model M emulation to come
+    * Configurable typematic rate and delay
+    * International keyboard layouts are now supported via translation files.
+        * Translation files support all keycode names defined by w3c: [https://w3c.github.io/uievents-code/#code-value-tables](https://w3c.github.io/uievents-code/#code-value-tables)
+        * Translation files can define direct scancode mappings or full macros
+        * Initial translation files include US, UK, and IT layouts. More to come. Help appreciated!
+    * Configurable hotkey support
+
+### Debugger/GUI Improvements
+
+* Reorganized Debug menu
+* Improved appearance of CPU State display
+* Instruction Trace: In Csv trace mode, instruction trace now has a scrolling table with optional columns
+* Memory Viewer: Fixed scrolling issues, disassembly popup now uses fixed-width font
+* IVT Viewer: Fixed scrolling, IVT entries now animate on change, added annotations
+* Instruction History - fields now align with Disassembly View, and cycle counts have been moved to the right
+* Memory Viewer will now show values for memory mapped regions
+* Improved VHD creator - should no longer be confusing to use
+* Text Mode Viewer - View ASCII contents of video memory, which you can select and copy to clipboard
+* New themes courtesy of [egui-themer crate](https://github.com/grantshandy/egui-themer)
+* New notification system courtesy of [egui-notify crate](https://github.com/ItsEthra/egui-notify).
+    * Implemented success/error notifications for disk and file operations, screenshots, etc.
+
+### Frontend Bug Fixes / Improvements
+
+* Implemented configurable CPU halt behaviors
+* Re-added CTRL-ALT-DEL menu option
+* New benchmark mode (enable in martypc.toml, or use --benchmark-mode)
+* Floppy and HDD browsers now support subdirectories
+* Write protection can be toggled for floppy drives with configurable default
+* Sound initialization is now optional
+* Added 8088 JSON CPU test generator and validator
+    * Used to create the first [comprehensive test suite for the Intel 8088](https://github.com/TomHarte/ProcessorTests/tree/main/8088)
+* Added debug_keyboard config flag - this will print keyboard event info to the console for support
+
+### Core Bug Fixes / Improvements
+
+* CPU: Refactored general registers to union types (not any faster, but code is somewhat cleaner)
+* CPU: Refactor PC from u32 to u16 to address segment wrapping issues, implement ip() in terms of PC
+* CPU: Instruction counts properly increment even when instruction history is off
+* CPU: Fixed device ticks after interrupts
+* CPU: Improved Halt/Resume logic and cycle timings (Thanks Ken Shirriff)
+* CPU: New sigrok cycle log format for viewing cycle logs in sigrok PulseView logic analyzer
+* CPU: Updated disassembler to normalize output against iced-x86. Now resolves negative immediates and displacements
+* CPU: Fixed typo for 'bp+di+DISP' in both disassemblers (Thanks Tom Harte)
+* CPU: Brand new, simplified BIU state logic (which now needs to be rewritten, again...)
+* CPU: Fixed & Improved DMA refresh scheduling. (Fixes 8088MPH CPU test)
+* CPU: Fixed issue where Call Stack could grow uncontrollably with recursive code or interrupts
+* CPU: Fixed CS:IP reporting in Instruction trace mode logs
+* CPU: Fixed memory leak in Instruction trace mode (thanks Folkert)
+* CPU: Fixed CPU cycle timings for LES and LDS instructions
+* CPU: Fixed CPU issue where incorrect microcode jump was listed for fixed word displacements
+* CPU: Fixed CPU issue where a prefetch abort would not properly override a prefetch delay
+* PIC: Revised edge-triggered mode to lower INTR if last unmasked IR line goes low
+* PIC: Ignore IMR during INTA pulse
+* PIC: Handle multiple IRR bits being unmasked at the same time
+* PIC: Honor IRQ offset specified in IWC2 to PIC (Thanks Folkert)
+* PIT: Simulate counter write latency. A delay tick will be inserted if a write occurs too close to falling edge of
+  clock
+* PIT: Revised count register loading logic. Counting element uses internal reload value
+* CGA: Properly model CRTC last-line flag when hcc < 2
+* CGA: Preliminary CGA snow emulation. Not yet 100% accurate
+* CGA: Properly disable cursor if cursor start > maximum scanline
+* CGA: Reverted color palette entry for black from dark gray to true black
+* CGA: Fully reset the CGA device on reboot. May(?) fix issue with black screens in 8088MPH. (Thanks hirudov)
+* CGA: Don't recalculate composite parameters if mode change was enable bit only
+* Xebec HDC: Proceed from Reset state to WaitngForCommand after a delay (Fixes Minix boot issue)
+* Xebec HDC: Implemented missing Read Sector Buffer command (Fixes panic in IBM diagnostics)
+
+### Major dependency updates:
+
+* wgpu to 0.18
+* egui to 0.24.2
+* pixels to 0.13
+* winit to 0.29.15
+
+## [0.1.3](https://github.com/dbalsom/martypc/releases/tag/0.1.3) (2023-07-06)
+
+* Disabled window doubling if window would not fit on screen due to DPI scaling.
+* Decreased minimum window size
+* Disabled warpspeed config flag
+* Renamed 'autostart' config flag to 'auto_poweron' and fixed poweron logic.
+* Mapped Right Alt, Control, and Shift to emulated Left Alt, Control, and Shift.
+* Added UI warning when MartyPC is compiled in debug mode (unfortunately the default behavior of cargo build)
+* Replaced CGA composite simulation code with reenigne's color multiplexer algorithm, for more accurate colors and a 3x
+  speed improvement.
+* Added contrast, phase and CGA type controls to composite adjustment window.
+* Update Pixels to 0.13
+* Update egui and egui-wgpu 0.22
+* Update winit to 0.29*
+    * Winit 0.29 fixes reported keyboard issues with non-US keyboard layouts unable to type certain keys.
+    * Winit 0.29 fixes excessively high updates per second on some Linux builds
+    * Enabled Wayland support
+* Enable basic clipboard integration in debugger for copy/paste of breakpoints. This feature will be expanded.
+* Fork egui-winit 0.22 to manually update winit dependency to 0.29.
+
+## [0.1.2](https://github.com/dbalsom/martypc/releases/tag/0.1.2) (2023-06-29)
+
+* Relicensed MartyPC under the MIT license.
+* Redesigned CGA card with 'dynamic clocking' support. Card will now switch between clocking by cycle or character as
+  appropriate.
+* Improved hsync logic, screens in all graphics modes are now horizontally centered properly.
+* Added 1.44MB floppy image definition. Somehow, these are readable(!?) (thanks xcloudplatform for discovering this)
+* Fixed CGA palette handling bug. Fixes California Games CGAMORE mode. (thanks VileR)
+* Added short tick delay between writing PIC IMR and raising any unmasked IRR bit to INTR. Fixes halts on warm boot.
+* Improved performance when CPU is halted.
+* Added menu options to save changes to loaded floppy image(s).
+* Fixed CPU cycle tracelogging
+* Added port mirrors for CGA (thanks th3bar0n)
+* Fixed address wrapping for graphics modes (thanks th3bar0n)
+* Fixed handling of mode enable flag in text mode (thanks VileR)
+* Implemented better composite adjustment defaults (Matches colors in 8088mph better)
+* Switched from cgmath to glam vector library. Approx 30% speedup in CGA composite simulation.
+* Utilized bytemuck crate to write 32 bits at a time for CGA index->RGBA conversion, about 3x performance improvement
+* Reorganized project structure. Refactored emulator core to Rust library and frontend components.
+* Added Criterion for benchmarking components.
+* Update Pixels library to 0.12.1
+* Use fast_image_resize crate for SIMD acceleration. Aspect correction is now approximately 5X faster with equivalent
+  quality.
+* Fixed inaccuracy in keyboard shift register handling
+* Fixed bug in PIT latch logic (thanks 640KB)
+* Fixed bug in PIC IRR logic (thanks 640KB)
+* Fixed bug in PPI handling of keyboard enable line (Fixes halt on boot on 5160)
+* Added CTRL-ALT-DEL menu option
+* Known issues:
+    * Turbo mode may cause the IBM BIOS to halt during POST during PIT checkout.
+    * Formatting floppies is limited to 360K due to fixed drive type.
+    * Regression: PIT latch logic change has now made 8088MPH report a 1% CPU variation. I believe this is more a timer
+      issue than a CPU issue.
+
+## [0.1.1](https://github.com/dbalsom/martypc/releases/tag/0.1.1) (2023-05-31)
+
+* Compiled for CGA only
+* Fixed CGA cursor handling
+* Rescan media folders when opening Media menu
+* Added barebones documentation
+* Added icon resource for Windows build
+* Added ROM override feature
+* Added HDD drive1 functionality
+* Known issues
+    * Floppy images are read-only.
+
+## [0.1.0](https://github.com/dbalsom/martypc/releases/tag/0.1.0) (2023-05-29)
+
+* Limited testing preview

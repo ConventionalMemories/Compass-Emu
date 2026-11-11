@@ -623,7 +623,7 @@ impl Pic {
         // If INTR is low and not pending, check for unmasked bits in the IRR and raise it again if found.
         if !self.intr && !self.intr_scheduled {
             if self.calc_intr().0 {
-                self.schedule_intr(100);
+                self.schedule_intr(3); // Compass: run() gets CPU clocks; the 8259 reacts within ns.
             }
         }
         else if self.intr {

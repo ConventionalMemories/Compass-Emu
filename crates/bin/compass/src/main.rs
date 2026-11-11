@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.6: a GRiD Compass in a window.
+//! Compass-Emu 0.3.7: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -40,7 +40,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.6";
+pub const VERSION: &str = "0.3.7";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are

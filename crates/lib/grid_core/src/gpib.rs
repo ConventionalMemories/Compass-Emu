@@ -90,8 +90,63 @@ pub struct Drive {
     done_at: Option<u64>,
     /// Command delay in CPU clocks (MAME: 5 ms floppy, 150 us hard disk).
     pub delay_clocks: u64,
+    /// Hard disk mechanics: cylinder under the heads and the pages in the box's read-ahead cache.
+    #[serde(default)]
+    cyl: u32,
+    #[serde(default)]
+    cache: Vec<u32>,
+    /// The box answers a write once it has the data and writes it while taking the next command.
+    #[serde(default)]
+    busy_until: u64,
+    /// Seek and rotation timing for the hard disk (off in fast mode, or with HD_NOMECH set).
+    #[serde(default = "yes")]
+    pub mechanics: bool,
     #[serde(skip)]
     pub log: Vec<String>,
+}
+
+/// GPIBLOG set: print drive commands, SRQs, serial polls and ends of data on stderr.
+fn gpib_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GPIBLOG").is_some())
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// 2101 hard disk mechanics (ST-225 behind a Xebec S1410, measured with the Disk Toolkit on a
+/// real 2101): 3600 rpm, 17 sectors a track, 4 heads, formatted with interleave 5; the box reads
+/// ahead up to 6 pages to the end of the track into its cache, and any write drops the cache.
+mod hd {
+    pub const CPU_HZ: u64 = 5_016_000;
+    pub const ROT: u64 = CPU_HZ / 60;
+    pub const SPT: u32 = 17;
+    pub const HEADS: u32 = 4;
+    pub const INTERLEAVE: u64 = 5;
+    pub const READ_AHEAD: u32 = 6;
+    /// Box firmware time to take a command and set up the S1410 (and to answer from its cache).
+    pub const OVERHEAD: u64 = CPU_HZ / 1000;
+    pub const CACHE_HIT: u64 = CPU_HZ / 2000;
+
+    pub fn slot() -> u64 {
+        ROT / SPT as u64
+    }
+
+    /// Seek time in CPU clocks for `d` cylinders (track to track ~20 ms, full stroke ~150 ms).
+    pub fn seek(d: u32) -> u64 {
+        if d == 0 {
+            return 0;
+        }
+        (20_000 + (d as u64 - 1) * 215) * CPU_HZ / 1_000_000
+    }
+
+    /// Time at or after `t` when logical sector `s` of a track starts under the head.
+    pub fn sector_start(t: u64, s: u32) -> u64 {
+        let target = (s as u64 * INTERLEAVE % SPT as u64) * slot();
+        let a = t % ROT;
+        t + (target + ROT - a) % ROT
+    }
 }
 
 impl Drive {
@@ -116,8 +171,75 @@ impl Drive {
             tx: VecDeque::new(),
             done_at: None,
             delay_clocks,
+            cyl: 0,
+            cache: Vec::new(),
+            busy_until: 0,
+            mechanics: true,
             log: Vec::new(),
         }
+    }
+
+    fn mechanics(&self) -> bool {
+        self.mechanics && self.kind == DriveKind::Hdd2101 && std::env::var_os("HD_NOMECH").is_none()
+    }
+
+    /// When a read of `size` bytes from page `sector` is ready to send.
+    fn read_done(&mut self, now: u64, sector: u32, size: u16) -> u64 {
+        if !self.mechanics() {
+            return now + self.delay_clocks;
+        }
+        let pages = (size as u32).div_ceil(SECTOR as u32).max(1);
+        let mut t = (now + hd::OVERHEAD).max(self.busy_until);
+        let mut p = sector;
+        let end = sector + pages;
+        while p < end {
+            if self.cache.contains(&p) {
+                t += hd::CACHE_HIT;
+                p += 1;
+                continue;
+            }
+            // One S1410 read: from p to the end of the request, plus read-ahead, within the track.
+            let track_end = (p / hd::SPT + 1) * hd::SPT;
+            let n = (end - p).max(hd::READ_AHEAD).min(track_end - p);
+            t = self.seek_to(t, p);
+            let s = p % hd::SPT;
+            let start = hd::sector_start(t, s);
+            t = start + ((n as u64 - 1) * hd::INTERLEAVE + 1) * hd::slot();
+            self.cache.clear();
+            self.cache.extend(p..p + n);
+            p = (p + n).min(end);
+        }
+        t
+    }
+
+    /// When a write of `len` bytes to page `sector` (data all received at `now`) is done.
+    fn write_done(&mut self, now: u64, sector: u32, len: usize) -> u64 {
+        if !self.mechanics() {
+            return now + self.delay_clocks;
+        }
+        self.cache.clear();
+        let pages = len.div_ceil(SECTOR).max(1) as u32;
+        let answer = now + hd::OVERHEAD;
+        let mut t = answer.max(self.busy_until);
+        let mut p = sector;
+        let end = sector + pages;
+        while p < end {
+            let track_end = (p / hd::SPT + 1) * hd::SPT;
+            let n = (end - p).min(track_end - p);
+            t = self.seek_to(t, p);
+            let start = hd::sector_start(t, p % hd::SPT);
+            t = start + ((n as u64 - 1) * hd::INTERLEAVE + 1) * hd::slot();
+            p += n;
+        }
+        self.busy_until = t;
+        answer
+    }
+
+    fn seek_to(&mut self, t: u64, page: u32) -> u64 {
+        let cyl = page / (hd::SPT * hd::HEADS);
+        let d = cyl.abs_diff(self.cyl);
+        self.cyl = cyl;
+        t + hd::seek(d)
     }
 
     fn status_block(&self) -> [u8; 52] {
@@ -193,6 +315,9 @@ impl Drive {
                 let sector = u32::from_le_bytes([self.rx[3], self.rx[4], self.rx[5], self.rx[6]]);
                 let size = u16::from_le_bytes([self.rx[7], self.rx[8]]);
                 self.log.push(format!("cmd {} sector {} size {}", cmd, sector, size));
+                if gpib_log() {
+                    eprintln!("GPIB {} {} {} {}", now, cmd, sector, size);
+                }
                 match cmd {
                     0 => self.tx.extend([0u8; 7]),
                     1 => {
@@ -203,7 +328,7 @@ impl Drive {
                         self.sector = sector;
                         self.io_size = size;
                         self.state = DriveState::Reading;
-                        self.done_at = Some(now + self.delay_clocks);
+                        self.done_at = Some(self.read_done(now, sector, size));
                     }
                     5 => {
                         self.sector = sector;
@@ -211,6 +336,7 @@ impl Drive {
                         self.state = DriveState::Writing;
                     }
                     17 => {
+                        self.cache.clear();
                         self.state = DriveState::Formatting;
                         self.done_at = Some(now + self.delay_clocks);
                     }
@@ -226,7 +352,7 @@ impl Drive {
                     self.dirty = true;
                 }
                 self.state = DriveState::WritingWait;
-                self.done_at = Some(now + self.delay_clocks);
+                self.done_at = Some(self.write_done(now, self.sector, self.rx.len()));
             }
             _ => {}
         }
@@ -264,6 +390,9 @@ impl Drive {
         }
         self.spoll = 0x0F;
         self.srq = true;
+        if gpib_log() {
+            eprintln!("GPIB {} srq", now);
+        }
         self.state = DriveState::Idle;
     }
 
@@ -278,14 +407,20 @@ impl Drive {
         self.tx.front().map(|&b| (b, self.tx.len() == 1))
     }
 
-    fn pop_talk(&mut self) {
+    fn pop_talk(&mut self, now: u64) {
         if self.serial_polling {
             self.srq = false;
             self.spoll = 0;
             self.talking = false;
+            if gpib_log() {
+                eprintln!("GPIB {} spoll", now);
+            }
         }
         else {
             self.tx.pop_front();
+            if self.tx.is_empty() && gpib_log() {
+                eprintln!("GPIB {} lastbyte", now);
+            }
         }
     }
 
@@ -457,7 +592,7 @@ impl Gpib {
                     if self.listener_active() && !self.di_full {
                         if let Some(i) = self.talker() {
                             let (b, eoi) = self.drives[i].peek_talk().unwrap();
-                            self.drives[i].pop_talk();
+                            self.drives[i].pop_talk(self.now);
                             self.di = b;
                             self.di_full = true;
                             self.int0 |= INT0_BI;

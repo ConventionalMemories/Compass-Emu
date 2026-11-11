@@ -5,8 +5,8 @@
 //! modes). Square root is within 1 ulp; FPTAN, FPATAN, F2XM1, FYL2X and FYL2XP1 are computed in
 //! quad precision (113 bits) and rounded once, so they are the correctly rounded 80-bit result
 //! (the real 8087 matches that in most cases, but is sometimes 1 ulp off). FPTAN follows the
-//! chip's own CORDIC + rational method (fptan.rs): its partial Y/X pair (X near 3, not 1) and
-//! a busy time that depends on the argument.
+//! chip's own CORDIC + rational method (fptan.rs, fitted to a real 1101): its partial Y/X pair
+//! (X near 1.5, not 1) and a busy time that depends on the argument.
 //!
 //! Timing: each instruction keeps the 8087 busy for its typical execution time from the Intel
 //! 8087 data sheet (FADD, FLD/FST m64, FILD/FIST m16 and the transcendentals adjusted to the
@@ -752,6 +752,7 @@ impl I8087 {
             0 => {
                 // D8: ST = ST op ST(i)
                 let ar = Arith::from(reg);
+                let short = Self::short_mul(self.st(0), self.st(i));
                 if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
                     match ar {
                         Arith::Com => self.compare(a, b),
@@ -766,7 +767,7 @@ impl I8087 {
                         }
                     }
                 }
-                if reg == 1 && !Self::short_mul(self.st(0), self.st(i)) {
+                if reg == 1 && !short {
                     138
                 }
                 else {
@@ -973,27 +974,53 @@ impl I8087 {
             }
             6 => match i {
                 0 => {
-                    // F2XM1
+                    // F2XM1. The real 8087 takes -x for x < 0 (outside the documented
+                    // 0 .. 0.5) and negates: F2XM1(-0.5) = -(2^0.5 - 1). Exact for 0.
+                    let mut c = 618;
                     if let Some(x) = self.src(0) {
-                        let r = self.from_q(trans::exp2m1(to_q(x)));
+                        let neg = x.is_negative() && !x.is_zero();
+                        let ax = if neg { -x } else { x };
+                        let mut r = self.from_q(trans::exp2m1(to_q(ax)));
+                        if neg {
+                            r = -r;
+                        }
                         self.set_st(0, r);
-                        self.sw |= SW_PE;
+                        if x.is_zero() {
+                            c = 45;
+                        }
+                        else {
+                            self.sw |= SW_PE;
+                            c = busy_from_c(interp(ax.ilogb(), &F2XM1_C), 618, 707.9);
+                        }
                     }
-                    618
+                    c
                 }
                 1 => {
-                    // FYL2X: ST1 = ST1 * log2(ST0), pop
+                    // FYL2X: ST1 = ST1 * log2(ST0), pop. A power of two is a short path on
+                    // the real chip: exact, no precision flag, ~130 clocks.
+                    let mut c = 1078;
                     if let (Some(x), Some(y)) = (self.src(0), self.src(1)) {
                         let xf = f80_to_f64(x);
                         if xf <= 0.0 {
                             self.exception(if xf == 0.0 { SW_ZE } else { SW_IE });
                         }
-                        let r = self.from_q(trans::mul_q(to_q(y), trans::log2(to_q(x))));
+                        let pow2 = xf > 0.0 && x.is_finite() && x.to_bits() as u64 == 1 << 63;
+                        let r = if pow2 {
+                            c = 175;
+                            let p = y.mul_r(F80::from_i128(x.ilogb() as i128).value, self.round());
+                            if p.status.contains(Status::INEXACT) {
+                                self.sw |= SW_PE;
+                            }
+                            p.value
+                        }
+                        else {
+                            self.sw |= SW_PE;
+                            self.from_q(trans::mul_q(to_q(y), trans::log2(to_q(x))))
+                        };
                         self.set_st(1, r);
-                        self.sw |= SW_PE;
                     }
                     self.pop();
-                    1078
+                    c
                 }
                 2 => {
                     // FPTAN: replace ST with Y, push X; Y/X = tan(ST). 0 < |ST| < 2 the way
@@ -1020,14 +1047,26 @@ impl I8087 {
                     clocks
                 }
                 3 => {
-                    // FPATAN: ST1 = atan(ST1/ST0), pop
+                    // FPATAN: ST1 = atan(ST1/ST0), pop. With 0 < x < y (outside the documented
+                    // 0 <= y < x) the real 8087 leaves y as the result in ~130 clocks.
+                    let mut c = 715;
                     if let (Some(x), Some(y)) = (self.src(0), self.src(1)) {
-                        let r = self.from_q(trans::atan2(to_q(y), to_q(x)));
-                        self.set_st(1, r);
+                        let (xf, yf) = (f80_to_f64(x), f80_to_f64(y));
+                        if xf > 0.0 && yf > xf && x.is_finite() && y.is_finite() {
+                            c = 183;
+                        }
+                        else {
+                            let r = self.from_q(trans::atan2(to_q(y), to_q(x)));
+                            self.set_st(1, r);
+                            if xf != 0.0 && yf != 0.0 && xf.is_finite() && yf.is_finite() {
+                                let e = (yf / xf).abs().log2().floor() as i32;
+                                c = busy_from_c(interp(e, &FPATAN_C), 715, 713.0);
+                            }
+                        }
                         self.sw |= SW_PE;
                     }
                     self.pop();
-                    715
+                    c
                 }
                 4 => {
                     // FXTRACT: ST = exponent, push significand
@@ -1153,7 +1192,8 @@ impl I8087 {
         let y1 = y0.add_r(q, Round::NearestTiesToEven).value.mul_r(half, Round::NearestTiesToEven).value;
         let r = y1.scalbn(e / 2);
         let mut f = SW_PE;
-        if y1.mul_r(y1, Round::NearestTiesToEven).value.bitwise_eq(xs) {
+        let sq = y1.mul_r(y1, Round::NearestTiesToEven);
+        if sq.status == Status::OK && sq.value.bitwise_eq(xs) {
             f = 0;
         }
         if f != 0 {
@@ -1195,6 +1235,31 @@ impl I8087 {
             self.sw |= SW_C2;
         }
     }
+}
+
+/// Times GRiDBench 2.0 measured on a real 1101 ("c": clocks scaled by AAM = 83, the way its
+/// report prints them), by the exponent of the argument (F2XM1) or of y/x (FPATAN).
+const F2XM1_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 461.0), (-10, 505.0), (-7, 575.0), (-4, 650.0), (-2, 704.0), (-1, 705.0)];
+const FPATAN_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 466.0), (-10, 510.0), (-4, 695.0), (-2, 760.0), (-1, 713.0), (0, 713.0)];
+
+/// Piecewise linear in e, flat outside the table.
+fn interp(e: i32, t: &[(i32, f64)]) -> f64 {
+    if e <= t[0].0 {
+        return t[0].1;
+    }
+    for w in t.windows(2) {
+        let ((e0, c0), (e1, c1)) = (w[0], w[1]);
+        if e <= e1 {
+            return c0 + (c1 - c0) * (e - e0) as f64 / (e1 - e0) as f64;
+        }
+    }
+    t[t.len() - 1].1
+}
+
+/// Busy clocks that make GRiDBench print `c` in the emulator, from one known pair (busy
+/// `b0` prints `c0`); about one c per busy clock for the long instructions.
+fn busy_from_c(c: f64, b0: u32, c0: f64) -> u32 {
+    (b0 as f64 + (c - c0)).round().max(20.0) as u32
 }
 
 #[cfg(test)]

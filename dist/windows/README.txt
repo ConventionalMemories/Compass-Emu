@@ -1,4 +1,4 @@
-Compass-Emu 0.3.12 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
+Compass-Emu 0.4.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
 ==============================================================================
 
 Setup
@@ -15,7 +15,7 @@ Using it
   The Compass keyboard takes at most 2 letter keys at once (3 freeze it, as on
   the real machine), so release keys when typing fast.
   F12 = turbo on/off (runs as fast as it can, about 10x), F11 = screenshot
-  (compass-001.png ...). Close the window to quit; disk changes are saved to the
+  (compass-001.png ...). F8, F9 and F10 are the demo tools (see below). Close the window to quit; disk changes are saved to the
   image file then (start with --readonly to never save).
   Booting to the Executive takes about 2.5 minutes at real speed; press F12 to
   skip through it.
@@ -25,7 +25,7 @@ Command line
               [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
               [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn] [--mute]
               [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-              [--scale 1|2|4]
+              [--scale 1|2|4] [--overlay]
   --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
              1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
              1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
@@ -99,6 +99,39 @@ Application ROMs
   "Start Compass-Emu 1139.bat" puts roms\Compass_Socket_0.bin to
   Compass_Socket_3.bin in the sockets when those files are there.
 
+Demo tools
+  Cycle counter: put marks in your program with OUT to ports a real Compass
+  ignores (so they can stay in a release):
+      MOV AL,1
+      OUT 0F0H,AL      ; start section 1 (AL = section number 0-255)
+      ...              ; code to time
+      OUT 0F2H,AL      ; end section 1
+      OUT 0F4H,AL      ; frame mark: "this frame is drawn"
+  The emulator keeps count, last, min, average and max CPU clocks for each
+  section. The frame mark tells how far into the frame (counted from the
+  vertical sync tick, IR3) you got, on which display line the beam was, and
+  how many frames went by without a mark (missed frames).
+  F10 shows the table on top of the screen, with a blue tick at the left edge
+  on the line where the last frame mark came. F9 clears the numbers. The
+  title bar shows section and frame use, and on exit the full report goes
+  to compass-marks.txt. --overlay starts with F10 on.
+
+  Debugger: type commands in the console window that opens with the
+  emulator (h = help). F8 pauses and goes on.
+      b 2D00:0123     stop when the CPU gets there (or a linear address)
+      bio F0          stop on IN/OUT to a port
+      bi 3            stop on hardware interrupt IR3 (the vertical sync tick)
+      bw 2000:0400 2  stop when those bytes change
+      s 10            step 10 instructions, shows the clocks used
+      r / m ADDR / u  registers, memory dump, disassembly
+      bl / bc / g     list, clear breakpoints, go on
+      prof 60         profile the next 60 frames: clocks per routine and
+                      per instruction, printed when done
+      marks           the cycle counter report
+
+  Timing is cycle-exact against a real 1101 to about 2% on average; a few
+  cases (some short jumps) are still up to 14% off, being measured.
+
 Two Compasses on a null-modem cable
   Start "Start Compass-Emu 1101.bat", then "Start Compass-Emu 1101 link.bat".
   The second machine connects its serial port to the first one's (TCP port
@@ -108,6 +141,12 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.4.0
+  - Demo tools (see above): cycle counter marks, frame meter overlay (F10),
+    debugger console with breakpoints and stepping (F8), profiler.
+  - The Claude Code hook has grid_debug with the same debugger, profiler and
+    cycle counter.
 
 New in 0.3.12
   - Application ROM sockets on the Compass II models (see Application ROMs).

@@ -1,0 +1,78 @@
+name: Compass-Emu
+
+# Builds and tests Compass-Emu on every push and pull request, and makes the Windows zip.
+# Pushing a tag like v0.3.12 also publishes a GitHub Release with that zip and the
+# version's notes from CHANGELOG.md.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build and test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y pkg-config libasound2-dev libudev-dev gcc-mingw-w64-x86-64 zip
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-pc-windows-gnu
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: compass-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: compass-
+
+      - name: Test
+        run: cargo test --locked --release -p grid_core -p i8087 -p compass
+
+      - name: Build Linux
+        run: cargo build --locked --release -p compass
+
+      - name: Build Windows
+        run: cargo build --locked --release -p compass --target x86_64-pc-windows-gnu
+
+      - name: Make the Windows zip
+        run: |
+          VERSION=$(grep -m1 '^version' crates/bin/compass/Cargo.toml | cut -d'"' -f2)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p out/compass-emu
+          cp -r dist/windows/. out/compass-emu/
+          cp target/x86_64-pc-windows-gnu/release/compass.exe out/compass-emu/
+          cp LICENSE out/compass-emu/LICENSE.txt
+          (cd out && zip -qr "compass-emu-$VERSION.zip" compass-emu)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-emu-${{ env.VERSION }}-windows
+          path: out/compass-emu
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          [ "v$VERSION" = "$TAG" ] || { echo "tag $TAG does not match crate version $VERSION"; exit 1; }
+          awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          gh release create "$TAG" "out/compass-emu-$VERSION.zip" --title "Compass-Emu $VERSION" --notes-file notes.md

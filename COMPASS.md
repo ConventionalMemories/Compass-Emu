@@ -32,8 +32,9 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
   within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
   real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
-- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 309 clocks a line, 266
-  lines (60.8 Hz), IR3 at the start of vertical blank, and display RAM contention: the
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 274 clocks a line, 306
+  lines (59.6 Hz), IR3 as the picture starts at the top (all from GRiDBench 2.0 on a real
+  1101: frame length and beam finder), and display RAM contention: the
   display takes one RAM slot every 12 clocks in the visible part of each line, and a CPU
   access that collides waits. The settings are adjustable and fitted to GRiDBench's 8086
   and memory numbers (mean error 2.0% over 27 tests) until they are measured directly.
@@ -42,6 +43,10 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
   interrupt-driven driver (DRQ on IR1) reads and writes it. A blank image must be
   formatted with Initialize Media.
+- Bus details measured on a real 1101: empty memory and ports read the address still on
+  the bus (low byte on even addresses, A8-A15 on odd ones), D0000-DEFFF reads FF on even
+  bytes, the PROM also shows at F0000-FBFFF, ports 00-7F mirror the 80130 every 10h,
+  RTC/ID reads have wait states, timers 0 and 2 count and timer 1 doesn't.
 - 8274 serial controller, asynchronous mode, IR0, bit rate from the 80130 baud timer;
   the window version connects it to a TCP port (`--serial tcp:2323`) or a real serial
   port (`--serial COM3`). Synchronous (GRiDLink SDLC) modes are not modelled.

@@ -167,6 +167,59 @@ mod hd {
     }
 }
 
+/// Floppy mechanics (2101 floppy and 2102: WD279x, 300 rpm, 9 sectors of 512 bytes, 2 sides,
+/// 40 cylinders), fitted to GRiDBench 2.1b on a real 2102 with a Gotek (e61-e66 within about
+/// 9%): interleave 5, side 1 skewed by 7 sectors, 3 ms a cylinder + 30 ms settle, and the
+/// 2102's 8051 is slow: about 40 ms to take a command and 60 us a byte to send. The env values
+/// FD_ROT/FD_IL/FD_SKEW/FD_STEP/FD_SETTLE/FD_OV (us or sectors) and FD_TALK (clocks a byte)
+/// override them for fitting.
+mod fd {
+    use super::hd::CPU_HZ;
+    pub const SPT: u32 = 9;
+    pub const HEADS: u32 = 2;
+
+    pub struct P {
+        pub rot: u64,
+        pub il: u32,
+        pub skew: u32,
+        pub step: u64,
+        pub settle: u64,
+        pub talk: u64,
+        pub ov: u64,
+    }
+
+    fn env(k: &str, d: u64) -> u64 {
+        std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    }
+
+    pub fn p() -> &'static P {
+        static P_: std::sync::OnceLock<P> = std::sync::OnceLock::new();
+        P_.get_or_init(|| P {
+            rot: env("FD_ROT", 200_000) * CPU_HZ / 1_000_000,
+            il: env("FD_IL", 5) as u32,
+            skew: env("FD_SKEW", 7) as u32,
+            step: env("FD_STEP", 3_000) * CPU_HZ / 1_000_000,
+            settle: env("FD_SETTLE", 30_000) * CPU_HZ / 1_000_000,
+            talk: env("FD_TALK", 300),
+            ov: env("FD_OV", 40_000) * CPU_HZ / 1_000_000,
+        })
+    }
+
+    pub fn slot() -> u64 {
+        p().rot / SPT as u64
+    }
+
+    /// Time at or after `t` when page `page`'s sector starts under the head.
+    pub fn sector_start(t: u64, page: u32) -> u64 {
+        let p = p();
+        let s = page % SPT;
+        let h = (page / SPT) % HEADS;
+        let at = ((s * p.il + h * p.skew) % SPT) as u64 * slot();
+        let a = t % p.rot;
+        t + (at + p.rot - a) % p.rot
+    }
+}
+
 impl Drive {
     pub fn new(kind: DriveKind, image: Vec<u8>) -> Drive {
         let delay_clocks = match kind {
@@ -203,8 +256,35 @@ impl Drive {
         self.mechanics && self.kind == DriveKind::Hdd2101 && std::env::var_os("HD_NOMECH").is_none()
     }
 
+    /// A real floppy (a folder drive is larger and stays fast).
+    fn floppy_mechanics(&self) -> bool {
+        self.mechanics && self.kind != DriveKind::Hdd2101 && !self.image.is_empty() && self.image.len() <= 720 * SECTOR && std::env::var_os("FD_NOMECH").is_none()
+    }
+
+    /// Clocks a byte when this drive talks: the 2102's 8051 bit-bangs GPIB.
+    pub fn talk_clocks(&self) -> Option<u64> {
+        (self.kind == DriveKind::Floppy2102).then(|| fd::p().talk)
+    }
+
+    /// When a floppy has read or written `pages` pages from `sector` (one WD279x command a page).
+    fn floppy_done(&mut self, now: u64, sector: u32, pages: u32) -> u64 {
+        let mut t = now + if self.kind == DriveKind::Floppy2102 { fd::p().ov } else { hd::OVERHEAD };
+        for p in sector..sector + pages {
+            let cyl = p / (fd::SPT * fd::HEADS);
+            if cyl != self.cyl {
+                t += cyl.abs_diff(self.cyl) as u64 * fd::p().step + fd::p().settle;
+                self.cyl = cyl;
+            }
+            t = fd::sector_start(t, p) + fd::slot();
+        }
+        t
+    }
+
     /// When a read of `size` bytes from page `sector` is ready to send.
     fn read_done(&mut self, now: u64, sector: u32, size: u16) -> u64 {
+        if self.floppy_mechanics() {
+            return self.floppy_done(now, sector, (size as u32).div_ceil(SECTOR as u32).max(1));
+        }
         if !self.mechanics() {
             return now + self.delay_clocks;
         }
@@ -238,6 +318,9 @@ impl Drive {
 
     /// When a write of `len` bytes to page `sector` (data all received at `now`) is done.
     fn write_done(&mut self, now: u64, sector: u32, len: usize) -> u64 {
+        if self.floppy_mechanics() {
+            return self.floppy_done(now, sector, len.div_ceil(SECTOR).max(1) as u32);
+        }
         if !self.mechanics() {
             return now + self.delay_clocks;
         }
@@ -264,6 +347,14 @@ impl Drive {
         let d = cyl.abs_diff(self.cyl);
         self.cyl = cyl;
         t + hd::seek(d)
+    }
+
+    /// 7-byte error reply: error word, drive, page.
+    fn error_block(code: u16, page: u32) -> [u8; 7] {
+        let mut b = [0u8; 7];
+        b[0..2].copy_from_slice(&code.to_le_bytes());
+        b[3..7].copy_from_slice(&page.to_le_bytes());
+        b
     }
 
     fn status_block(&self) -> [u8; 52] {
@@ -360,6 +451,8 @@ impl Drive {
                     }
                     4 => {
                         self.sector = sector;
+                        // The 2102 reads one page a command (its ROM moves exactly 512 bytes).
+                        let size = if self.kind == DriveKind::Floppy2102 { size.min(SECTOR as u16) } else { size };
                         self.io_size = size;
                         self.state = DriveState::Reading;
                         self.done_at = Some(self.read_done(now, sector, size));
@@ -404,6 +497,12 @@ impl Drive {
         }
         self.done_at = None;
         match self.state {
+            DriveState::Reading if self.image.is_empty() => {
+                // No disk in the drive (a 2101's floppy slot left empty): error 128, as a
+                // real 2101 answers (GRiDBench 2.1b e51).
+                self.tx.extend(Self::error_block(128, self.sector));
+            }
+            DriveState::WritingWait if self.image.is_empty() => self.tx.extend(Self::error_block(128, self.sector)),
             DriveState::Reading => {
                 self.chunked = self.io_size as usize > SECTOR;
                 let off = self.sector as usize * SECTOR;
@@ -504,6 +603,16 @@ pub struct Gpib {
 }
 
 impl Gpib {
+    /// A 2101 box answers on both its addresses: with a hard disk and no floppy image, add
+    /// the box's floppy drive with no disk in it, so GRiD-OS's polls of address 5 get answers.
+    pub fn add_2101_floppy_slot(&mut self) {
+        let hd = self.drives.iter().any(|d| d.kind == DriveKind::Hdd2101);
+        let fl = self.drives.iter().any(|d| d.kind == DriveKind::Floppy2101);
+        if hd && !fl {
+            self.drives.push(Drive::new(DriveKind::Floppy2101, Vec::new()));
+        }
+    }
+
     pub fn new() -> Gpib {
         Gpib {
             int0: 0,
@@ -534,6 +643,11 @@ impl Gpib {
     }
 
     fn tr(&mut self, s: String) {
+        static FROM: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let from = *FROM.get_or_init(|| std::env::var("GPIBREG").ok().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX));
+        if self.now >= from && !s.starts_with("R7") {
+            eprintln!("GPIBREG {:>11} {}", self.now, s);
+        }
         if self.trace_on && self.trace.len() < 200_000 {
             self.trace.push(format!("{:>11} {}", self.now, s));
         }
@@ -580,7 +694,9 @@ impl Gpib {
 
     fn schedule_in(&mut self) {
         if self.in_at.is_none() && self.listener_active() && !self.di_full && self.talker().is_some() {
-            self.in_at = Some(self.now + self.talk_clocks);
+            let i = self.talker().unwrap();
+            let c = self.drives[i].talk_clocks().unwrap_or(self.talk_clocks);
+            self.in_at = Some(self.now + c);
         }
     }
 

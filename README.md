@@ -9,6 +9,8 @@ compilers and the programs written for it, and fast enough to use as a build mac
 ![GRiD Compass 1101 Executive](docs/img/compass-1101-executive.png)
 ![GRiD Compass II 1139 Executive](docs/img/compass-1139-executive.png)
 
+![Compass-Emu window with the debugger workspace](docs/img/compass-gui-debugger.png)
+
 ## What it emulates
 
 | | |
@@ -18,7 +20,8 @@ compilers and the programs written for it, and fast enough to use as a build mac
 | FPU | 8087 with bit-exact 80-bit results; FPTAN follows the chip's own method |
 | Storage | 2101 hard disk and floppy, 2102 portable floppy, bubble memory, application ROM sockets, a PC folder as a GRiD drive |
 | I/O | 8741 keyboard controller running GRiD's firmware, 8274 serial (TCP, COM port, or a null-modem link between two emulators), sound DAC, DTMF, real-time clock |
-| Demo tools | Cycle counter marks (OUT to ports a real Compass ignores), frame meter overlay, debugger with code/port/interrupt/memory breakpoints, profiler |
+| Window | Menus, machine setup with saved profiles, media manager (floppy swapping, GRiD file browser with import/export), quick save and state files |
+| Demo tools | Cycle counter marks (OUT to ports a real Compass ignores), frame meter overlay, debugger workspace with code/port/interrupt/memory breakpoints, profiler, chips window |
 | Display | Electroluminescent (EL) screen with RAM contention and a beam-accurate picture, so racing the beam works as on the real machine |
 
 Accuracy, measured with GRiDBench on a real 1101 with a 2101 and a 2102:
@@ -51,7 +54,7 @@ cargo build --release -p compass
 cargo test --release -p grid_core -p i8087 -p compass
 ```
 
-Linux needs `libasound2-dev` and `libudev-dev`. The Windows build is cross-compiled with
+Linux needs `libasound2-dev` and `libudev-dev` to build, and `libxkbcommon-x11-0` and OpenGL to run the window. The Windows build is cross-compiled with
 `--target x86_64-pc-windows-gnu`. Technical notes on the hardware model are in
 [COMPASS.md](COMPASS.md); the code is in `crates/lib/grid_core`, `crates/lib/i8087` and
 `crates/bin/compass`.

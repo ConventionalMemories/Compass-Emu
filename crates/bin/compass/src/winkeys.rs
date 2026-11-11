@@ -134,3 +134,35 @@ pub const KEYS: &[(char, i32)] = &[
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
 pub const VK_MENU: i32 = 0x12;
+
+/// Forget keys pressed before now (clears the "pressed since" bits).
+pub fn clear() {
+    for &(_, k) in KEYS {
+        let _ = vk(k);
+    }
+}
+
+/// Compass keys held now and tapped since the last poll, and the modifier bits.
+pub fn poll(down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &mut u8) {
+    use grid_core::keyboard;
+    for &(c, k) in KEYS {
+        let (d, t) = vk(k);
+        if let Some((col, bit, _)) = keyboard::key_for_char(c) {
+            if d {
+                down.push((col, bit));
+            }
+            if t {
+                tapped.push((col, bit));
+            }
+        }
+    }
+    if vk(VK_SHIFT).0 {
+        *mods |= keyboard::MOD_SHIFT;
+    }
+    if vk(VK_CONTROL).0 {
+        *mods |= keyboard::MOD_CTRL;
+    }
+    if vk(VK_MENU).0 {
+        *mods |= keyboard::MOD_CODE;
+    }
+}

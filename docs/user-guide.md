@@ -11,6 +11,37 @@ and ..\roms\grid_keyboard.zip into compass-emu\roms, and makes
 ..\disks\Compass-Emu 1101 disk.img (or 1139 disk.img): a copy of the merged disk
 switched to the 11xx or 113x build with gridmodel.py. Your MAME disk is never changed.
 
+## The window
+
+The emulator now has menus (Machine, Media, View, Debug, Help), a toolbar and a
+status bar with the speed and a light for each drive.
+- Started from a .bat (or with machine options on the command line) the machine
+powers on right away. Started on its own (double-click compass.exe) it opens
+the machine setup page: pick a profile or make one (model, ROM folder, hard
+disk, floppies, PC folder, bubble, ROM sockets, serial port, sound), then
+Power on. Profiles are kept in compass-profiles.json next to compass.exe.
+"Save as shortcut" writes a .bat that starts that machine. Run a .bat once
+first so the ROMs are unpacked into compass-emu\roms.
+- Machine: power off (back to setup), restart, pause, turbo, the fast CPU core,
+quick save / quick load (kept in memory, disks included), save and load a
+state file (a state file holds no disks: keep them as they were).
+- Media: the media manager. Swap or take out floppies while the machine runs
+(a changed disk is written back first), write changed disks back now,
+and a GRiD file browser for disk images: hard disk volumes, subjects and
+files with sizes and dates. Export files to the PC from any disk; import,
+delete and add subjects on image files that are not in use (with the
+machine running, use the PC folder drive for that). "Make..." creates a
+blank 360K floppy image.
+- View: fill the window or whole-pixel scaling, screen colour, the demo tools
+overlay, the status bar.
+- Debug: the debugger workspace (see Demo tools) and a Chips window
+(8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
+8274 serial, keyboard controller).
+Keys go to the Compass while no text field has the focus; click the screen
+to give them back after typing in the debugger console.
+If the PC has no OpenGL 2 (some virtual machines and very old drivers), the
+plain window of 0.4 opens instead; --classic asks for it on purpose.
+
 ## Using it
 
 The PC keys map to the Compass keys by position. Alt = CODE, Ctrl = CTRL.
@@ -30,7 +61,7 @@ compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop flop
             [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
             [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn] [--mute]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-            [--scale 1|2|4] [--overlay]
+            [--scale 1|2|4] [--overlay] [--fast] [--classic]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
            1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
            1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
@@ -46,6 +77,8 @@ compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop flop
            terminal such as PuTTY in "Raw" mode), or a real PC
            port like COM3 (the bit rate follows what the GRiD program sets).
 --mute     no sound.
+--fast     start with the fast CPU core (whole instructions, approximate timing).
+--classic  the plain window of 0.4 (no menus); --scale only applies there.
 The start .bat uses ..\disks\Compass-Emu bubble.img and serial on tcp:2323.
 Boot PROM defaults, under MAME's names in roms: the model's own pair if it is there
 (1129even.ccprom.bin ...), else the nearest: the 1101's for the 1109, the
@@ -129,8 +162,13 @@ on the line where the last frame mark came. F9 clears the numbers. The
 title bar shows section and frame use, and on exit the full report goes
 to compass-marks.txt. --overlay starts with F10 on.
 
-Debugger: type commands in the console window that opens with the
-emulator (h = help). F8 pauses and goes on.
+Debugger: Debug > Debugger workspace (or the Debugger button) shows
+registers and the 8087 stack, disassembly (click the circle in front of a
+line for a breakpoint), breakpoints and watches, the cycle counter table
+with a frame bar, the profiler, a memory view and a console. While paused
+a blue line on the screen shows where the beam is. "Run to next frame"
+stops at the next vertical sync tick. The console takes the same commands
+as before (h = help), and so does the console window. F8 pauses and goes on.
 ```
 b 2D00:0123     stop when the CPU gets there (or a linear address)
 bio F0          stop on IN/OUT to a port

@@ -8,7 +8,13 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.4.0)
+## Status (0.5.0)
+
+- Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
+  setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
+  debugger workspace, chips window); machine building in `session.rs`, real-time pacing and
+  keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the fallback
+  when the GUI can't start).
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory

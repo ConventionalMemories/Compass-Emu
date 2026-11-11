@@ -444,7 +444,9 @@ impl Intel808x {
                 match *cycles {
                     1 => {
                         // DMAWAIT asserted after S1
-                        self.dma_wait_states = 7; // Effectively 6 as this is decremented this cycle
+                        // Effectively 6 as this is decremented this cycle (Compass: DramRefreshAdjust
+                        // sets another length).
+                        self.dma_wait_states = if self.dram_refresh_adjust > 0 { self.dram_refresh_adjust } else { 7 };
                         self.ready_next = false;
                     }
                     2 => {

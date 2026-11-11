@@ -885,6 +885,10 @@ impl Intel808x {
             // Save options
             instruction_history_on: self.instruction_history_on,
             dram_refresh_simulation: self.dram_refresh_simulation,
+            dram_refresh_cycle_period: self.dram_refresh_cycle_period,
+            dram_refresh_cycle_num: self.dram_refresh_cycle_period,
+            dram_refresh_retrigger: self.dram_refresh_retrigger,
+            dram_refresh_adjust: self.dram_refresh_adjust,
             halt_resume_delay: self.halt_resume_delay,
             off_rails_detection: self.off_rails_detection,
             enable_wait_states: self.enable_wait_states,
@@ -982,7 +986,7 @@ impl Intel808x {
         self.i8288.iowc = false;
 
         self.dram_refresh_tc = false;
-        self.dram_refresh_retrigger = false;
+        // Compass: the refresh schedule is a machine option and survives a reset (kept above).
 
         self.step_over_target = None;
         self.step_over_breakpoint = None;

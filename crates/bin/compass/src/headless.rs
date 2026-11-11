@@ -101,6 +101,26 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     if std::env::var("GRID_NO_CONTENTION").is_ok() {
         m.board_mut().display.contention = false;
     }
+    if std::env::var("GRID_CONTENTION").is_ok() {
+        m.board_mut().display.contention = true;
+    }
+    {
+        // Display contention overrides (15 MHz states), as in gridfrag.
+        let d = &mut m.board_mut().display;
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+        if let Some(v) = env("DISP_FETCH_PERIOD") {
+            d.fetch_period = v;
+        }
+        if let Some(v) = env("DISP_FETCH_LEN") {
+            d.fetch_len = v;
+        }
+        if let Some(v) = env("DISP_CPU_LEN") {
+            d.cpu_len = v;
+        }
+        if let Some(v) = env("DISP_CPU_WRITE_LEN") {
+            d.cpu_write_len = v;
+        }
+    }
     m.set_fast(!exact);
     let mut s = Session::new(m);
 

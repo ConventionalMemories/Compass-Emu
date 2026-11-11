@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.8: a GRiD Compass in a window.
+//! Compass-Emu 0.3.9: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -9,6 +9,9 @@
 //!   --hd F                       2101 hard disk image (GPIB 4)
 //!   --flop F                     2102 floppy image (GPIB 6)
 //!   --flop2101 F                 2101 floppy image (GPIB 5)
+//!   --folder D                   a PC folder as the 2101 "Floppy Disk" (GPIB 5): its files and
+//!                                sub-folders (= subjects) are copied in at start, and files GRiD
+//!                                made, changed or erased are written back when you quit
 //!   --bubble F                   bubble memory image (384K; a new blank one is made if F is missing)
 //!   --serial S                   serial port: tcp:PORT (listen on localhost) or a port name (COM3)
 //!   --mute                       no sound
@@ -40,7 +43,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.8";
+pub const VERSION: &str = "0.3.9";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -49,7 +52,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -123,6 +126,7 @@ fn main() {
     let mut prom: Option<PathBuf> = None;
     let mut kbd: Option<PathBuf> = None;
     let mut drives: Vec<(DriveKind, PathBuf)> = Vec::new();
+    let mut folder: Option<PathBuf> = None;
     let mut readonly = false;
     let mut bubble: Option<PathBuf> = None;
     let mut serial_spec: Option<String> = None;
@@ -145,6 +149,7 @@ fn main() {
             "--hd" => drives.push((DriveKind::Hdd2101, val())),
             "--flop" => drives.push((DriveKind::Floppy2102, val())),
             "--flop2101" => drives.push((DriveKind::Floppy2101, val())),
+            "--folder" => folder = Some(val()),
             "--readonly" => readonly = true,
             "--bubble" => bubble = Some(val()),
             "--serial" => serial_spec = Some(val().to_string_lossy().to_string()),
@@ -182,6 +187,23 @@ fn main() {
         let img = read(path, "disk image");
         m.board_mut().gpib.drives.push(Drive::new(*kind, img));
     }
+    let hostdir = folder.as_ref().map(|dir| {
+        if drives.iter().any(|d| d.0 == DriveKind::Floppy2101) {
+            eprintln!("--folder and --flop2101 both use the 2101 floppy (GPIB 5); pick one");
+            std::process::exit(1)
+        }
+        match grid_core::hostdir::HostDir::import(dir) {
+            Ok((hd, vol)) => {
+                println!("folder {} is the Floppy Disk ({} KB free space)", dir.display(), vol.pages() / 2);
+                m.board_mut().gpib.drives.push(Drive::new(DriveKind::Floppy2101, vol.img));
+                hd
+            }
+            Err(e) => {
+                eprintln!("cannot use folder: {e}");
+                std::process::exit(1)
+            }
+        }
+    });
 
     if let Some(p) = &bubble {
         let img = fs::read(p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]);
@@ -382,6 +404,16 @@ fn main() {
                 match fs::write(p, &bub.image) {
                     Ok(_) => println!("saved {}", p.display()),
                     Err(e) => eprintln!("could not save {}: {}", p.display(), e),
+                }
+            }
+        }
+        if let Some(hd) = &hostdir {
+            if let Some(d) = b.gpib.drives.get(drives.len()) {
+                if d.dirty {
+                    match hd.export(&d.image) {
+                        Ok(log) => log.iter().for_each(|l| println!("folder: {l}")),
+                        Err(e) => eprintln!("could not write the folder back: {e}"),
+                    }
                 }
             }
         }

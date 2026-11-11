@@ -11,6 +11,7 @@ marty_core = { path = "../marty_core", default-features = false }
 log = "0.4"
 png = "0.17"
 serde_json = "1"
+chrono.workspace = true
 
 [dev-dependencies]
 flate2 = "1.0"

@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "base64",
  "cpal 0.15.3",
@@ -2612,6 +2612,7 @@ dependencies = [
 name = "grid_core"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "flate2",
  "i8087",
  "log",

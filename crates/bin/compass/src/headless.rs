@@ -16,6 +16,9 @@
 //! --flop F: a 2102 portable floppy image (GPIB 6) next to the hard disk, written back when
 //! changed. The machine still boots from the hard disk.
 //!
+//! --folder D: a PC folder as the 2101 "Floppy Disk" (GPIB 5); GRiD's changes are written
+//! back to the folder at the end. Not with --state.
+//!
 //! --state F: if F exists, start from that saved state (taken at the prompt) instead of
 //! booting, with the disk image from --hd attached; otherwise boot and save the state at the
 //! prompt into F. The disk may have gained files since the state was saved (GRiD-OS reads
@@ -38,6 +41,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     let mut max_s = 10800.0;
     let mut bubble: Option<PathBuf> = None;
     let mut flop: Option<PathBuf> = None;
+    let mut folder: Option<PathBuf> = None;
     let mut state: Option<PathBuf> = None;
     let mut command: Option<String> = None;
     let mut exact = false;
@@ -53,6 +57,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             "--max-seconds" => max_s = val().parse().unwrap_or(10800.0),
             "--bubble" => bubble = Some(val().into()),
             "--flop" => flop = Some(val().into()),
+            "--folder" => folder = Some(val().into()),
             "--state" => state = Some(val().into()),
             "--exact" => exact = true,
             "--fast" => exact = false,
@@ -74,6 +79,10 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
         }
     });
     let from_state = resumed.is_some();
+    if from_state && folder.is_some() {
+        fail("--folder can't be used with a saved state");
+    }
+    let mut hostdir: Option<grid_core::hostdir::HostDir> = None;
     let mut m = match resumed {
         Some(mut m) => {
             match m.board_mut().gpib.drives.iter_mut().find(|d| d.kind == DriveKind::Hdd2101) {
@@ -91,6 +100,15 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             if let Some(f) = &flop {
                 let data = fs::read(f).unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", f.display())));
                 m.board_mut().gpib.drives.push(Drive::new(DriveKind::Floppy2102, data));
+            }
+            if let Some(dir) = &folder {
+                match grid_core::hostdir::HostDir::import(dir) {
+                    Ok((hd, vol)) => {
+                        m.board_mut().gpib.drives.push(Drive::new(DriveKind::Floppy2101, vol.img));
+                        hostdir = Some(hd);
+                    }
+                    Err(e) => fail(&format!("cannot use folder: {e}")),
+                }
             }
             m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(bub.unwrap_or_else(|| vec![0u8; 3 * grid_core::bubble::MBM_SIZE])));
             m
@@ -183,6 +201,14 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     if let Some(f) = &flop {
         if let Some(d) = b.gpib.drives.iter().find(|d| d.kind == DriveKind::Floppy2102 && d.dirty) {
             let _ = fs::write(f, &d.image);
+        }
+    }
+    if let Some(hdir) = &hostdir {
+        if let Some(d) = b.gpib.drives.iter().find(|d| d.kind == DriveKind::Floppy2101 && d.dirty) {
+            match hdir.export(&d.image) {
+                Ok(log) => log.iter().for_each(|l| eprintln!("folder: {l}")),
+                Err(e) => eprintln!("could not write the folder back: {e}"),
+            }
         }
     }
     if let (Some(p), Some(bb)) = (&bubble, &b.bubble) {

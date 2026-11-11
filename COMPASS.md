@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.8)
+## Status (0.3.9)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -27,6 +27,15 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   with EOI, as GRiD's BB2 driver accepts only 512-byte replies. Against a real 1101 + 2101
   (GRiDBench 2.1b): same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0
   (130.3), steps of 1/16 120.6 (122.5), 8 pages 65 (53.5).
+- A PC folder as a GRiD drive (`--folder DIR`, `grid_core::hostdir`): at start the folder is
+  built into a GRiD volume (files in the root, sub-folders as subjects, up to 32 MB with 4 MB
+  free) on the 2101 floppy address (GPIB 5); the volume is named after the folder. On quit,
+  files GRiD made or changed are written to the folder and files GRiD erased are deleted
+  there. Host files without a GRiD kind become `name~Text~` (LF line ends to CR LF) and keep
+  their PC name; characters Windows can't store are written as %XX. The drive answers
+  with its real size in the status block, which GRiD-OS uses for a volume without a
+  partition table. Writes with control byte 1 (set status) or 2 (box upload) no longer land
+  on page 0 of a drive.
 - 8259 interrupt controller: a request that is pending when its IR is unmasked (or a lower
   one after an EOI) raises INT at once. Before 0.3.7 it waited for the next unrelated
   interrupt, so each disk command waited for an IR3 tick (3 refreshes a page).

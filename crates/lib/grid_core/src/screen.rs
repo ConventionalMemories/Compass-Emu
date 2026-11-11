@@ -1,13 +1,23 @@
-//! Display timing. Patent US 4,571,456 + YL3AKC's measurements: 15 MHz crystal, CPU = /3 (5 MHz),
-//! pixel clock /2 (7.5 MHz), hsync 16.17 kHz (61.8 us line), vsync ~60.8 Hz, ~266 lines.
-//! Everything here is in CPU clocks (5 MHz). To be calibrated on a real 1101.
+//! Display timing. Patent US 4,571,456: 15 MHz crystal, CPU = /3 (5 MHz), pixel clock /2.
+//! Geometry from GRiDBench 2.0 on Kurt's real 1101 (2026-11-11): the frame is ~83740 CPU
+//! clocks (d11/d12), the beam finder gives ~274 clocks a line (so ~306 lines) and shows the
+//! refresh tick (IR3) arriving as the picture starts at the top. (YL3AKC's earlier 16.17 kHz
+//! hsync, 309 clocks, doesn't fit those numbers.) Everything here is in CPU clocks (5 MHz).
 
 pub const CPU_HZ: f64 = 5_000_000.0;
-/// CPU clocks per scan line (61.8 us).
-pub const LINE_CLOCKS: u64 = 309;
-/// Total lines per frame, visible lines.
-pub const FRAME_LINES: u64 = 266;
+/// CPU clocks per scan line (54.8 us).
+pub const LINE_CLOCKS: u64 = 274;
+/// Total lines per frame (59.6 Hz), visible lines.
+pub const FRAME_LINES: u64 = 306;
 pub const VISIBLE_LINES: u64 = 240;
+/// IR3 rises at the start of this line (lines from the top of the picture) and stays high
+/// for IR3_LEN lines.
+pub const IR3_LINE: u64 = 2;
+pub const IR3_LEN: u64 = 26;
+
+fn default_ir3_len() -> u64 {
+    IR3_LEN
+}
 pub const FRAME_CLOCKS: u64 = LINE_CLOCKS * FRAME_LINES;
 /// Visible part of a line in CPU clocks (48 us).
 pub const VISIBLE_LINE_CLOCKS: u64 = 240;
@@ -39,8 +49,12 @@ pub struct DisplayTiming {
     pub cpu_len: u32,
     /// The same for a CPU write.
     pub cpu_write_len: u32,
-    /// Line on which IR3 (vertical sync) rises; it falls at the start of line 0.
+    /// Line on which IR3 (vertical sync) rises, and for how many lines it stays high. On the
+    /// real 1101 it comes as the picture starts (the beam finder's stripe at delay 0 is at
+    /// line ~5, after the OS has seen the tick).
     pub ir3_line: u64,
+    #[serde(default = "default_ir3_len")]
+    pub ir3_len: u64,
     /// Geometry: CPU clocks per line, lines per frame, visible lines, words fetched per
     /// visible line (pixels / 16).
     pub line_clocks: u64,
@@ -58,7 +72,8 @@ impl Default for DisplayTiming {
             fetch_offset: 0,
             cpu_len: 3,
             cpu_write_len: 2,
-            ir3_line: VISIBLE_LINES,
+            ir3_line: IR3_LINE,
+            ir3_len: IR3_LEN,
             line_clocks: LINE_CLOCKS,
             frame_lines: FRAME_LINES,
             visible_lines: VISIBLE_LINES,
@@ -68,7 +83,7 @@ impl Default for DisplayTiming {
 }
 
 /// The 113x (Compass II 1131/1139) large screen: 512 x 256. Estimated, not measured: the same
-/// 61.8 us line, 269 lines (a real 1137 runs its tick at ~60.1 Hz by GRiDBench), and the display
+/// 61.8 us line of the old estimate (309 clocks), 269 lines (a real 1137 runs its tick at ~60.1 Hz by GRiDBench), and the display
 /// fetches 32 words per visible line, one every 8 CPU clocks.
 pub const WIDE_W: usize = 512;
 pub const WIDE_H: usize = 256;
@@ -79,6 +94,8 @@ impl DisplayTiming {
         DisplayTiming {
             fetch_period: 24,
             ir3_line: WIDE_H as u64,
+            ir3_len: 269 - WIDE_H as u64,
+            line_clocks: 309,
             frame_lines: 269,
             visible_lines: WIDE_H as u64,
             line_words: WIDE_W / 16,

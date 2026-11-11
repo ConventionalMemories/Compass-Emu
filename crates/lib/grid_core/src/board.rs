@@ -67,8 +67,8 @@ pub struct GridBoard {
     /// CPU clocks since power-on (advanced by tick()).
     pub clocks: u64,
     pic: Pic,
-    /// 80130 timers (8254-like at ports 08-0E), counting at the 5 MHz CPU clock (assumed; the
-    /// input clock and readback are still to be checked on hardware, test P3). Timer 2 is
+    /// 80130 timers (8254-like at ports 08-0E), counting at the 5 MHz CPU clock (timers 0 and 2
+    /// count on a real 1101, timer 1 doesn't; the 5 MHz input clock is assumed). Timer 2 is
     /// the baud clock for the 8274; no timer output reaches an IRQ on the Compass.
     timer_regs: [u8; 4],
     pit_count: [u16; 3],
@@ -138,6 +138,11 @@ impl GridBoard {
     /// Live count of 80130 timer r: down from the loaded value at the CPU clock; modes 2/3
     /// reload (mode 3 counts by 2, twice a period), the others wrap through 0.
     fn pit_now(&self, r: usize) -> u16 {
+        // Timer 1 never counts on a real 1101 (its gate or clock is off): it reads what was
+        // loaded.
+        if r == 1 {
+            return self.pit_count[1];
+        }
         let n = if self.pit_count[r] == 0 { 65536u64 } else { self.pit_count[r] as u64 };
         let e = self.clocks.saturating_sub(self.pit_t0[r]);
         match self.pit_mode[r] {
@@ -240,9 +245,10 @@ impl GridBoard {
     /// Advance board time to CPU clock `now`.
     pub fn tick_to(&mut self, now: u64) {
         self.clocks = now.max(self.clocks);
-        // IR3: rising edge at the start of line ir3_line (vertical blank), low again at frame start.
-        let in_frame = self.clocks % self.display.frame_clocks();
-        let vblank = in_frame >= self.display.ir3_line * self.display.line_clocks;
+        // IR3: high from the start of line ir3_line for ir3_len lines.
+        let d = &self.display;
+        let line = (self.clocks % d.frame_clocks()) / d.line_clocks;
+        let vblank = (line + d.frame_lines - d.ir3_line) % d.frame_lines < d.ir3_len;
         if vblank && !self.vsync_line_high {
             self.vsync_line_high = true;
             self.pic.request_interrupt(IR_VSYNC);
@@ -363,7 +369,9 @@ impl ExternalBoard for GridBoard {
     }
 
     fn io_ports(&self) -> Vec<u16> {
-        (0u16..0x10).collect()
+        // The 80130 decodes only A1-A3 below 80h (real 1101: mirrored every 10h); the rest
+        // of the 8-bit port space reads the address left on the bus.
+        (0u16..0x100).collect()
     }
 
     fn mem_read_u8(&mut self, address: usize, _cycles: u32) -> u8 {
@@ -409,7 +417,7 @@ impl ExternalBoard for GridBoard {
                 let idn = if off & 1 == 1 { idb & 0xF0 } else { (idb & 0x0F) << 4 };
                 idn | (self.rtc.read(off) & 0x0F)
             }
-            0xC0000..=0xCFFFF => 0xFF,
+            0xC0000..=0xCFFFF if self.model.split_board() => 0xFF,
             0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
                 let now = self.clocks + _cycles as u64;
                 let v = self.bubble.as_mut().unwrap().read((address >> 1) & 1, now);
@@ -427,7 +435,13 @@ impl ExternalBoard for GridBoard {
                 self.log(address, false, 0xFF);
                 0xFF
             }
-            _ => 0xFF,
+            _ if self.model.split_board() => 0xFF,
+            // Real 1101 (GRiDBench 2.0, U1): the PROM also answers at F0000-FBFFF; D0000-DEFFF
+            // pulls the even byte lane to FF; elsewhere nothing drives the bus and a read gets
+            // the address still on it (A0-A7 on even bytes, A8-A15 on odd ones).
+            0xF0000..=0xFBFFF => self.prom[(address - 0xF0000) % self.prom.len()],
+            0xD0000..=0xDEFFF if address & 1 == 0 => 0xFF,
+            _ => bus_value(address),
         }
     }
 
@@ -504,6 +518,11 @@ impl ExternalBoard for GridBoard {
             let lim = self.dma_wait_limit;
             return self.gpib.dma_wait(write, lim) as u32;
         }
+        // RTC/ID chip: slow on a real 1101 (GRiDBench 2.0 r15: a read loop turn 87.7 clocks
+        // against 77.1 without waits).
+        if (0xDFF40..=0xDFF5F).contains(&address) {
+            return RTC_WAIT;
+        }
         0
     }
 
@@ -517,10 +536,15 @@ impl ExternalBoard for GridBoard {
     }
 
     fn io_read_u8(&mut self, port: u16, _cycles: u32) -> u8 {
+        if port >= 0x80 || port & 1 == 1 || matches!(port & 0x0F, 4 | 6) {
+            return bus_value(port as usize);
+        }
+        let port = port & 0x0F;
         match port {
             0x00 => self.pic.handle_command_register_read(),
             0x02 => self.pic.handle_data_register_read(),
-            0x0E => self.timer_regs[3],
+            // the control register is write-only (real 1101 reads FF)
+            0x0E => 0xFF,
             0x08 | 0x0A | 0x0C => {
                 let r = ((port - 8) / 2) as usize;
                 let v = match self.pit_latch[r] {
@@ -547,6 +571,10 @@ impl ExternalBoard for GridBoard {
     }
 
     fn io_write_u8(&mut self, port: u16, data: u8, _cycles: u32) {
+        if port >= 0x80 {
+            return;
+        }
+        let port = port & 0x0F;
         match port {
             0x00 => self.pic.handle_command_register_write(data),
             0x02 => self.pic.handle_data_register_write(data),
@@ -621,4 +649,12 @@ impl ExternalBoard for GridBoard {
 
 fn pit_read_lsb_default() -> [bool; 3] {
     [true; 3]
+}
+
+/// Wait states of an access to the RTC/ID chip at DFF40-DFF5F.
+const RTC_WAIT: u32 = 8;
+
+/// What an undriven bus reads: the address byte still on that byte lane.
+fn bus_value(address: usize) -> u8 {
+    if address & 1 == 0 { address as u8 } else { (address >> 8) as u8 }
 }

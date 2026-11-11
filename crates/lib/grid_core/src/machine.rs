@@ -182,12 +182,19 @@ impl GridMachine {
             let _ = cpu.bus_mut().write_u8(a, 0, 0);
         }
         cpu.bus_mut().install_external(Box::new(GridBoard::new_model(model, prom_even, prom_odd)));
-        // Calibrated against GRiDBench on a real 1101 (times scaled by its AAM, with display
-        // contention on): every 8087 instruction takes ~35 clocks more than its data-sheet
-        // time there, and a bare FWAIT costs ~90 clocks.
+        // Plain data-sheet timing. What makes 8087 code slow on a real Compass is GRiD-OS, not
+        // the chip: its loader turns the WAIT before every 8087 instruction into INT 3, whose
+        // handler is WAIT + IRET (~95 clocks a time). With that, GRiDBench's 8087 lines match
+        // a real 1101 within a few percent. FPU_EXTRA / FPU_WAITMIN override for experiments.
         let mut fpu = i8087::I8087::new();
-        fpu.extra_busy = 35;
-        fpu.wait_min = 89;
+        fpu.extra_busy = 0;
+        fpu.wait_min = 0;
+        if let Some(v) = std::env::var("FPU_EXTRA").ok().and_then(|v| v.parse().ok()) {
+            fpu.extra_busy = v;
+        }
+        if let Some(v) = std::env::var("FPU_WAITMIN").ok().and_then(|v| v.parse().ok()) {
+            fpu.wait_min = v;
+        }
         cpu.bus_mut().install_coprocessor(Box::new(crate::fpu::Fpu(fpu)));
         cpu.reset();
         // Wait states on: display contention and the GPIB pseudo-DMA window need them.

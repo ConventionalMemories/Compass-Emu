@@ -124,8 +124,8 @@ pub fn fptan(bits: u128) -> Option<(u128, u128, u32)> {
 }
 
 // Busy time (5 MHz clocks). The article's split for 0.95 (33% pseudo-division, 15% rational,
-// 47% pseudo-multiplication, 5% overhead of ~450) scaled so tan 0.5 takes the 527 clocks
-// GRiDBench measured on a real 1101 (with the 35-clock extra every instruction gets there).
+// 47% pseudo-multiplication, 5% overhead of ~450) scaled so tan 0.5 takes 527 clocks: with
+// GRiD-OS's INT 3 for each WAIT that gives the 609 GRiDBench measured on a real 1101.
 const CLK_TINY: u32 = 36;
 /// tan(0): Y = 0, X = 1, no precision exception.
 pub const CLK_ZERO: u32 = 36;

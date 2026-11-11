@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.10)
+## Status (0.3.11)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -83,7 +83,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   RTC/ID reads have wait states, timers 0 and 2 count and timer 1 doesn't.
 - 8274 serial controller, asynchronous mode, IR0, bit rate from the 80130 baud timer;
   the window version connects it to a TCP port (`--serial tcp:2323`) or a real serial
-  port (`--serial COM3`). Synchronous (GRiDLink SDLC) modes are not modelled.
+  port (`--serial COM3`). Two emulators link like a null-modem cable: one listens
+  (`--serial tcp:2323`, or `tcp:0.0.0.0:2323` for another PC), the other connects
+  (`--serial connect:2323` or `connect:HOST:2323`, retried every second); DCD and CTS are
+  up while connected. Received bytes are paced at the receiver's own bit rate.
+  Synchronous (GRiDLink SDLC) modes are not modelled.
 - Sound: the sound DAC (DFE4:2), volume DAC (DFE4:4) and the DTMF chip on 8255 port B,
   played through the PC's sound card (`--mute` to turn it off).
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.

@@ -149,7 +149,7 @@ default model (1129). Code: crates/bin/compass/src/mcp.rs.
     compass --model 1139 --hd disk113x.img
 
 Boot PROMs are looked for under MAME's names (`1139even.ccprom.bin`, `1139odd.ccprom.bin`,
-`1101even.rev3.bin` ...), or given with `--prom-even`/`--prom-odd` or `--prom` (one 16K
+`1101even.rev4.bin` ..., the 1101 falling back to `1101even.rev3.bin`), or given with `--prom-even`/`--prom-odd` or `--prom` (one 16K
 file, bytes interleaved). The split board models use the 300001-02 keyboard firmware when
 it is in the roms folder.
 

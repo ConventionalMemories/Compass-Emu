@@ -190,6 +190,12 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
         wall.elapsed().as_secs_f64(),
         s.seconds() / wall.elapsed().as_secs_f64().max(0.001)
     );
+    {
+        let b = s.m.board();
+        if !b.marks.is_empty() {
+            print!("{}", b.marks.report(b.frame_clocks(), grid_core::screen::CPU_HZ));
+        }
+    }
     if let Some(p) = &shot {
         let (w, h, px) = s.screen();
         if let Err(e) = fs::write(p, png_bytes(w, h, &px)) {

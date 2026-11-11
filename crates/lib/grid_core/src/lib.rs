@@ -21,6 +21,8 @@ pub mod session;
 pub mod fragment;
 pub mod fast86;
 pub mod hostdir;
+pub mod marks;
+pub mod debug;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};

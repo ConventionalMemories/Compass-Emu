@@ -322,7 +322,7 @@ impl GridMachine {
     }
 
     /// AX BX CX DX SP BP SI DI ES CS SS DS, IP, flags, clock: from whichever core runs.
-    fn regs(&mut self) -> ([u16; 12], u16, u16, u64) {
+    pub(crate) fn regs(&mut self) -> ([u16; 12], u16, u16, u64) {
         match &self.fast {
             Some(f) => {
                 let r = &f.r;

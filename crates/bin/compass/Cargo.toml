@@ -1,6 +1,6 @@
 [package]
 name = "compass"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "MIT"
 description = "Compass-Emu: GRiD Compass emulator with a window"

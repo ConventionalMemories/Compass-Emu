@@ -97,6 +97,10 @@ pub struct Drive {
     /// page a reply), and what is left is dropped when the box is addressed again.
     #[serde(default)]
     chunked: bool,
+    /// Control byte of the write in progress: 1 = set status (geometry), 2 = upload to a box
+    /// RAM buffer. Neither lands on the disk.
+    #[serde(default)]
+    write_ctrl: u8,
     /// Read-ahead cache: (page, clock at which the box has it).
     #[serde(default)]
     ra_cache: Vec<(u32, u64)>,
@@ -188,6 +192,7 @@ impl Drive {
             cyl: 0,
             ra_cache: Vec::new(),
             chunked: false,
+            write_ctrl: 0,
             busy_until: 0,
             mechanics: true,
             log: Vec::new(),
@@ -272,6 +277,12 @@ impl Drive {
                 17,
                 4,
             ),
+            // A folder drive (hostdir) is larger than a floppy: report its size; the root
+            // directory follows the longer bitmap.
+            _ if self.image.len() / SECTOR > 720 => {
+                let n = (self.image.len() / SECTOR).min(0xFFFF) as u32;
+                (n as u16, 0x120, crate::hostdir::root_fid(n) as u16, 1, "COMPASS-EMU PC FOLDER", 9, 2)
+            }
             _ => (720, 0x120, 0x121, 1, "48 TPI DS DD FLOPPY 30237-00", 9, 2),
         };
         let mut o = [0u8; 52];
@@ -339,7 +350,7 @@ impl Drive {
                 let size = u16::from_le_bytes([self.rx[7], self.rx[8]]);
                 self.log.push(format!("cmd {} sector {} size {}", cmd, sector, size));
                 if gpib_log() {
-                    eprintln!("GPIB {} {} {} {}", now, cmd, sector, size);
+                    eprintln!("GPIB {} {} {} {} @{}", now, cmd, sector, size, self.kind.address());
                 }
                 match cmd {
                     0 => self.tx.extend([0u8; 7]),
@@ -356,6 +367,7 @@ impl Drive {
                     5 => {
                         self.sector = sector;
                         self.io_size = size;
+                        self.write_ctrl = self.rx[9];
                         self.state = DriveState::Writing;
                     }
                     17 => {
@@ -369,7 +381,7 @@ impl Drive {
             DriveState::Writing => {
                 let off = self.sector as usize * SECTOR;
                 let end = (off + self.rx.len()).min(self.image.len());
-                if off < end {
+                if off < end && !matches!(self.write_ctrl, 1 | 2) {
                     let n = end - off;
                     self.image[off..end].copy_from_slice(&self.rx[..n]);
                     self.dirty = true;

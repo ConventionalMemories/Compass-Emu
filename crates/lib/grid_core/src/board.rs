@@ -112,7 +112,8 @@ pub struct GridBoard {
     /// X2210 machine ID / serial number nibbles (16 bytes).
     pub machine_id: [u8; 16],
     gpib_int: bool,
-    /// Longest pseudo-DMA wait per access (stands in for the watchdog), CPU clocks.
+    /// Longest pseudo-DMA wait per access, CPU clocks: a backstop behind the keyboard
+    /// watchdog (about 4 s), which normally ends a hung transfer first.
     pub dma_wait_limit: u64,
     /// Display timing and RAM contention.
     pub display: DisplayTiming,
@@ -132,6 +133,17 @@ pub struct GridBoard {
     /// Split board only: also answer the 1101's GPIB DMA window at E0000, so a 1101 boot
     /// PROM can stand in for a missing 1121/1129 PROM.
     pub e0000_dma: bool,
+    /// Split board application ROM sockets 0-3 (chip images; empty = no chip).
+    #[serde(skip)]
+    pub rom_slots: [Vec<u8>; 4],
+    /// Socket registers: DFE08/0A/0C/0E quarter codes (slot | wait code << 2, bit 7 =
+    /// 32K part), DFEA2 32K mode, DFEA8 enable.
+    #[serde(default)]
+    rom_quarter: [u8; 4],
+    #[serde(default)]
+    rom_32k: u8,
+    #[serde(default)]
+    rom_enable: u8,
 }
 
 impl GridBoard {
@@ -199,7 +211,7 @@ impl GridBoard {
             fpu_int: false,
             machine_id: [0; 16],
             gpib_int: false,
-            dma_wait_limit: 20_000_000,
+            dma_wait_limit: 100_000_000,
             display: if model.wide_screen() { DisplayTiming::wide() } else { DisplayTiming::default() },
             model,
             ram_top: model.ram_size(),
@@ -208,6 +220,10 @@ impl GridBoard {
             wide: false,
             next_slow: 0,
             e0000_dma: false,
+            rom_slots: Default::default(),
+            rom_quarter: [0; 4],
+            rom_32k: 0,
+            rom_enable: 0,
         }
     }
 
@@ -226,6 +242,53 @@ impl GridBoard {
         if r == 2 && self.split_regs[0] == 1 && self.model.wide_screen() {
             self.wide = data & 4 == 0;
         }
+    }
+
+    /// Put a chip image in application ROM socket `slot` (0-3).
+    pub fn insert_rom(&mut self, slot: usize, chip: Vec<u8>) -> Result<(), String> {
+        if !self.model.split_board() {
+            return Err(format!("the {} has no application ROM sockets", self.model.name()));
+        }
+        if slot > 3 {
+            return Err("sockets are numbered 0 to 3".into());
+        }
+        if !matches!(chip.len(), 0x8000 | 0x10000 | 0x20000) {
+            return Err(format!("a ROM chip is 32, 64 or 128 KB, not {} bytes", chip.len()));
+        }
+        self.rom_slots[slot] = chip;
+        Ok(())
+    }
+
+    /// A byte of the application ROM window 80000-9FFFF (split boards). Each 32K quarter
+    /// shows the socket its register selects. A 128K chip shows its quarter q in window
+    /// quarter q; a 64K chip fills the top half (Rom Toolbox on a real 1137: the lower half
+    /// reads FFh); a 32K (28-pin) part has no A15/A16 and shows in every quarter.
+    fn rom_read(&self, address: usize) -> u8 {
+        if self.rom_enable & 1 == 0 {
+            return 0xFF;
+        }
+        let w = address - 0x80000;
+        let q = w >> 15;
+        let chip = &self.rom_slots[(self.rom_quarter[q] & 3) as usize];
+        let n = chip.len();
+        if n == 0 {
+            0xFF
+        }
+        else if n <= 0x8000 {
+            chip[(w & 0x7FFF) % n]
+        }
+        else if w + n >= 0x20000 {
+            chip[(w + n - 0x20000) % n]
+        }
+        else {
+            0xFF
+        }
+    }
+
+    /// Wait states of a ROM window access: the quarter's code holds (3 - waits) * 4.
+    fn rom_waits(&self, address: usize) -> u32 {
+        let q = (address - 0x80000) >> 15;
+        3 - ((self.rom_quarter[q] >> 2) & 3) as u32
     }
 
     fn is_dma_window(&self, address: usize) -> bool {
@@ -347,6 +410,36 @@ impl GridBoard {
         self.gpib_int = l;
     }
 
+    /// Clocks a GPIB DMA window access holds the CPU: until the 9914 is ready (or
+    /// interrupts), or the 8741 watchdog drops kbdDma (P2.4, through PAL U90), checked every
+    /// KBD_DMA_STEP clocks. With kbdDma low the access doesn't wait at all. dma_wait_limit
+    /// stays as a backstop (no keyboard MCU, or a watchdog that was never armed).
+    fn dma_hold(&mut self, cycles: u32, write: bool) -> u32 {
+        const KBD_DMA_STEP: u64 = 5_000;
+        if self.keyboard.as_ref().is_some_and(|k| !k.dma_enabled()) {
+            return 0;
+        }
+        let lim = self.dma_wait_limit;
+        let mut waited = 0u64;
+        loop {
+            let chunk = (lim - waited).min(KBD_DMA_STEP);
+            let w = self.gpib.dma_wait(write, chunk);
+            waited += w;
+            if w < chunk || waited >= lim || self.keyboard.is_none() {
+                break;
+            }
+            self.kbd_at(cycles + waited as u32);
+            if !self.keyboard.as_ref().unwrap().dma_enabled() {
+                break;
+            }
+        }
+        if waited > 1_000_000 && std::env::var_os("GPIB_STALL").is_some() {
+            let kd = self.keyboard.as_ref().map(|k| k.dma_enabled());
+            eprintln!("DMA hold {:.3} s ended at {:.2} s, kbdDma {:?}", waited as f64 / 5e6, (self.clocks + cycles as u64 + waited) as f64 / 5e6, kd);
+        }
+        waited as u32
+    }
+
     fn gpib_at(&mut self, cycles: u32) {
         let t = self.clocks + cycles as u64;
         self.gpib.advance(t);
@@ -425,6 +518,7 @@ impl ExternalBoard for GridBoard {
                 idn | (self.rtc.read(off) & 0x0F)
             }
             0xC0000..=0xCFFFF if self.model.split_board() => 0xFF,
+            0x80000..=0x9FFFF if self.model.split_board() => self.rom_read(address),
             0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
                 let now = self.clocks + _cycles as u64;
                 let v = self.bubble.as_mut().unwrap().read((address >> 1) & 1, now);
@@ -471,6 +565,9 @@ impl ExternalBoard for GridBoard {
             0xDFE00..=0xDFE07 if split && address & 1 == 0 => self.split_write(address, data),
             // serial port select latches: nothing to model (channel A is the only port)
             0xDFE10..=0xDFE1F if split => {}
+            0xDFE08..=0xDFE0F if split && address & 1 == 0 => self.rom_quarter[(address >> 1) & 3] = data,
+            0xDFEA2 if split => self.rom_32k = data,
+            0xDFEA8 if split => self.rom_enable = data,
             // DFE4:2 sound DAC, DFE4:4 volume DAC (SoundTest on a real 1101).
             0xDFE40..=0xDFE4F => {
                 let now = self.clocks + _cycles as u64;
@@ -522,13 +619,15 @@ impl ExternalBoard for GridBoard {
     fn mem_wait(&mut self, address: usize, cycles: u32, write: bool) -> u32 {
         if self.is_dma_window(address) {
             self.gpib_at(cycles);
-            let lim = self.dma_wait_limit;
-            return self.gpib.dma_wait(write, lim) as u32;
+            return self.dma_hold(cycles, write);
         }
         // RTC/ID chip: slow on a real 1101 (GRiDBench 2.0 r15: a read loop turn 87.7 clocks
         // against 77.1 without waits).
         if (0xDFF40..=0xDFF5F).contains(&address) {
             return RTC_WAIT;
+        }
+        if (0x80000..=0x9FFFF).contains(&address) && self.model.split_board() && address >= self.ram_top {
+            return self.rom_waits(address);
         }
         0
     }

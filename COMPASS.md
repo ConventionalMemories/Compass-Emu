@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.11)
+## Status (0.3.12)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -52,7 +52,13 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   right after the byte that raised the GPIB END interrupt (it used to copy 1-2 more bytes,
   which made the BB2 driver reinitialize the bus for half a second).
 - MM58174 real-time clock.
-- 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02).
+- 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02). Its
+  P2.4 (kbdDma) is wired to the GPIB wait: a DMA window access holds the CPU until the
+  9914 is ready, its interrupt is up, or the firmware's watchdog drops kbdDma (about 4 s
+  after GRiD-OS arms it), then the FDh it sends makes GRiD-OS end the transfer with
+  error 451 and set kbdDma again. While kbdDma is low the window doesn't wait.
+  `dma_wait_limit` (20 s) is only a backstop. `GPIB_STALL=N` holds the Nth byte a drive
+  sends for 10 s, to watch this happen.
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact
   arithmetic in all rounding modes, all instructions, exceptions to IR6. Transcendentals
   are computed in 113-bit precision and rounded once, except FPTAN, which follows the
@@ -105,8 +111,14 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
   DFE00h (DFE00 = 1 selects the video chip, DFE04 bit 2 clear = large screen; the 113x OS
-  writes 0Bh or 0Ah, the PROM 0Eh), serial port latches at DFE10h, empty application ROM
-  sockets at 80000h. The 113x build of GRiD-OS turns on the 512 x 256 screen; until then a
+  writes 0Bh or 0Ah, the PROM 0Eh), serial port latches at DFE10h, application ROM
+  sockets at 80000h (`--rom0..3`, from Cp/Rom.Asm and Cp/BankSwitch.PLM): DFEA8h = 1
+  enables the window, DFE08/0A/0C/0E pick the socket (bits 0-1; bits 2-3 = 3 - wait
+  states) for each 32K quarter, DFEA2h = 32K-part mode (stored, not needed for the
+  mapping). A 128K chip shows its quarter q in window quarter q, a 64K chip fills the top
+  half (lower half FFh, as Rom Toolbox found on a real 1137), a 32K part shows in every
+  quarter. With the four ROMs of a real 1137 the PROM boots CCOS from socket 1 (with or
+  without a disk) and the programs show on "Read Only Memory". The 113x build of GRiD-OS turns on the 512 x 256 screen; until then a
   113x shows the 320 x 240 picture centred. Large-screen timing is estimated (the same
   309-clock line, 269 lines, 32 display fetches a line, one every 8 clocks) and fits
   GRiDBench on a real 1137 at 3.1% mean error.
@@ -118,8 +130,8 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   stands in, with the split board also answering the 1101's DMA window at E0000h
   (`GridBoard::e0000_dma`). ROM choice: grid_core/src/roms.rs.
 
-Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, application
-ROM sockets.
+Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, the test ROM
+socket at C0000h.
 
 ## Build mode
 

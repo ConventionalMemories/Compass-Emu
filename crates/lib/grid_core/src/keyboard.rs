@@ -1,7 +1,7 @@
 //! Compass keyboard: the 8741A running GRiD's firmware (300067-01 on the 1101, 300001-02 on the
 //! 1137), scanning an 8x8 key matrix. Wiring per MAME gridkeyb.cpp: P2.0-2 select the column,
 //! P1 reads it (active low), Ctrl is on P1.0 of column 2, T0 = Shift, T1 = Code (active low),
-//! P2.3 = IRQ to the 80130 (IR4), P2.4 = DMA (unused), P2.6 = NMI (not connected in MAME).
+//! P2.3 = IRQ to the 80130 (IR4), P2.4 = DMA enable (kbdDma: the watchdog drops it to free a CPU held by the GPIB window), P2.6 = NMI (not connected in MAME).
 
 use crate::upi41::{Upi41, UpiPorts};
 
@@ -142,6 +142,12 @@ impl Keyboard {
 
     pub fn irq(&self) -> bool {
         self.mcu.p2_pins() & 0x08 != 0
+    }
+
+    /// P2.4 (kbdDma): high lets a GPIB DMA window access hold the CPU; the firmware's
+    /// watchdog drops it when a transfer hangs (then sends FDh), and GRiD-OS sets it again.
+    pub fn dma_enabled(&self) -> bool {
+        self.mcu.p2_pins() & 0x10 != 0
     }
 
     pub fn nmi(&self) -> bool {

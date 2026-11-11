@@ -109,11 +109,11 @@ struct FastBus<'a> {
 }
 
 impl FastBus<'_> {
-    /// Only the board's I/O area (DFxxx, the E0000 DMA window) can hold the CPU: skip the
-    /// wait lookup for the PROM and empty space.
+    /// Only the board's I/O area (DFxxx, the E0000 DMA window) and the application ROM
+    /// window can hold the CPU: skip the wait lookup for the PROM and empty space.
     #[inline]
     fn may_wait(a: usize) -> bool {
-        (0xDF000..0xF0000).contains(&a)
+        (0xDF000..0xF0000).contains(&a) || (0x80000..0xA0000).contains(&a)
     }
 }
 

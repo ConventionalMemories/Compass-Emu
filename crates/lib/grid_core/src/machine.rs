@@ -199,6 +199,16 @@ impl GridMachine {
         cpu.reset();
         // Wait states on: display contention and the GPIB pseudo-DMA window need them.
         cpu.set_option(CpuOption::EnableWaitStates(true));
+        // Bus steal: the real 1101 loses the bus for ~4 clocks every 48 (DRAM refresh), which
+        // only shows when the bus is busy (prefetch-bound code, REP strings). Fitted together
+        // with the display contention (screen.rs) to a real 1101's GRiDBench 2.1.
+        // GRID_REFRESH=period (0 = off) and GRID_REFRESH_WAIT=clocks override it.
+        let env_u32 = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+        let period = env_u32("GRID_REFRESH").unwrap_or(48);
+        if period > 0 {
+            cpu.set_option(CpuOption::ScheduleDramRefresh(true, period, period, true));
+            cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(4)));
+        }
         let size = if model.wide_screen() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
         let mut m = GridMachine {
             cpu,

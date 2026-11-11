@@ -66,12 +66,15 @@ pub struct DisplayTiming {
 impl Default for DisplayTiming {
     fn default() -> Self {
         DisplayTiming {
+            // Fitted with the bus steal in machine.rs (4 clocks every 48) to a real 1101's
+            // GRiDBench 2.1 (instruction mix c50-c78, IR3 loop d12, PROM spin t04): reads that
+            // overlap a display slot wait, writes only when they start inside one.
             contention: true,
-            fetch_period: 36,
-            fetch_len: 6,
+            fetch_period: 48,
+            fetch_len: 4,
             fetch_offset: 0,
-            cpu_len: 3,
-            cpu_write_len: 2,
+            cpu_len: 2,
+            cpu_write_len: 0,
             ir3_line: IR3_LINE,
             ir3_len: IR3_LEN,
             line_clocks: LINE_CLOCKS,

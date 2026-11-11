@@ -8,13 +8,21 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.5.0)
+## Status (0.6.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
   debugger workspace, chips window); machine building in `session.rs`, real-time pacing and
   keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the fallback
   when the GUI can't start).
+- Debugger (`grid_core::debug`): breakpoints, watches, profiler, call stack (BP chain checked
+  against CALLs before each return address), recent instructions, a GRiD-OS call log (calls
+  through vectors 70h/71h/73h named from the Compact*Calls libraries, `grid_core::oscalls`)
+  and a crash catcher (OsDecodeException with the message text, divide error, INT 3 that is
+  not the loader's stand-in for an 8087 WAIT, running through 00 00 / FF FF). Program symbols
+  (`grid_core::symbols`) come from the OMF-86 objects of a DEBUG build (BLKDEF, PUBDEF,
+  DEBSYM, LINNUM, FIXUPP for masking) plus the Pascal/ASM-86 listings; each module is found in
+  RAM by its fixup-masked code bytes, since the bound .run keeps no symbols.
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory

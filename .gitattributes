@@ -1,1 +1,3 @@
 *.bat text eol=crlf
+*.obj binary
+*.run binary

@@ -1,0 +1,43 @@
+8086/87/88/186 MACRO ASSEMBLER    CRASHASM                                                  9:30 pm  11/10/84  PAGE    1
+
+
+GRiD-OS 50.5.30 8086/87/88/186 MACRO ASSEMBLER V2.0 ASSEMBLY OF MODULE CRASHASM
+OBJECT MODULE PLACED IN `Hard Disk X`PROJECTS`CRASHASM.ASM~OBJ~
+ASSEMBLER INVOKED BY:  `Hard Disk X`PROGRAMS`ASM `Hard Disk X`PROJECTS`CRASHASM.ASM~TEXT~ DEBUG
+
+
+
+LOC  OBJ                  LINE     SOURCE
+
+                             1                     NAME    CRASHASM
+                             2     
+                             3     CGROUP          GROUP   CODE
+                             4     
+----                         5     CODE            SEGMENT PUBLIC 'CODE'
+                             6                     ASSUME  CS:CGROUP, DS:NOTHING, ES:NOTHING
+                             7     
+                             8                     PUBLIC  DOINT3, DOWILD
+                             9     
+0000                        10     DOINT3          PROC    NEAR
+0000 55                     11                     PUSH    BP
+0001 8BEC                   12                     MOV     BP, SP
+0003 CC                     13                     INT     3
+0004 90                     14                     NOP
+0005 5D                     15                     POP     BP
+0006 C3                     16                     RET
+                            17     DOINT3          ENDP
+                            18     
+0007                        19     DOWILD          PROC    NEAR
+0007 55                     20                     PUSH    BP
+0008 8BEC                   21                     MOV     BP, SP
+000A B8007F                 22                     MOV     AX, 7F00H
+000D 50                     23                     PUSH    AX
+000E 33C0                   24                     XOR     AX, AX
+0010 50                     25                     PUSH    AX
+0011 CB                     26                     DB      0CBH            ; RETF
+                            27     DOWILD          ENDP
+                            28     
+----                        29     CODE            ENDS
+                            30                     END
+
+ASSEMBLY COMPLETE, NO ERRORS FOUND

@@ -23,6 +23,8 @@ pub mod fast86;
 pub mod hostdir;
 pub mod marks;
 pub mod debug;
+pub mod symbols;
+pub mod oscalls;
 
 pub use board::GridBoard;
 pub use machine::{GridMachine, GridModel};

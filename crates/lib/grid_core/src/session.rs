@@ -31,6 +31,9 @@ pub struct Session {
     prompt: Option<(usize, Vec<Vec<u8>>)>,
     /// Keep sound and serial output for the caller (normally dropped).
     pub keep_output: bool,
+    /// A breakpoint or the crash catcher stopped the machine (run does nothing until this is
+    /// taken).
+    pub stop: Option<String>,
 }
 
 /// Parse key text: plain characters plus {ret} {esc} {tab} {bs} {space} {left} {right} {up}
@@ -86,7 +89,7 @@ pub fn parse_keys(text: &str) -> Result<Vec<(char, u8)>, String> {
 
 impl Session {
     pub fn new(m: GridMachine) -> Session {
-        Session { m, keys: VecDeque::new(), prompt: None, keep_output: false }
+        Session { m, keys: VecDeque::new(), prompt: None, keep_output: false, stop: None }
     }
 
     pub fn clocks(&self) -> u64 {
@@ -122,10 +125,12 @@ impl Session {
     /// serial) is dropped.
     pub fn run(&mut self, clocks: u64) {
         let end = self.clocks() + clocks;
-        while self.clocks() < end {
+        while self.clocks() < end && self.stop.is_none() {
             let next_key = self.keys.front().map(|k| k.0).unwrap_or(u64::MAX);
             let step = end.min(next_key).saturating_sub(self.clocks()).clamp(1, 100_000);
-            self.m.run_clocks(step);
+            if let Some(why) = self.m.run_debug(step) {
+                self.stop = Some(why);
+            }
             while let Some(&(t, key, mods)) = self.keys.front() {
                 if t > self.clocks() {
                     break;
@@ -192,7 +197,7 @@ impl Session {
     pub fn wait_prompt(&mut self, max_s: f64) -> bool {
         let end = self.seconds() + max_s;
         let (mut last, mut same) = (None, 0);
-        while self.seconds() < end {
+        while self.seconds() < end && self.stop.is_none() {
             self.run_seconds(1.0);
             let p = self.prompt_at_bottom();
             if std::env::var("GRID_DEBUG").is_ok() {
@@ -216,7 +221,7 @@ impl Session {
         let start = self.seconds();
         let mut hits = 0;
         // a scroll moves the old prompt up: it is "new" once more than one prompt is seen
-        while self.seconds() < start + max_s {
+        while self.seconds() < start + max_s && self.stop.is_none() {
             self.run_seconds(1.0);
             if self.typing() || self.seconds() < start + 3.0 {
                 continue;

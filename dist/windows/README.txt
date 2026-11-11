@@ -1,4 +1,4 @@
-Compass-Emu 0.5.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
+Compass-Emu 0.6.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
 ==============================================================================
 
 Setup
@@ -55,7 +55,7 @@ Command line
               [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
               [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn] [--mute]
               [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-              [--scale 1|2|4] [--overlay] [--fast] [--classic]
+              [--scale 1|2|4] [--overlay] [--fast] [--classic] [--symbols DIR] [--no-catch]
   --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
              1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
              1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
@@ -73,6 +73,8 @@ Command line
   --mute     no sound.
   --fast     start with the fast CPU core (whole instructions, approximate timing).
   --classic  the plain window of 0.4 (no menus); --scale only applies there.
+  --symbols  program symbols for the debugger: a debug build's project folder.
+  --no-catch crash catcher off (see Program symbols and the crash catcher).
   The start .bat uses ..\disks\Compass-Emu bubble.img and serial on tcp:2323.
   Boot PROM defaults, under MAME's names in roms: the model's own pair if it is there
   (1129even.ccprom.bin ...), else the nearest: the 1101's for the 1109, the
@@ -84,7 +86,8 @@ Command line
   Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when present).
 
 Build mode (replaces MAME for build.bat)
-  Copy tools\gridbuild.py from this folder over GRiD-MAME\tools\gridbuild.py.
+  Copy tools\gridbuild.py from this folder over GRiD-MAME\tools\gridbuild.py
+  (and tools\debug.bat next to build.bat, see Program symbols).
   build.bat then compiles on Compass-Emu, a GRiD Compass 1129 by default (512K,
   11xx build of GRiD-OS), instead of MAME: same results (NAME.lst, NAME.run,
   screen.png, output\). It unpacks the ROMs from ..\roms the first time.
@@ -166,6 +169,46 @@ Demo tools
                       per instruction, printed when done
       marks           the cycle counter report
 
+Program symbols and the crash catcher
+  Build with debug.bat instead of build.bat (or tools\gridbuild.py debug NAME):
+  the same program (identical code), and the compilers' symbols are kept in
+  the project folder (NAME.pas.obj, NAME.asm.obj, NAME.map). Copy debug.bat
+  from compass-emu\tools next to build.bat once (and the new gridbuild.py
+  over GRiD-MAME\tools\gridbuild.py). Then Debug > Load program
+  symbols and pick the project folder (or --symbols projects\NAME, or the
+  Debugging card of the machine setup page, which remembers it). Compass-Emu
+  finds the program in memory by its code whenever it runs, so:
+  - the disassembly shows procedure names, assembler labels and the Pascal
+    source lines, and calls show the name they go to (OSWRITE, MOVEBYTES...);
+  - breakpoints can be set by name: b SprEnd, b TlCore.FreeRegion, or a
+    source line b TLCORE:120 (the listing's statement number). A named
+    breakpoint is armed whenever the program is in memory, also after you
+    start it again;
+  - the call stack (k, and in the Call stack panel) follows the BP chain:
+    each frame with its procedure and source line;
+  - the profiler groups clocks by procedure and shows the source line of
+    the hottest instructions.
+  The crash catcher is on unless you untick it (Debug menu, debugger panel,
+  setup page, or --no-catch). It stops the machine with a report (what went
+  wrong, where, the call stack and the last instructions run) on:
+  - a GRiD-OS error: an error code turned into its message (OsDecodeException,
+    used by the Executive and Common code to show errors), with the message
+    text, stopping where the program gets it back;
+  - a divide error (DIV/IDIV by zero or a result too big);
+  - INT 3 in the program (GRiD-OS turns every 8087 WAIT into INT 3; those
+    are told apart, so a CC byte in your code works as a breakpoint);
+  - a wild jump: running through empty memory (00 00 or FF FF), with where
+    it came from.
+  These work without symbols too, with addresses instead of names. More
+  console commands:
+      sym FOLDER       load symbols (sym = status, sym off = unload)
+      names [TEXT]     the program's names and where they are now
+      k                call stack
+      hist [N]         the last N instructions run
+      catch on|off     crash catcher (catch errors|div|int3|wild on|off)
+      os on|off|N      log of GRiD-OS calls, each with its caller
+  The Claude Code hook has the same commands, and grid_build has debug:true.
+
   Timing is cycle-exact against a real 1101 to about 2% on average; a few
   cases (some short jumps) are still up to 14% off, being measured.
 
@@ -178,6 +221,15 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.6.0
+  - Program symbols for the debugger from a debug build (debug.bat,
+    gridbuild.py debug): names and Pascal source lines in the disassembly,
+    breakpoints by name or source line, call stack, names in the profiler.
+  - Crash catcher: stops on GRiD-OS errors (with the message text), divide
+    errors, INT 3 and wild jumps, with a report.
+  - GRiD-OS call log (every OS, CP and Common call with its caller).
+  - --symbols DIR and --no-catch; the machine setup page has a Debugging card.
 
 New in 0.5.0
   - A GUI: menus, toolbar, status bar with drive lights, machine setup page

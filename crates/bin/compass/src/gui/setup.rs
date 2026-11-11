@@ -278,6 +278,14 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     ui.label("Sound");
                     ch |= ui.checkbox(&mut c.mute, "No sound").changed();
                 });
+                card(b, "Debugging", |ui| {
+                    ch |= path_row(ui, "Program symbols (folder of a debug build)", &mut c.symbols, true, &[]);
+                    let mut catch = !c.no_catch;
+                    if ui.checkbox(&mut catch, "Crash catcher (stop on GRiD-OS errors, divide error, INT 3, wild jumps)").changed() {
+                        c.no_catch = !catch;
+                        ch = true;
+                    }
+                });
             });
             if ch {
                 sp.dirty = true;

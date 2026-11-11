@@ -2,6 +2,7 @@
 """One-click builds for the GRiD Compass in MAME.
 
   gridbuild.py build SOURCE     compile, link and test-run SOURCE
+  gridbuild.py debug SOURCE     the same, and keep the symbols for Compass-Emu's debugger
   gridbuild.py install SOURCE   put the last build of SOURCE on your disk
 
 SOURCE is a file like projects\\hello\\hello.pas (or hello.run, or the folder), or a project name
@@ -19,6 +20,12 @@ cycle-exact one, much slower, same results). The results land next to the source
   output\\       files your program wrote on the GRiD
 An empty file named norun in the project folder builds without starting the
 program (for games that never quit).
+debug builds the same program (the code is identical) with the compilers' DEBUG
+option and also saves the object files (NAME.pas.obj, NAME.asm.obj) and the link
+map (NAME.map) next to the source. In Compass-Emu, Debug > Load program symbols
+and pick the project folder (or compass.exe --symbols projects\\NAME): procedure
+names and source lines then show in the debugger, call stack, profiler and crash
+reports, and breakpoints can be set by name.
 install copies NAME.run and the source into the Projects subject of your
 merged disk (made if it isn't there, with no password like the other subjects). MAME must be closed for that.
 """
@@ -217,7 +224,17 @@ def split_source(src):
     return name, lang
 
 
-def build(src, use_state=True):
+def debug_line(l, n):
+    """A build script line for a debug build: DEBUG for the compiler and assembler, a link
+    map from the linker (the code is the same as without)."""
+    if re.search(r'Programs`(Pascal|Asm) ', l):
+        return l + ' debug'
+    if 'Programs`Link ' in l:
+        return l.replace(' purge ', ' purge print(%sProjects`%s~MP1~) ' % (HD, n))
+    return l
+
+
+def build(src, use_state=True, debug=False):
     name, lang = split_source(src)
     proj = os.path.dirname(src)
     fmt = lambda s: s.format(n=name, hd=HD)
@@ -237,6 +254,8 @@ def build(src, use_state=True):
                                       ''.join('%sProjects`%s.asm~obj~, ' % (HD, m) for m in mods))
                         for l in ASM_SCRIPT]
         script_lines = [l for l in script_lines if l]
+    if debug:
+        script_lines = [x for l in script_lines for x in [debug_line(m, name) for m in l.split('\n')]]
     # A file named norun in the project folder: build only, don't start
     # the program (a game that never quits would keep MAME busy until
     # the time limit, and nothing comes back before that).
@@ -385,6 +404,16 @@ def build(src, use_state=True):
         if built:
             gridfs(img, 'get', '1:Projects:' + fmt('{n}~Run~'), run)
 
+        if debug:
+            # symbols for Compass-Emu: the object files and the link map
+            for f in os.listdir(proj):
+                if f.lower().endswith(('.pas.obj', '.asm.obj')) or f.lower() == name.lower() + '.map':
+                    os.remove(os.path.join(proj, f))
+            for f in after:
+                if f.lower().endswith('~obj~'):
+                    gridfs(img, 'get', '1:Projects:' + f, os.path.join(proj, re.sub(r'~obj~$', '.obj', f, flags=re.I).lower()))
+                elif f.upper() == fmt('{n}~MP1~').upper():
+                    gridfs(img, 'get', '1:Projects:' + f, os.path.join(proj, name + '.map'), text=True)
         known = {fmt(o).upper() for o in outputs}
         new = [f for f in after if f.upper() not in before and f.upper() not in known]
         if new:
@@ -434,6 +463,9 @@ def build(src, use_state=True):
             print('BUILD FAILED. Errors are in %s; linker messages are in screen.png.' % lst)
             return 1
         print('BUILD OK: %s' % run)
+        if debug:
+            print('Symbols saved (.obj files): in Compass-Emu use Debug > Load program symbols and '
+                  'pick %s' % os.path.abspath(proj))
         if new:
             print('Your program wrote: ' + ', '.join(new) + '  (copied to output\\)')
         if norun:
@@ -471,12 +503,14 @@ def install(src):
 
 
 def main(argv):
-    if len(argv) != 2 or argv[0] not in ('build', 'install'):
+    if len(argv) != 2 or argv[0] not in ('build', 'debug', 'install'):
         print(__doc__)
         return 2
     try:
         src = find_source(argv[1])
-        return build(src) if argv[0] == 'build' else install(src)
+        if argv[0] == 'install':
+            return install(src)
+        return build(src, debug=argv[0] == 'debug')
     except BuildError as e:
         print(e)
         return 1

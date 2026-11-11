@@ -41,7 +41,7 @@ Note: GRiDBench "c" values are scaled by AAM = 83; the emulator (validated again
 | L3 | Timing in compatibility mode (before the OS turns the large screen on) | Emulator keeps the large-screen timing and shows 320 x 240 centred | D1 + D4 with the 11xx PROM screen up (e.g. PROM boot menu) |
 | L4 | What each DFE04 bit does (0Eh PROM, 0Bh/0Ah OS) | Emulator: bit 2 clear = large screen; bits 0-1 look like RAM size | Write values from a test program with DFE00 = 1 and watch the screen |
 | L5 | Does a 256K split board mirror RAM above 40000h | Emulator returns FFh there | Write/read 4000:0 vs 0000:0 on a 1131/1121 if one turns up |
-| L6 | 1121/1129 boot PROM dumps | The 1139 PROM can't start the 11xx build (its data sits where that CCOS loads) | Dump the PROM pair of a 1129 (MAME lists one: 1129even/odd.ccprom.bin) |
+| L6 | 1121/1129 boot PROM dumps (DONE: Kurt's 1129 PROM, 2026-11-10, = MAME grid1129) | The 1139 PROM can't start the 11xx build (its data sits where that CCOS loads) | Dump the PROM pair of a 1129 (MAME lists one: 1129even/odd.ccprom.bin) |
 
 ## Bubble memory (7220 + 3 x 7110)
 

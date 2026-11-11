@@ -1,4 +1,4 @@
-//! Compass-Emu 0.5.0: a GRiD Compass in a window.
+//! Compass-Emu 0.6.0: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -23,6 +23,10 @@
 //!   --overlay                    start with the demo tools overlay on (F10)
 //!   --fast                       fast CPU core (whole instructions, approximate timing)
 //!   --classic                    the plain window of 0.4 (no menus) instead of the GUI
+//!   --symbols D                  program symbols for the debugger: the project folder of a
+//!                                debug build (gridbuild.py debug saves NAME.pas.obj files there)
+//!   --no-catch                   crash catcher off (it stops on GRiD-OS errors, divide error,
+//!                                INT 3 and wild jumps)
 //! Without machine options the GUI starts at the machine setup screen.
 //! Keys: PC keys map to the Compass keys by position; Alt = CODE, Ctrl = CTRL.
 //!   Debugger: type commands in the console window (h = help), F8 = pause / go on.
@@ -46,11 +50,11 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.6.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--classic]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -133,6 +137,8 @@ fn main() {
             "--serial" => cfg.serial = val(),
             "--mute" => cfg.mute = true,
             "--fast" => cfg.fast = true,
+            "--symbols" => cfg.symbols = val(),
+            "--no-catch" => cfg.no_catch = true,
             "--overlay" => {
                 opts.overlay = true;
                 machine = false;

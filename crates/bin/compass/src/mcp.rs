@@ -36,8 +36,8 @@ fn tools() -> Value {
     json!([
         {
             "name": "grid_build",
-            "description": "Compile, link and test-run a GRiD Pascal (+ ASM-86) program with the GRiD's own tools on an emulated Compass (gridbuild.py build). SOURCE is a .pas file, a project folder or a project name (\"hello\" = projects\\hello\\hello.pas). Returns the build messages (compiler errors, BUILD OK/FAILED) and the GRiD screen at the end. NAME.lst, NAME.run, screen.png and output\\ land next to the source.",
-            "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "model": model}, "required": ["source"]}
+            "description": "Compile, link and test-run a GRiD Pascal (+ ASM-86) program with the GRiD's own tools on an emulated Compass (gridbuild.py build). SOURCE is a .pas file, a project folder or a project name (\"hello\" = projects\\hello\\hello.pas). Returns the build messages (compiler errors, BUILD OK/FAILED) and the GRiD screen at the end. NAME.lst, NAME.run, screen.png and output\\ land next to the source. debug: true also keeps the symbols (NAME.pas.obj files, same code) for grid_debug sym FOLDER.",
+            "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "model": model, "debug": {"type": "boolean"}}, "required": ["source"]}
         },
         {
             "name": "grid_boot",
@@ -82,7 +82,7 @@ fn tools() -> Value {
         },
         {
             "name": "grid_debug",
-            "description": "Debugger and cycle counter on the running Compass (after grid_boot). command is one of: b ADDR (code breakpoint, SSSS:OOOO or linear hex), bio PORT, bi N (hardware interrupt IR0-7, 3 = vertical sync), bw ADDR [LEN] (memory write watch), bl, bc, s [N] (step N instructions, shows clocks), r, m ADDR [LEN], u [SSSS:OOOO] [N] (disassemble), marks (cycle counter report: programs mark sections with OUT 0F0h,AL / OUT 0F2h,AL and frames with OUT 0F4h,AL; ports a real Compass ignores), marks-clear, g [SECONDS] (run until a breakpoint or SECONDS emulated seconds, default 10; returns the reason and the screen).",
+            "description": "Debugger and cycle counter on the running Compass (after grid_boot). command is one of: b ADDR (code breakpoint, SSSS:OOOO or linear hex), bio PORT, bi N (hardware interrupt IR0-7, 3 = vertical sync), bw ADDR [LEN] (memory write watch), bl, bc, s [N] (step N instructions, shows clocks), r, m ADDR [LEN], u [SSSS:OOOO] [N] (disassemble), marks (cycle counter report: programs mark sections with OUT 0F0h,AL / OUT 0F2h,AL and frames with OUT 0F4h,AL; ports a real Compass ignores), marks-clear, g [SECONDS] (run until a breakpoint or SECONDS emulated seconds, default 10; returns the reason and the screen). Program symbols: sym FOLDER (the project folder of a gridbuild debug build: NAME.pas.obj etc.), then names work where addresses do (b PROC, b MODULE:LINE, u PROC, m NAME), names [TEXT], k (call stack), hist [N] (recent instructions), catch on|off (crash catcher: stops on GRiD-OS errors, divide error, INT 3, wild jumps with a report), os on|off|N (GRiD-OS call log). grid_type and grid_run also stop at breakpoints and the crash catcher (the result starts with STOPPED).",
             "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
         },
         {
@@ -180,6 +180,12 @@ impl Server {
 
     fn screen(&mut self, note: &str) -> Result<Vec<Value>, String> {
         let s = self.session()?;
+        let mut note = note.to_string();
+        if let Some(why) = s.stop.take() {
+            // a breakpoint or the crash catcher stopped it (keys not typed yet stay queued)
+            let (cs, ip) = s.m.cs_ip();
+            note = format!("STOPPED: {why}\n{}\n{}{note}", s.m.reg_dump(), s.m.disassemble(cs, ip, 3));
+        }
         let (w, h, px) = s.screen();
         let (cs, ip) = s.m.cs_ip();
         let mode = s.m.screen_mode();
@@ -236,7 +242,7 @@ impl Server {
                 }
                 else {
                     s.type_keys(&t)?;
-                    while s.typing() {
+                    while s.typing() && s.stop.is_none() {
                         s.run_seconds(0.1);
                     }
                     s.run_seconds(num(a, "seconds").unwrap_or(2.0));
@@ -334,7 +340,7 @@ impl Server {
         for py in ["python", "py", "python3"] {
             let r = std::process::Command::new(py)
                 .arg(root.join("tools").join("gridbuild.py"))
-                .arg("build")
+                .arg(if a.get("debug").and_then(|v| v.as_bool()).unwrap_or(false) { "debug" } else { "build" })
                 .arg(source)
                 .current_dir(&root)
                 .env("GRID_EMU", &exe)

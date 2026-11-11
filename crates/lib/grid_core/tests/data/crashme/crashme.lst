@@ -1,0 +1,95 @@
+GRiD-OS 50.5.30 Pascal-86, V3.1                                                              11/10/84  9:30 pm PAGE   1
+                                                                                                                CRASHME
+
+Source File: `Hard Disk X`PROJECTS`CRASHME.PAS~TEXT~
+Object File: `Hard Disk X`PROJECTS`CRASHME.PAS~OBJ~
+Controls Specified:  DEBUG, SYMBOLSPACE(32), COMPACT(-CONST IN DATA-).
+
+STMT LINE NESTING       SOURCE TEXT: `Hard Disk X`PROJECTS`CRASHME.PAS~TEXT~
+
+   1    2  0  0         MODULE crashme;
+                        
+                        $NOLIST
+                        
+ 150   11  0  0         PUBLIC CrashAsm;
+ 151   12  0  0             PROCEDURE DoInt3;
+ 152   13  0  0             PROCEDURE DoWild;
+                        
+ 153   15  0  0         PROGRAM crashme;
+                        
+ 154   17  0  0         VAR
+                            ch: CHAR;
+ 155   19  0  0             r, error, k: INTEGER;
+ 156   20  0  0             x: REAL;
+ 157   21  0  0             msg: ARRAY [0..80] OF BYTE;
+                        
+ 158   23  0  0         PROCEDURE Inner (n: INTEGER);
+ 159   24  1  0         BEGIN
+ 159   25  1  1         r := 100 DIV (n - n);
+ 160   26  1  1         END;
+                        
+ 161   28  0  0         PROCEDURE Middle (n: INTEGER);
+ 162   29  1  0         BEGIN
+ 162   30  1  1         Inner (n + 1);
+ 163   31  1  1         END;
+                        
+ 164   33  0  0         PROCEDURE FloatTest;
+ 165   34  1  0         VAR j: INTEGER;
+ 166   35  1  0         BEGIN
+ 166   36  1  1         x := 1.0;
+ 167   37  1  1         FOR j := 1 TO 200 DO x := x * 1.01 + 0.5;
+ 169   38  1  1         END;
+                        
+ 170   40  0  0         FUNCTION Work (n: INTEGER): INTEGER;
+ 171   41  1  0         VAR j, t: INTEGER;
+ 172   42  1  0         BEGIN
+ 172   43  1  1         t := 0;
+ 173   44  1  1         FOR j := 1 TO 50 DO t := t + (n MOD 7) * j;
+ 175   45  1  1         Work := t;
+ 176   46  1  1         END;
+                        
+ 177   48  0  0         PROCEDURE ShowError;
+ 178   49  1  0         BEGIN
+ 178   50  1  1         OsDecodeException (2, msg);
+ 179   51  1  1         END;
+                        
+ 180   53  0  0         BEGIN
+ 180   54  0  1         ch := ConCharIn;
+ 181   55  0  1         IF ch = 'd' THEN Middle (5);
+ 183   56  0  1         IF ch = 'e' THEN ShowError;
+ 185   57  0  1         IF ch = 'i' THEN DoInt3;
+GRiD-OS 50.5.30 Pascal-86, V3.1                                                              11/10/84  9:30 pm PAGE   2
+                                                                                                                CRASHME
+
+STMT LINE NESTING       SOURCE TEXT: `Hard Disk X`PROJECTS`CRASHME.PAS~TEXT~
+
+ 187   58  0  1         IF ch = 'w' THEN DoWild;
+ 189   59  0  1         IF ch = 'f' THEN FloatTest;
+ 191   60  0  1         IF ch = 'p' THEN FOR k := 1 TO 3000 DO r := Work (k);
+ 194   61  0  1         ch := ConCharIn;
+ 195   62  0  1         END.
+
+
+
+Summary Information:
+
+PROCEDURE                OFFSET    CODE SIZE      DATA SIZE      STACK SIZE
+INNER                     0000H  0019H    25D                   0006H     6D  
+MIDDLE                    0019H  0012H    18D                   0008H     8D  
+FLOATTEST                 002BH  003AH    58D                   000AH    10D  
+WORK                      0065H  0041H    65D                   000EH    14D  
+SHOWERROR                 00A6H  0015H    21D                   000CH    12D  
+CRASHME                   00BBH  0076H   118D  00060H      96D  0004H     4D  
+-CONST IN DATA-                                0001EH      30D  
+
+Total                            0131H   305D  0007EH     126D  006AH   106D  
+
+ 353 Lines Read.
+   0 Errors Detected.
+
+Dictionary Summary:
+
+   200KB Memory Available.
+    16KB Memory Used (8%).
+     0KB Disk Space Used.
+     7KB out of 32KB Static Space Used (21%).

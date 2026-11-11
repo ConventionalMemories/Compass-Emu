@@ -47,6 +47,10 @@ pub struct MachineConfig {
     pub readonly: bool,
     /// Fast CPU core (whole instructions, approximate timing).
     pub fast: bool,
+    /// Program symbols: the project folder of a debug build (NAME.pas.obj files).
+    pub symbols: String,
+    /// Crash catcher off (it is on unless this is set).
+    pub no_catch: bool,
 }
 
 impl MachineConfig {
@@ -111,6 +115,16 @@ impl MachineConfig {
         }
         if self.fast {
             a.push("--fast".into());
+        }
+        let mut opt = |flag: &str, v: &str| {
+            if !v.trim().is_empty() {
+                a.push(flag.to_string());
+                a.push(v.trim().to_string());
+            }
+        };
+        opt("--symbols", &self.symbols);
+        if self.no_catch {
+            a.push("--no-catch".into());
         }
         a
     }
@@ -223,6 +237,13 @@ impl Session {
         }
         if cfg.fast {
             m.set_fast(true);
+        }
+        m.board_mut().debug.catch.on = !cfg.no_catch;
+        if let Some(p) = some(&cfg.symbols) {
+            match m.load_symbols(&p) {
+                Ok(r) => notes.push(r.trim_end().to_string()),
+                Err(e) => notes.push(format!("symbols: {e}")),
+            }
         }
         Ok(Session { m, cfg: cfg.clone(), media, hostdir, serial, audio, notes, serial_out: vec![] })
     }
@@ -411,6 +432,8 @@ impl Session {
         if fast {
             m.set_fast(true);
         }
+        // breakpoints, symbols and the crash catcher stay as they were
+        m.board_mut().debug = std::mem::take(&mut self.m.board_mut().debug);
         self.m = m;
         Ok(())
     }

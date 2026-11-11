@@ -2,6 +2,16 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.6.0
+
+- Program symbols for the debugger from a debug build (debug.bat,
+  gridbuild.py debug): names and Pascal source lines in the disassembly,
+  breakpoints by name or source line, call stack, names in the profiler.
+- Crash catcher: stops on GRiD-OS errors (with the message text), divide
+  errors, INT 3 and wild jumps, with a report.
+- GRiD-OS call log (every OS, CP and Common call with its caller).
+- --symbols DIR and --no-catch; the machine setup page has a Debugging card.
+
 ## 0.5.0
 
 - A GUI: menus, toolbar, status bar with drive lights, machine setup page

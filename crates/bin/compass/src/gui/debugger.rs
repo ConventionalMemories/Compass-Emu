@@ -15,11 +15,12 @@ pub struct DebugPage {
     bp_kind: usize,
     bp_text: String,
     dis_addr: String,
+    name_filter: String,
 }
 
 impl Default for DebugPage {
     fn default() -> Self {
-        DebugPage { profile: None, console: String::new(), mem_addr: "0040:0000".into(), bp_kind: 0, bp_text: String::new(), dis_addr: String::new() }
+        DebugPage { profile: None, console: String::new(), mem_addr: "0040:0000".into(), bp_kind: 0, bp_text: String::new(), dis_addr: String::new(), name_filter: String::new() }
     }
 }
 
@@ -33,6 +34,25 @@ pub fn command(app: &mut App, line: &str) {
     }
 }
 
+/// Ask for a debug build's folder and load its symbols (remembered in the machine profile).
+pub fn load_symbols_dialog(app: &mut App) {
+    let Some(dir) = rfd::FileDialog::new().set_title("Folder of a debug build (with NAME.pas.obj files)").pick_folder() else {
+        app.resync();
+        return;
+    };
+    if let Some(s) = &mut app.sess {
+        let r = s.m.load_symbols(&dir);
+        match r {
+            Ok(rep) => {
+                s.cfg.symbols = dir.display().to_string();
+                app.say(rep.trim_end().to_string());
+            }
+            Err(e) => app.say(e),
+        }
+    }
+    app.resync();
+}
+
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).strong().color(HILITE)).default_open(open).show(ui, add);
 }
@@ -42,9 +62,16 @@ pub fn panels(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::right("debugger").resizable(true).default_size(520.0).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             controls(app, ui);
+            let crashed = app.sess.as_ref().map(|s| s.m.board().debug.crash.is_some()).unwrap_or(false);
+            if crashed {
+                section(ui, "Crash catcher", true, |ui| crash(app, ui));
+            }
             section(ui, "Registers", true, |ui| registers(app, ui));
             section(ui, "Disassembly", true, |ui| disassembly(app, ui));
+            section(ui, "Call stack", true, |ui| call_stack(app, ui));
             section(ui, "Breakpoints and watches", true, |ui| breakpoints(app, ui));
+            section(ui, "Program symbols", false, |ui| symbols(app, ui));
+            section(ui, "GRiD-OS calls", false, |ui| os_calls(app, ui));
             section(ui, "Cycle counter marks", true, |ui| marks(app, ui));
             section(ui, "Profiler", false, |ui| profiler(app, ui));
             section(ui, "Memory", false, |ui| memory(app, ui));
@@ -79,6 +106,19 @@ fn controls(app: &mut App, ui: &mut egui::Ui) {
             app.show_chips = !app.show_chips;
         }
     });
+    if let Some(s) = &mut app.sess {
+        let c = &mut s.m.board_mut().debug.catch;
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut c.on, "Crash catcher:").on_hover_text("stop the machine when the program goes wrong, with a report");
+            ui.add_enabled_ui(c.on, |ui| {
+                ui.checkbox(&mut c.errors, "GRiD-OS errors").on_hover_text("an error code turned into its message (OsDecodeException)");
+                ui.checkbox(&mut c.divide, "divide error");
+                ui.checkbox(&mut c.int3, "INT 3").on_hover_text("not the INT 3s GRiD-OS puts in for 8087 WAITs");
+                ui.checkbox(&mut c.wild, "wild jumps").on_hover_text("running through empty memory (00 00 or FF FF)");
+            });
+        });
+        s.cfg.no_catch = !s.m.board().debug.catch.on;
+    }
     if paused {
         if let Some(s) = &app.sess {
             let b = s.m.board();
@@ -148,7 +188,7 @@ fn disassembly(app: &mut App, ui: &mut egui::Ui) {
     let mut toggle: Option<u32> = None;
     ui.horizontal(|ui| {
         ui.label("From");
-        ui.add(egui::TextEdit::singleline(&mut app.dbg.dis_addr).hint_text("CS:IP").desired_width(110.0));
+        ui.add(egui::TextEdit::singleline(&mut app.dbg.dis_addr).hint_text("CS:IP or a name").desired_width(140.0));
         if ui.small_button("CS:IP").clicked() {
             app.dbg.dis_addr.clear();
         }
@@ -159,10 +199,27 @@ fn disassembly(app: &mut App, ui: &mut egui::Ui) {
         .dis_addr
         .split_once(':')
         .and_then(|(a, b)| Some((u16::from_str_radix(a.trim(), 16).ok()?, u16::from_str_radix(b.trim(), 16).ok()?)))
+        .or_else(|| {
+            // a name from the symbols: shown in the current code segment when it is in it
+            let t = app.dbg.dis_addr.trim();
+            if t.is_empty() {
+                return None;
+            }
+            let lin = s.m.resolve(t).ok()?;
+            let base = (cs as u32) << 4;
+            Some(if lin >= base && lin < base + 0x10000 { (cs, (lin - base) as u16) } else { ((lin >> 4) as u16, (lin & 15) as u16) })
+        })
         .unwrap_or((cs, ip));
     let text = s.m.disassemble(seg, off, 16);
     let pc = ((cs as u32) << 4) + ip as u32;
     for line in text.lines() {
+        let is_addr = line.len() > 10 && line.as_bytes()[4] == b':' && line[..9].chars().filter(|c| *c != ':').all(|c| c.is_ascii_hexdigit());
+        if !is_addr {
+            // a name (label) or a source line from the symbols
+            let t = RichText::new(line).monospace();
+            ui.label(if line.starts_with(' ') { t.color(Color32::from_rgb(0x8F, 0xBC, 0x8F)) } else { t.strong().color(HILITE) });
+            continue;
+        }
         let lin = parse_addr(&line[..9.min(line.len())]).ok();
         ui.horizontal(|ui| {
             let bp = lin.map(|a| s.m.board().debug.exec.contains(&a)).unwrap_or(false);
@@ -186,13 +243,34 @@ fn breakpoints(app: &mut App, ui: &mut egui::Ui) {
     let Some(s) = &mut app.sess else { return };
     let dbg = &mut s.m.board_mut().debug;
     let mut remove: Option<(u8, u32)> = None;
+    let mut remove_name: Option<String> = None;
+    for (n, a) in dbg.named.iter() {
+        ui.horizontal(|ui| {
+            if ui.small_button("x").clicked() {
+                remove_name = Some(n.clone());
+            }
+            match a {
+                Some(a) => ui.monospace(format!("code at {n} ({a:05X})")),
+                None => ui.monospace(format!("code at {n} (when the program is in memory)")),
+            };
+        });
+    }
     for a in dbg.exec.iter() {
+        if dbg.named.values().any(|x| *x == Some(*a)) {
+            continue;
+        }
         ui.horizontal(|ui| {
             if ui.small_button("x").clicked() {
                 remove = Some((0, *a));
             }
-            ui.monospace(format!("code at {:04X}:{:04X} ({a:05X})", a >> 4, a & 15));
+            let name = dbg.syms.name_at(*a).map(|n| format!(" {n}")).unwrap_or_default();
+            ui.monospace(format!("code at {:04X}:{:04X} ({a:05X}){name}", a >> 4, a & 15));
         });
+    }
+    if let Some(n) = remove_name {
+        if let Some(Some(a)) = dbg.named.remove(&n) {
+            dbg.exec.remove(&a);
+        }
     }
     for p in dbg.ports.iter() {
         ui.horizontal(|ui| {
@@ -233,7 +311,7 @@ fn breakpoints(app: &mut App, ui: &mut egui::Ui) {
         }
         _ => {}
     }
-    let kinds = ["Code address", "Port", "Interrupt IR", "Memory write"];
+    let kinds = ["Code address or name", "Port", "Interrupt IR", "Memory write"];
     let mut add = None;
     ui.horizontal_wrapped(|ui| {
         egui::ComboBox::from_id_salt("bpkind").selected_text(kinds[app.dbg.bp_kind]).show_ui(ui, |ui| {
@@ -241,7 +319,7 @@ fn breakpoints(app: &mut App, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.dbg.bp_kind, i, *k);
             }
         });
-        let hint = ["SSSS:OOOO", "DFE4", "0-7", "SSSS:OOOO [len]"][app.dbg.bp_kind];
+        let hint = ["SSSS:OOOO or PROC", "DFE4", "0-7", "SSSS:OOOO [len]"][app.dbg.bp_kind];
         ui.add(egui::TextEdit::singleline(&mut app.dbg.bp_text).hint_text(hint).desired_width(130.0));
         if ui.button("Add").clicked() && !app.dbg.bp_text.trim().is_empty() {
             add = Some(format!("{} {}", ["b", "bio", "bi", "bw"][app.dbg.bp_kind], app.dbg.bp_text.trim()));
@@ -254,6 +332,117 @@ fn breakpoints(app: &mut App, ui: &mut egui::Ui) {
         app.dbg.bp_text.clear();
         command(app, &c);
     }
+}
+
+fn crash(app: &mut App, ui: &mut egui::Ui) {
+    let Some(s) = &mut app.sess else { return };
+    let report = s.m.board().debug.crash.clone().unwrap_or_default();
+    egui::ScrollArea::both().id_salt("crash").max_height(300.0).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(&report).monospace().color(Color32::from_rgb(0xFF, 0x9A, 0x80))).extend());
+    });
+    let mut save = false;
+    ui.horizontal(|ui| {
+        if ui.button("Dismiss").clicked() {
+            s.m.board_mut().debug.crash = None;
+        }
+        save = ui.button("Save report...").clicked();
+    });
+    if save {
+        if let Some(p) = rfd::FileDialog::new().set_file_name("compass-crash.txt").save_file() {
+            match std::fs::write(&p, &report) {
+                Ok(_) => app.say(format!("saved {}", p.display())),
+                Err(e) => app.say(format!("{}: {e}", p.display())),
+            }
+        }
+        app.resync();
+    }
+}
+
+fn call_stack(app: &mut App, ui: &mut egui::Ui) {
+    let paused = app.run.as_ref().map(|r| r.paused).unwrap_or(false);
+    let Some(s) = &mut app.sess else { return };
+    if !paused {
+        ui.label(RichText::new("Shown when the machine is stopped.").weak());
+        return;
+    }
+    s.m.locate_symbols();
+    let (cs, ip) = s.m.cs_ip();
+    let frames = s.m.backtrace(cs, ip, 24);
+    for (i, (c, o)) in frames.iter().enumerate() {
+        let text = s.m.describe(*c, *o);
+        if ui.add(egui::Button::new(RichText::new(format!("#{i:<2} {text}")).monospace()).frame(false)).on_hover_text("show in the disassembly").clicked() {
+            // a return address: show from the call before it
+            app.dbg.dis_addr = format!("{c:04X}:{:04X}", if i == 0 { *o } else { o.wrapping_sub(if s.m.peek((((*c as u32) << 4) + o.wrapping_sub(5) as u32) & 0xFFFFF) == 0x9A { 5 } else { 3 }) });
+        }
+    }
+    if s.m.board().debug.syms.is_empty() {
+        ui.label(RichText::new("Load the program's symbols to see procedure names and source lines (Debug menu).").weak().small());
+    }
+}
+
+fn symbols(app: &mut App, ui: &mut egui::Ui) {
+    let mut load = false;
+    let mut cmd = None;
+    {
+        let Some(s) = &mut app.sess else { return };
+        s.m.locate_symbols();
+        let syms = &s.m.board().debug.syms;
+        ui.horizontal(|ui| {
+            load = ui.button("Load folder...").on_hover_text("the project folder of a debug build (NAME.pas.obj files)").clicked();
+            if !syms.is_empty() && ui.button("Unload").clicked() {
+                cmd = Some("sym off".to_string());
+            }
+        });
+        if syms.is_empty() {
+            ui.label(RichText::new("No symbols. Build with gridbuild.py debug, then load the project folder: procedure names, labels and source lines appear in the disassembly, call stack, profiler and crash reports, and breakpoints can be set by name.").weak().small());
+        }
+        else {
+            ui.add(egui::Label::new(RichText::new(syms.report()).monospace().small()).extend());
+            ui.horizontal(|ui| {
+                ui.label("Find");
+                ui.add(egui::TextEdit::singleline(&mut app.dbg.name_filter).hint_text("part of a name").desired_width(160.0));
+            });
+            let f = app.dbg.name_filter.to_ascii_uppercase();
+            let all = syms.all();
+            egui::ScrollArea::vertical().id_salt("names").max_height(200.0).show(ui, |ui| {
+                for (n, a) in all.iter().filter(|(n, _)| n.contains(&f)).take(400) {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("b").on_hover_text("breakpoint here").clicked() {
+                            cmd = Some(format!("b {n}"));
+                        }
+                        if ui.add(egui::Button::new(RichText::new(format!("{:04X}:{:04X}  {n}", a >> 4, a & 15)).monospace()).frame(false)).on_hover_text("show in the disassembly").clicked() {
+                            app.dbg.dis_addr = n.clone();
+                        }
+                    });
+                }
+            });
+        }
+    }
+    if load {
+        load_symbols_dialog(app);
+    }
+    if let Some(c) = cmd {
+        command(app, &c);
+    }
+}
+
+fn os_calls(app: &mut App, ui: &mut egui::Ui) {
+    let Some(s) = &mut app.sess else { return };
+    let d = &mut s.m.board_mut().debug;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut d.os_log_on, "Log GRiD-OS calls");
+        if ui.small_button("Clear").clicked() {
+            d.os_log.clear();
+        }
+    });
+    if d.os_log.is_empty() {
+        ui.label(RichText::new("Each call through the OS, CP and Common call vectors, with the caller (names from the program's symbols).").weak().small());
+    }
+    egui::ScrollArea::vertical().id_salt("oslog").max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
+        for l in d.os_log.iter() {
+            ui.monospace(l);
+        }
+    });
 }
 
 fn marks(app: &mut App, ui: &mut egui::Ui) {

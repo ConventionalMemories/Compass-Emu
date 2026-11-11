@@ -474,6 +474,16 @@ impl App {
                     self.show_debugger = true;
                     debugger::command(self, "prof 60");
                 }
+                ui.separator();
+                if ui.add_enabled(on, egui::Button::new("Load program symbols...")).on_hover_text("the project folder of a debug build (NAME.pas.obj files)").clicked() {
+                    debugger::load_symbols_dialog(self);
+                }
+                if let Some(s) = &mut self.sess {
+                    let d = &mut s.m.board_mut().debug;
+                    ui.checkbox(&mut d.catch.on, "Crash catcher").on_hover_text("stop on GRiD-OS errors, divide error, INT 3 and wild jumps");
+                    ui.checkbox(&mut d.os_log_on, "GRiD-OS call log");
+                    s.cfg.no_catch = !s.m.board().debug.catch.on;
+                }
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Keys").clicked() {
@@ -743,6 +753,9 @@ impl eframe::App for App {
                 }
                 if msg.starts_with("profile done") {
                     self.dbg.profile = Some(msg.clone());
+                    self.show_debugger = true;
+                }
+                if msg.starts_with("CRASH CATCHER") {
                     self.show_debugger = true;
                 }
                 self.say(msg);

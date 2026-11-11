@@ -173,6 +173,11 @@ impl GridBoard {
         }
     }
 
+    /// 80130 timers for the debugger: (live count, loaded value, mode) of each.
+    pub fn timers(&self) -> [(u16, u16, u8); 3] {
+        [0, 1, 2].map(|r| (self.pit_now(r), self.pit_count[r], self.pit_mode[r]))
+    }
+
     /// A 1101 board. `even` and `odd` are the two 8K PROM chips.
     pub fn new(even: &[u8], odd: &[u8]) -> GridBoard {
         Self::new_model(GridModel::Compass1101, even, odd)

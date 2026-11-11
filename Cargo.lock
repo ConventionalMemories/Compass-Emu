@@ -1125,14 +1125,20 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64",
+ "chrono",
  "cpal 0.15.3",
+ "eframe",
+ "egui 0.34.2",
  "grid_core",
  "marty_core",
  "minifb",
  "png 0.17.16",
+ "raw-window-handle",
+ "rfd",
+ "serde",
  "serde_json",
  "serialport",
 ]
@@ -2531,6 +2537,7 @@ dependencies = [
  "cgl",
  "dispatch2",
  "glutin_egl_sys",
+ "glutin_glx_sys",
  "glutin_wgl_sys",
  "libloading",
  "objc2 0.6.4",
@@ -2541,6 +2548,7 @@ dependencies = [
  "raw-window-handle",
  "wayland-sys 0.31.8",
  "windows-sys 0.52.0",
+ "x11-dl",
 ]
 
 [[package]]
@@ -2563,6 +2571,16 @@ checksum = "4c4680ba6195f424febdc3ba46e7a42a0e58743f2edb115297b86d7f8ecc02d2"
 dependencies = [
  "gl_generator",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "glutin_glx_sys"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7bb2938045a88b612499fbcba375a77198e01306f52272e692f8c1f3751185"
+dependencies = [
+ "gl_generator",
+ "x11-dl",
 ]
 
 [[package]]

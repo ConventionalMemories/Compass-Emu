@@ -261,6 +261,11 @@ impl Drive {
         self.mechanics && self.kind != DriveKind::Hdd2101 && !self.image.is_empty() && self.image.len() <= 720 * SECTOR && std::env::var_os("FD_NOMECH").is_none()
     }
 
+    /// A command is being carried out (for a drive activity light).
+    pub fn busy(&self) -> bool {
+        self.state != DriveState::Idle || self.done_at.is_some()
+    }
+
     /// Clocks a byte when this drive talks: the 2102's 8051 bit-bangs GPIB.
     pub fn talk_clocks(&self) -> Option<u64> {
         (self.kind == DriveKind::Floppy2102).then(|| fd::p().talk)

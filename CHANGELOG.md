@@ -2,6 +2,16 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.5.0
+
+- A GUI: menus, toolbar, status bar with drive lights, machine setup page
+  with saved profiles, media manager with floppy swapping and a GRiD file
+  browser (export, import, delete, subjects, blank floppies), debugger
+  workspace, chips window, quick save / load, state files, screen colour
+  and scaling. The 0.4 window stays as --classic and as the fallback when
+  OpenGL 2 is missing.
+- --fast starts with the fast CPU core.
+
 ## 0.4.0
 
 - Demo tools (see above): cycle counter marks, frame meter overlay (F10),

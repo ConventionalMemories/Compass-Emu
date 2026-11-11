@@ -112,13 +112,15 @@ pub struct Volume {
     pub img: Vec<u8>,
     n: u32,
     root: u32,
+    /// First bitmap page.
+    bm: u32,
 }
 
 impl Volume {
     /// Blank volume of `pages` pages named `name`.
     pub fn format(pages: u32, name: &str, now: [u8; 11]) -> Volume {
         let pages = pages.clamp(720, MAX_PAGES);
-        let mut v = Volume { img: vec![0u8; pages as usize * PAGE], n: pages, root: root_fid(pages) };
+        let mut v = Volume { img: vec![0u8; pages as usize * PAGE], n: pages, root: root_fid(pages), bm: BITMAP_FID };
         v.img[..13].copy_from_slice(b"System Disk!!");
         // Bitmap: pages past the end count as used, as on GRiD floppies.
         let nbm = pages.div_ceil(BM_BITS);
@@ -172,7 +174,108 @@ impl Volume {
         if n < 720 || &img[..13] != b"System Disk!!" {
             return err("not a GRiD floppy-style volume");
         }
-        Ok(Volume { img, n, root: root_fid(n) })
+        Ok(Volume { img, n, root: root_fid(n), bm: BITMAP_FID })
+    }
+
+    /// Any GRiD volume: a floppy (bitmap found by its tag) or one hard disk volume (bitmap
+    /// and root directory named in page 0), as tools/gridfs.py reads them.
+    pub fn open_any(img: Vec<u8>) -> R<Volume> {
+        let n = (img.len() / PAGE) as u32;
+        if n < 16 || &img[..13] != b"System Disk!!" {
+            return err("no GRiD volume header (System Disk!!)");
+        }
+        if u16_at(&img, 23) == 0x7285 {
+            let bm = u16_at(&img, 30) as u32;
+            let root = u16_at(&img, 32) as u32;
+            if bm >= n || root >= n {
+                return err("volume header points outside the volume");
+            }
+            return Ok(Volume { img, n, root, bm });
+        }
+        for p in 1..n {
+            let pg = &img[p as usize * PAGE..(p as usize + 1) * PAGE];
+            if u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16) {
+                let root = p + n.div_ceil(BM_BITS);
+                return Ok(Volume { img, n, root, bm: p });
+            }
+        }
+        err("no bitmap found on the volume")
+    }
+
+    /// Root directory FID.
+    pub fn root(&self) -> u32 {
+        self.root
+    }
+
+    /// The volume's name (the root directory's name).
+    pub fn name(&self) -> String {
+        self.header(self.root).map(|h| h[9..9 + h[8] as usize].iter().map(|&b| b as char).collect()).unwrap_or_default()
+    }
+
+    /// Free pages.
+    pub fn free_pages(&self) -> u32 {
+        (0..self.n).filter(|&p| !self.is_used(p)).count() as u32
+    }
+
+    /// (size in bytes, created, modified) of a file.
+    pub fn info(&self, fid: u32) -> Option<(u32, Option<std::time::SystemTime>, Option<std::time::SystemTime>)> {
+        let h = self.header(fid).ok()?;
+        Some((u32_at(&h, 4), time_from_grid(&h[89..100]), time_from_grid(&h[102..113])))
+    }
+
+    /// Directory FID of a subject ("" = the root).
+    pub fn subject_dir(&self, subject: &str) -> R<u32> {
+        if subject.is_empty() {
+            return Ok(self.root);
+        }
+        let want = if is_subject(subject) { subject.to_string() } else { format!("{subject}~Subject~") };
+        self.entries(self.root)?
+            .into_iter()
+            .find(|e| e.1.eq_ignore_ascii_case(&want))
+            .map(|e| e.0)
+            .ok_or_else(|| FsError(format!("no subject {subject}")))
+    }
+
+    /// Store a file (replacing one of the same name) with today's date.
+    pub fn put_file(&mut self, subject: &str, name: &str, data: &[u8]) -> R<()> {
+        let dir = self.subject_dir(subject)?;
+        if let Some((fid, _)) = self.entries(dir)?.into_iter().find(|e| e.1.eq_ignore_ascii_case(name)) {
+            self.delete(dir, fid)?;
+        }
+        let now = grid_time(std::time::SystemTime::now());
+        self.add(dir, name, data, false, now, now)?;
+        Ok(())
+    }
+
+    /// A new subject in the root.
+    pub fn add_subject(&mut self, name: &str) -> R<()> {
+        let nm = if is_subject(name) { name.to_string() } else { format!("{name}~Subject~") };
+        let now = grid_time(std::time::SystemTime::now());
+        let root = self.root;
+        self.add(root, &nm, &[], true, now, now)?;
+        Ok(())
+    }
+
+    /// Erase file `fid` from directory `dir` (a subject only when it is empty).
+    pub fn delete(&mut self, dir: u32, fid: u32) -> R<()> {
+        let mut ents = self.entries(dir)?;
+        let Some(i) = ents.iter().position(|e| e.0 == fid) else {
+            return err("the file is not in that directory");
+        };
+        if is_subject(&ents[i].1) && !self.entries(fid)?.is_empty() {
+            return err("the subject still holds files");
+        }
+        let (fars, data) = self.file_pages(fid)?;
+        let mut n = 0;
+        for p in std::iter::once(fid).chain(fars).chain(data) {
+            if p < self.n && self.is_used(p) {
+                self.mark(p, false);
+                n += 1;
+            }
+        }
+        self.adjust_alloc(-n);
+        ents.remove(i);
+        self.store_dir(dir, ents)
     }
 
     pub fn pages(&self) -> u32 {
@@ -188,7 +291,7 @@ impl Volume {
 
     // ---- bitmap ----
     fn bm_seal(&mut self, k: u32) {
-        let p = BITMAP_FID + k;
+        let p = self.bm + k;
         let mut pg = self.page(p).to_vec();
         let ck = checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16);
         put16(&mut pg, 4, ck);
@@ -197,7 +300,7 @@ impl Volume {
     fn mark(&mut self, p: u32, used: bool) {
         let k = p / BM_BITS;
         let r = (p % BM_BITS) as usize;
-        let a = (BITMAP_FID + k) as usize * PAGE + 8 + (r >> 3);
+        let a = (self.bm + k) as usize * PAGE + 8 + (r >> 3);
         if used {
             self.img[a] |= 1 << (r & 7);
         }
@@ -209,10 +312,10 @@ impl Volume {
     fn is_used(&self, p: u32) -> bool {
         let k = p / BM_BITS;
         let r = (p % BM_BITS) as usize;
-        self.img[(BITMAP_FID + k) as usize * PAGE + 8 + (r >> 3)] & (1 << (r & 7)) != 0
+        self.img[(self.bm + k) as usize * PAGE + 8 + (r >> 3)] & (1 << (r & 7)) != 0
     }
     fn adjust_alloc(&mut self, delta: i32) {
-        let a = BITMAP_FID as usize * PAGE + 6;
+        let a = self.bm as usize * PAGE + 6;
         let v = (u16_at(&self.img, a) as i32 + delta) as u16;
         put16(&mut self.img, a, v);
         // The allocated count is inside the checksummed range.
@@ -229,7 +332,7 @@ impl Volume {
             p += 1;
         }
         if got.len() < count {
-            return err("the folder drive is full");
+            return err("the volume is full");
         }
         for &q in &got {
             self.mark(q, true);
@@ -477,7 +580,25 @@ impl Volume {
     }
 }
 
-fn is_subject(name: &str) -> bool {
+/// Volumes of a disk image: (first page, pages). A floppy is one volume; a hard disk lists
+/// its partitions (system 47h).
+pub fn volumes(img: &[u8]) -> Vec<(u32, u32)> {
+    if img.len() < PAGE {
+        return vec![];
+    }
+    if &img[..13] == b"System Disk!!" {
+        return vec![(0, (img.len() / PAGE) as u32)];
+    }
+    (0..4)
+        .filter_map(|k| {
+            let e = &img[0x1BE + 16 * k..0x1BE + 16 * k + 16];
+            let (st, n) = (u32_at(e, 8), u32_at(e, 12));
+            (e[4] == 0x47 && n > 0 && (st as usize + n as usize) * PAGE <= img.len()).then_some((st, n))
+        })
+        .collect()
+}
+
+pub fn is_subject(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with("~subject~")
 }
 
@@ -488,7 +609,7 @@ fn subject_folder(name: &str) -> String {
 const BAD: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '%'];
 
 /// GRiD name -> host file name.
-fn host_name(grid: &str) -> String {
+pub fn host_name(grid: &str) -> String {
     let mut s = String::new();
     for c in grid.chars() {
         if BAD.contains(&c) || (c as u32) < 32 {
@@ -502,7 +623,7 @@ fn host_name(grid: &str) -> String {
 }
 
 /// Host file name -> GRiD name (and whether a ~Text~ kind was added).
-fn grid_name(host: &str) -> (String, bool) {
+pub fn grid_name(host: &str) -> (String, bool) {
     let mut s = String::new();
     let mut it = host.chars().peekable();
     while let Some(c) = it.next() {
@@ -525,7 +646,7 @@ fn grid_name(host: &str) -> (String, bool) {
     }
 }
 
-fn to_crlf(b: &[u8]) -> Vec<u8> {
+pub fn to_crlf(b: &[u8]) -> Vec<u8> {
     let mut o = Vec::with_capacity(b.len() + b.len() / 20);
     for (i, &c) in b.iter().enumerate() {
         if c == b'\n' && (i == 0 || b[i - 1] != b'\r') {
@@ -710,5 +831,51 @@ mod tests {
         // hello.pas unchanged: not rewritten.
         assert_eq!(fs::read(base.join("hello.pas")).unwrap(), b"line1\nline2\n");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn put_and_delete() {
+        let now = grid_time(std::time::SystemTime::now());
+        let v = Volume::format(720, "Blank", now);
+        let mut v = Volume::open_any(v.img).unwrap();
+        assert_eq!(v.name(), "Blank");
+        let free0 = v.free_pages();
+        v.add_subject("Games").unwrap();
+        v.put_file("Games", "big~Run~", &vec![9u8; 100_000]).unwrap();
+        v.put_file("", "a~Text~", b"one").unwrap();
+        v.put_file("", "A~Text~", b"two").unwrap(); // replaces
+        let files = v.files().unwrap();
+        assert_eq!(files.len(), 2);
+        let a = files.iter().find(|f| f.1.eq_ignore_ascii_case("a~Text~")).unwrap();
+        assert_eq!(v.read(a.2).unwrap(), b"two");
+        assert_eq!(v.info(a.2).unwrap().0, 3);
+        let games = v.subject_dir("Games").unwrap();
+        let big = v.entries(games).unwrap()[0].0;
+        assert!(v.delete(v.root(), games).is_err()); // not empty
+        v.delete(games, big).unwrap();
+        v.delete(v.root(), games).unwrap();
+        let root = v.root();
+        v.delete(root, a.2).unwrap();
+        assert_eq!(v.free_pages(), free0);
+        assert!(v.files().unwrap().is_empty());
+    }
+
+    /// GRID_TEST_HD=hard disk image: list every volume.
+    #[test]
+    fn real_images() {
+        for var in ["GRID_TEST_HD", "GRID_TEST_FLOPPY"] {
+            let Some(p) = std::env::var_os(var) else { continue };
+            let img = fs::read(p).unwrap();
+            let vols = volumes(&img);
+            assert!(!vols.is_empty());
+            for (st, n) in vols {
+                let v = Volume::open_any(img[st as usize * PAGE..(st + n) as usize * PAGE].to_vec()).unwrap();
+                let files = v.files().unwrap();
+                eprintln!("{var}: volume {} ({n} pages, {} free): {} files", v.name(), v.free_pages(), files.len());
+                for (s, f, fid) in files.iter().take(3) {
+                    eprintln!("  {s} {f} {:?}", v.info(*fid).map(|i| i.0));
+                }
+            }
+        }
     }
 }

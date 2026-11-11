@@ -10,7 +10,8 @@
 //!
 //! Timing: each instruction keeps the 8087 busy for its typical execution time from the Intel
 //! 8087 data sheet (FADD, FLD/FST m64, FILD/FIST m16 and the transcendentals adjusted to the
-//! times GRiDBench measured on a real 1101, for its operands) (clocks of the 5 MHz CPU clock it shares with the 8086). BUSY drives the
+//! times GRiDBench measured on a real 1101, for its operands, where GRiD-OS runs every WAIT
+//! as an INT 3) (clocks of the 5 MHz CPU clock it shares with the 8086). BUSY drives the
 //! 8086 TEST pin, so FWAIT waits for it. Memory operands are read when the instruction starts
 //! and results are written immediately (the real chip writes at the end of the instruction;
 //! correct programs FWAIT before reading them, so the difference does not show).
@@ -92,10 +93,11 @@ pub struct I8087 {
     /// Interrupt request (unmasked exception with interrupts enabled).
     irq: bool,
     pub stats: FpuStats,
-    /// Clocks added to every instruction's busy time (decode/start and end latency seen on
-    /// the real 1101; 0 = pure data sheet).
+    /// Clocks added to every instruction's busy time (0 = pure data sheet, the default; for
+    /// experiments).
     pub extra_busy: u32,
-    /// Shortest WAIT on the machine (real 1101: FWAIT alone costs about 100 clocks).
+    /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
+    /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
 }
 
@@ -1025,7 +1027,7 @@ impl I8087 {
                         self.sw |= SW_PE;
                     }
                     self.pop();
-                    684
+                    715
                 }
                 4 => {
                     // FXTRACT: ST = exponent, push significand

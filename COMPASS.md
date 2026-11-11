@@ -26,9 +26,12 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   are computed in 113-bit precision and rounded once, except FPTAN, which follows the
   chip's own CORDIC + 3r/(3-r^2) method (`fptan.rs`): its partial Y/X pair (X near 3) and
   a busy time that depends on the argument (last bits still to be pinned down on hardware,
-  test T1 in docs/real-hw-tests.md). Busy time per instruction is fitted
-  to GRiDBench measurements of a real 1101 (mean error 1.8% over 16 tests; a bare FWAIT
-  costs ~90 clocks there).
+  test T1 in docs/real-hw-tests.md). Busy time per instruction is the data-sheet
+  time (a few adjusted to a real 1101). 8087 code is slow on a real Compass because GRiD-OS's
+  loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
+  95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
+  within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
+  real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
 - Display timing (`DisplayTiming` in grid_core/src/screen.rs): 309 clocks a line, 266
   lines (60.8 Hz), IR3 at the start of vertical blank, and display RAM contention: the
   display takes one RAM slot every 12 clocks in the visible part of each line, and a CPU

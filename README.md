@@ -18,7 +18,7 @@ compilers and the programs written for it, and fast enough to use as a build mac
 | FPU | 8087 with bit-exact 80-bit results; FPTAN follows the chip's own method |
 | Storage | 2101 hard disk and floppy, 2102 portable floppy, bubble memory, application ROM sockets, a PC folder as a GRiD drive |
 | I/O | 8741 keyboard controller running GRiD's firmware, 8274 serial (TCP, COM port, or a null-modem link between two emulators), sound DAC, DTMF, real-time clock |
-| Display | Plasma screen with RAM contention and a beam-accurate picture, so racing the beam works as on the real machine |
+| Display | Electroluminescent (EL) screen with RAM contention and a beam-accurate picture, so racing the beam works as on the real machine |
 
 Accuracy, measured with GRiDBench on a real 1101 with a 2101 and a 2102:
 

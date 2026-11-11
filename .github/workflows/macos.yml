@@ -1,12 +1,8 @@
 name: macOS
 
+# Manual only: this account has no macOS runners (every run sat queued, then was cancelled).
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

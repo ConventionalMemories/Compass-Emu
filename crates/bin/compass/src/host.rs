@@ -85,16 +85,31 @@ pub enum SerialLink {
     /// Listen on localhost:port; one client at a time (a terminal program, or a virtual
     /// null-modem bridge).
     Tcp { listener: TcpListener, client: Option<TcpStream> },
+    /// Connect to another emulator (or any TCP server) at host:port, and keep trying while it
+    /// is not there: two Compass-Emus linked like a null-modem cable.
+    Connect { addr: String, stream: Option<TcpStream>, next_try: std::time::Instant },
     /// A real serial port (COM3, /dev/ttyUSB0 ...); the bit rate follows the Compass.
     Port { port: Box<dyn serialport::SerialPort>, rate: u32 },
 }
 
 impl SerialLink {
-    /// `spec` is `tcp:PORT` or a serial port name.
+    /// `spec` is `tcp:PORT` (listen on this PC), `tcp:HOST:PORT` (listen on that address,
+    /// e.g. 0.0.0.0 for other PCs), `connect:PORT` / `connect:HOST:PORT` (connect to another
+    /// emulator) or a serial port name.
     pub fn open(spec: &str) -> Result<SerialLink, String> {
+        if let Some(p) = spec.strip_prefix("connect:") {
+            let addr = if p.contains(':') { p.to_string() } else { format!("127.0.0.1:{p}") };
+            let port = addr.rsplit(':').next().unwrap_or("");
+            port.parse::<u16>().map_err(|_| format!("bad TCP port {port}"))?;
+            return Ok(SerialLink::Connect { addr, stream: None, next_try: std::time::Instant::now() });
+        }
         if let Some(p) = spec.strip_prefix("tcp:") {
+            let (host, p) = match p.rsplit_once(':') {
+                Some((h, p)) => (h, p),
+                None => ("127.0.0.1", p),
+            };
             let port: u16 = p.parse().map_err(|_| format!("bad TCP port {p}"))?;
-            let l = TcpListener::bind(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+            let l = TcpListener::bind((host, port)).map_err(|e| e.to_string())?;
             l.set_nonblocking(true).map_err(|e| e.to_string())?;
             Ok(SerialLink::Tcp { listener: l, client: None })
         }
@@ -110,6 +125,7 @@ impl SerialLink {
     pub fn connected(&self) -> bool {
         match self {
             SerialLink::Tcp { client, .. } => client.is_some(),
+            SerialLink::Connect { stream, .. } => stream.is_some(),
             SerialLink::Port { .. } => true,
         }
     }
@@ -142,6 +158,35 @@ impl SerialLink {
                     *client = None;
                 }
             }
+            SerialLink::Connect { addr, stream, next_try } => {
+                if stream.is_none() && std::time::Instant::now() >= *next_try {
+                    *next_try = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                    use std::net::ToSocketAddrs;
+                    if let Some(sa) = addr.to_socket_addrs().ok().and_then(|mut a| a.next()) {
+                        if let Ok(s) = TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(20)) {
+                            let _ = s.set_nonblocking(true);
+                            let _ = s.set_nodelay(true);
+                            *stream = Some(s);
+                        }
+                    }
+                }
+                let mut drop = false;
+                if let Some(s) = stream {
+                    if !out.is_empty() && s.write_all(out).is_err() {
+                        drop = true;
+                    }
+                    let mut buf = [0u8; 512];
+                    match s.read(&mut buf) {
+                        Ok(0) => drop = true,
+                        Ok(n) => into.extend(&buf[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => drop = true,
+                    }
+                }
+                if drop {
+                    *stream = None;
+                }
+            }
             SerialLink::Port { port, rate } => {
                 // Standard rates only; pick the nearest.
                 const RATES: [u32; 10] = [110, 300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600];
@@ -162,5 +207,38 @@ impl SerialLink {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_emulators_link() {
+        let mut a = SerialLink::open("tcp:23987").unwrap();
+        let mut b = SerialLink::open("connect:23987").unwrap();
+        let (mut ina, mut inb) = (VecDeque::new(), VecDeque::new());
+        for _ in 0..50 {
+            b.pump(b"", &mut inb, 9600.0);
+            a.pump(b"", &mut ina, 9600.0);
+            if a.connected() && b.connected() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(a.connected() && b.connected());
+        a.pump(b"hello", &mut ina, 9600.0);
+        b.pump(b"world", &mut inb, 9600.0);
+        for _ in 0..50 {
+            a.pump(b"", &mut ina, 9600.0);
+            b.pump(b"", &mut inb, 9600.0);
+            if ina.len() == 5 && inb.len() == 5 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(inb.iter().copied().collect::<Vec<u8>>(), b"hello");
+        assert_eq!(ina.iter().copied().collect::<Vec<u8>>(), b"world");
     }
 }

@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.10: a GRiD Compass in a window.
+//! Compass-Emu 0.3.11: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -13,7 +13,8 @@
 //!                                sub-folders (= subjects) are copied in at start, and files GRiD
 //!                                made, changed or erased are written back when you quit
 //!   --bubble F                   bubble memory image (384K; a new blank one is made if F is missing)
-//!   --serial S                   serial port: tcp:PORT (listen on localhost) or a port name (COM3)
+//!   --serial S                   serial port: tcp:PORT (listen on localhost), tcp:HOST:PORT,
+//!                                connect:[HOST:]PORT (link to another emulator) or a port name (COM3)
 //!   --mute                       no sound
 //!   --readonly                   never write disk changes back to the image files
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
@@ -43,7 +44,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.10";
+pub const VERSION: &str = "0.3.11";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -52,7 +53,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--bubble bubble.img]\n       [--serial tcp:PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }

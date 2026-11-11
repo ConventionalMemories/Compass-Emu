@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.3)
+## Status (0.3.6)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -24,9 +24,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact
   arithmetic in all rounding modes, all instructions, exceptions to IR6. Transcendentals
   are computed in 113-bit precision and rounded once, except FPTAN, which follows the
-  chip's own CORDIC + 3r/(3-r^2) method (`fptan.rs`): its partial Y/X pair (X near 3) and
-  a busy time that depends on the argument (last bits still to be pinned down on hardware,
-  test T1 in docs/real-hw-tests.md). Busy time per instruction is the data-sheet
+  chip's own CORDIC + rational method (`fptan.rs`), fitted to FPTAN dumps from a real 1101:
+  its partial Y/X pair (X near 1.5, an unnormal X for out-of-range 1.5) within 3 ulps and its
+  argument-dependent time. Also as on the real chip: FPATAN with 0 < x < y returns y,
+  F2XM1 of a negative x gives -(2^|x| - 1), FYL2X of a power of two is exact and fast, and
+  the precision flag follows the real one (FSQRT, FYL2X, F2XM1 0). Busy time per instruction is the data-sheet
   time (a few adjusted to a real 1101). 8087 code is slow on a real Compass because GRiD-OS's
   loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101

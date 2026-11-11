@@ -390,7 +390,6 @@ impl GridMachine {
             Ok((_, c)) => c,
             Err(e) => panic!("CPU error: {:?}", e),
         };
-        let _ = self.cpu.step_finish(None);
         self.instructions += 1;
         let fpu_int = self.cpu.bus().coprocessor().map(|c| c.irq()).unwrap_or(false);
         let now = self.cpu.bus().cpu_now();
@@ -398,7 +397,10 @@ impl GridMachine {
         board.set_fpu_int(fpu_int);
         board.tick_to(now);
         let intr = board.intr();
+        // Update INTR before step_finish, so an interrupt raised during this instruction is
+        // taken at its end (and a REP string op that stopped for it via RPTI is not resumed).
         self.cpu.set_intr(intr);
+        let _ = self.cpu.step_finish(None);
         if now >= self.next_fetch {
             self.run_display(now);
         }

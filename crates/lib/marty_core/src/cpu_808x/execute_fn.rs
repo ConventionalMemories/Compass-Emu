@@ -1017,7 +1017,7 @@ impl Intel808x {
             if self.in_rep {
                 // Check for interrupt
                 self.cycle_i(0x11f);
-                if self.intr_pending || self.get_flag(Flag::Trap) {
+                if self.rep_intr() || self.get_flag(Flag::Trap) {
                     self.cycle_i(MC_JUMP); // Jump to RPTI
                     self.rep_interrupt();
                 }
@@ -1073,7 +1073,7 @@ impl Intel808x {
 
                 if !end {
                     self.cycle_i(0x12a);
-                    if self.intr_pending || self.get_flag(Flag::Trap) {
+                    if self.rep_intr() || self.get_flag(Flag::Trap) {
                         self.cycle_i(MC_JUMP); // Jump to RPTI
                         self.rep_interrupt();
                     }
@@ -1107,7 +1107,7 @@ impl Intel808x {
             if self.in_rep {
                 self.decrement_register16(Register16::CX); // 131
                 // Check for interrupt
-                if self.intr_pending || self.get_flag(Flag::Trap) {
+                if self.rep_intr() || self.get_flag(Flag::Trap) {
                     cycles_mc!(self, 0x131, MC_JUMP); // Jump to RPTI
                     self.rep_interrupt();
                 }
@@ -1143,7 +1143,7 @@ impl Intel808x {
                 cycles_mc!(self, MC_JUMP, 0x131); // Jump to 131
                 self.decrement_register16(Register16::CX); // 131
                 // Check for interrupt
-                if self.intr_pending || self.get_flag(Flag::Trap) {
+                if self.rep_intr() || self.get_flag(Flag::Trap) {
                     self.cycle_i(MC_JUMP); // Jump to RPTI
                     self.rep_interrupt();
                 }

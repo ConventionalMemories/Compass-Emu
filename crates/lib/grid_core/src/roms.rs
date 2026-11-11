@@ -7,7 +7,7 @@
 //! 1101 PROM stands in, with the split board also answering the 1101's GPIB DMA window at
 //! E0000 (`GridBoard::e0000_dma`).
 //!
-//! The 1101 PROM is the later rev 4 (`1101even.rev4.bin`, Prom 0.25 3/16/83, the one on Kurt's
+//! The 1101 PROM is the later rev 4 (`1101even.rev4.bin`, Prom 0.25 3/16/83, the one on the
 //! real 1101 that GRiDBench was measured on) when present, else rev 3. Rev 4 differs from
 //! rev 3 in 31 bytes: its reset code first clears DFE00/DFE02/DFE04 (the serial select
 //! latches on the 1101 board).

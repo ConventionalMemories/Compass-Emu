@@ -90,7 +90,7 @@ model's free choices can be pinned down and FPTAN made bit-exact.
 
 ## Real-time clock (MM58174) as a time base
 
-Kurt's 1101 has a new RTC battery (2026-11-10), so absolute times no longer need the AAM
+The test 1101 has a new RTC battery (2026-11-10), so absolute times no longer need the AAM
 scaling. The clock's crystal is 32.768 kHz, normally within 0.01 percent; its tenths
 register gives 0.1 s steps, so timing over 60 s or more is good to about 0.2 percent.
 

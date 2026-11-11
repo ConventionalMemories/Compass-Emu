@@ -637,6 +637,10 @@ impl ExternalBoard for GridBoard {
         self.pic.query_interrupt_line()
     }
 
+    fn intr_now(&self) -> bool {
+        self.pic.query_interrupt_line() || self.pic.calc_intr().0
+    }
+
     fn inta(&mut self) -> Option<u8> {
         if self.pic.query_interrupt_line() {
             self.pic.get_interrupt_vector()

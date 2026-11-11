@@ -1,8 +1,10 @@
 name: Compass-Emu
 
-# Builds and tests Compass-Emu on every push and pull request, and makes the Windows zip.
+# Builds and tests Compass-Emu on every push and pull request and makes the Windows zip.
 # Pushing a tag like v0.3.12 also publishes a GitHub Release with that zip and the
 # version's notes from CHANGELOG.md.
+# No apt packages are needed: the Windows job builds the program (MSVC), the Linux job
+# tests the emulation crates, which need no system libraries.
 
 on:
   push:
@@ -15,28 +17,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: build and test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+  windows:
+    name: Windows build and test
+    runs-on: windows-2022
+    timeout-minutes: 60
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install packages
-        timeout-minutes: 10
-        run: |
-          # The runner's Azure package mirror has been failing to resolve; use Ubuntu's own.
-          echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y pkg-config libasound2-dev libudev-dev gcc-mingw-w64-x86-64 zip
-
       - name: Install Rust (version from rust-toolchain.toml)
-        run: |
-          rustup toolchain install
-          rustup target add x86_64-pc-windows-gnu
+        run: rustup toolchain install
 
       - uses: actions/cache@v4
         with:
@@ -44,17 +39,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: compass-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: compass-
+          key: compass-win-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: compass-win-
 
       - name: Test
         run: cargo test --locked --release -p grid_core -p i8087 -p compass
 
-      - name: Build Linux
+      - name: Build
         run: cargo build --locked --release -p compass
-
-      - name: Build Windows
-        run: cargo build --locked --release -p compass --target x86_64-pc-windows-gnu
 
       - name: Make the Windows zip
         run: |
@@ -62,9 +54,9 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           mkdir -p out/compass-emu
           cp -r dist/windows/. out/compass-emu/
-          cp target/x86_64-pc-windows-gnu/release/compass.exe out/compass-emu/
+          cp target/release/compass.exe out/compass-emu/
           cp LICENSE out/compass-emu/LICENSE.txt
-          (cd out && zip -qr "compass-emu-$VERSION.zip" compass-emu)
+          cd out && 7z a -tzip -bd "compass-emu-$VERSION.zip" compass-emu > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,3 +72,26 @@ jobs:
           [ "v$VERSION" = "$TAG" ] || { echo "tag $TAG does not match crate version $VERSION"; exit 1; }
           awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
           gh release create "$TAG" "out/compass-emu-$VERSION.zip" --title "Compass-Emu $VERSION" --notes-file notes.md
+
+  linux:
+    name: Linux tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: compass-linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: compass-linux-
+
+      - name: Test the emulation crates
+        run: cargo test --locked --release -p grid_core -p i8087

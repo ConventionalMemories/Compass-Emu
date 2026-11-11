@@ -68,7 +68,7 @@ pub struct GridBoard {
     pub clocks: u64,
     pic: Pic,
     /// 80130 timers (8254-like at ports 08-0E), counting at the 5 MHz CPU clock (assumed; the
-    /// input clock and readback are still to be checked on hardware, tests P3/P4). Timer 2 is
+    /// input clock and readback are still to be checked on hardware, test P3). Timer 2 is
     /// the baud clock for the 8274; no timer output reaches an IRQ on the Compass.
     timer_regs: [u8; 4],
     pit_count: [u16; 3],

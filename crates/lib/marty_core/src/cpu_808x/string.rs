@@ -325,6 +325,25 @@ impl Intel808x {
     }
 
     /// Implement the RPTI microcode co-routine for string interrupt handling.
+    /// Interrupt check at the end of a REP iteration (microcode line 131).
+    /// The real 8086 samples INTR here, inside the instruction. MartyPC only latches INTR
+    /// between steps, which lets a string op run one or two iterations past an interrupt
+    /// raised during it. With an external board (GRiD), read its INTR line directly, so a
+    /// pseudo-DMA REP MOVSB stops right after the byte that raised the GPIB END interrupt.
+    #[inline]
+    pub fn rep_intr(&mut self) -> bool {
+        if self.intr_pending {
+            return true;
+        }
+        if !self.interrupts_enabled() {
+            return false;
+        }
+        match self.bus.external_mut() {
+            Some(ext) => ext.intr_now(),
+            None => false,
+        }
+    }
+
     pub fn rep_interrupt(&mut self) {
         self.biu_fetch_suspend();
         cycles_mc!(self, 0x118, 0x119);

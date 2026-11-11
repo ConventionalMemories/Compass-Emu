@@ -93,8 +93,13 @@ pub struct Drive {
     /// Hard disk mechanics: cylinder under the heads and the pages in the box's read-ahead cache.
     #[serde(default)]
     cyl: u32,
+    /// A multi-page read's reply: each 512-byte page ends with EOI (GRiD's driver takes one
+    /// page a reply), and what is left is dropped when the box is addressed again.
     #[serde(default)]
-    cache: Vec<u32>,
+    chunked: bool,
+    /// Read-ahead cache: (page, clock at which the box has it).
+    #[serde(default)]
+    ra_cache: Vec<(u32, u64)>,
     /// The box answers a write once it has the data and writes it while taking the next command.
     #[serde(default)]
     busy_until: u64,
@@ -126,19 +131,28 @@ mod hd {
     pub const INTERLEAVE: u64 = 5;
     pub const READ_AHEAD: u32 = 6;
     /// Box firmware time to take a command and set up the S1410 (and to answer from its cache).
-    pub const OVERHEAD: u64 = CPU_HZ / 1000;
-    pub const CACHE_HIT: u64 = CPU_HZ / 2000;
+    pub const OVERHEAD: u64 = CPU_HZ / 2000;
+    pub const CACHE_HIT: u64 = CPU_HZ * 3 / 10_000;
 
     pub fn slot() -> u64 {
         ROT / SPT as u64
     }
 
-    /// Seek time in CPU clocks for `d` cylinders (track to track ~20 ms, full stroke ~150 ms).
+    /// Seek time in CPU clocks for `d` cylinders, interpolated from a real 2101 (ST-225): Disk
+    /// Toolkit (1 cylinder 26.4 ms more than no seek, full stroke about 150 ms) and GRiDBench
+    /// 2.1b (e46 steps of 1/16 = 38 cylinders 122.5 ms a read, e44 random pages 130.3 ms).
     pub fn seek(d: u32) -> u64 {
-        if d == 0 {
-            return 0;
+        const T: [(u32, u64); 4] = [(0, 0), (1, 26_400), (38, 80_000), (611, 148_000)];
+        let d = d.min(611);
+        let i = T.iter().position(|e| e.0 >= d).unwrap_or(T.len() - 1);
+        let us = if i == 0 {
+            0
         }
-        (20_000 + (d as u64 - 1) * 215) * CPU_HZ / 1_000_000
+        else {
+            let ((d0, t0), (d1, t1)) = (T[i - 1], T[i]);
+            t0 + (t1 - t0) * (d - d0) as u64 / (d1 - d0) as u64
+        };
+        us * CPU_HZ / 1_000_000
     }
 
     /// Time at or after `t` when logical sector `s` of a track starts under the head.
@@ -172,7 +186,8 @@ impl Drive {
             done_at: None,
             delay_clocks,
             cyl: 0,
-            cache: Vec::new(),
+            ra_cache: Vec::new(),
+            chunked: false,
             busy_until: 0,
             mechanics: true,
             log: Vec::new(),
@@ -189,25 +204,29 @@ impl Drive {
             return now + self.delay_clocks;
         }
         let pages = (size as u32).div_ceil(SECTOR as u32).max(1);
-        let mut t = (now + hd::OVERHEAD).max(self.busy_until);
+        let mut t = now + hd::OVERHEAD;
         let mut p = sector;
         let end = sector + pages;
         while p < end {
-            if self.cache.contains(&p) {
-                t += hd::CACHE_HIT;
+            if let Some(&(_, ready)) = self.ra_cache.iter().find(|e| e.0 == p) {
+                t = t.max(ready) + hd::CACHE_HIT;
                 p += 1;
                 continue;
             }
-            // One S1410 read: from p to the end of the request, plus read-ahead, within the track.
+            // One S1410 read from p to the end of the track, at least the rest of the request or
+            // the read-ahead count. The box answers once it has the requested pages and goes on
+            // reading ahead meanwhile.
             let track_end = (p / hd::SPT + 1) * hd::SPT;
             let n = (end - p).max(hd::READ_AHEAD).min(track_end - p);
-            t = self.seek_to(t, p);
-            let s = p % hd::SPT;
-            let start = hd::sector_start(t, s);
-            t = start + ((n as u64 - 1) * hd::INTERLEAVE + 1) * hd::slot();
-            self.cache.clear();
-            self.cache.extend(p..p + n);
-            p = (p + n).min(end);
+            t = self.seek_to(t.max(self.busy_until), p);
+            let start = hd::sector_start(t, p % hd::SPT);
+            let ready = |k: u32| start + (k as u64 * hd::INTERLEAVE + 1) * hd::slot();
+            self.ra_cache.clear();
+            self.ra_cache.extend((0..n).map(|k| (p + k, ready(k))));
+            self.busy_until = ready(n - 1);
+            let got = (end - p).min(n);
+            t = ready(got - 1);
+            p += got;
         }
         t
     }
@@ -217,7 +236,7 @@ impl Drive {
         if !self.mechanics() {
             return now + self.delay_clocks;
         }
-        self.cache.clear();
+        self.ra_cache.clear();
         let pages = len.div_ceil(SECTOR).max(1) as u32;
         let answer = now + hd::OVERHEAD;
         let mut t = answer.max(self.busy_until);
@@ -250,7 +269,7 @@ impl Drive {
                 0x2420,
                 10,
                 "COMPASS-EMU HARD DISK",
-                10,
+                17,
                 4,
             ),
             _ => (720, 0x120, 0x121, 1, "48 TPI DS DD FLOPPY 30237-00", 9, 2),
@@ -280,6 +299,10 @@ impl Drive {
         if group == 0x20 {
             self.rx.clear();
             self.listening = addr == self.kind.address();
+            if self.listening && self.chunked {
+                self.tx.clear();
+                self.chunked = false;
+            }
             self.talking = false;
         }
         else if group == 0x40 {
@@ -336,7 +359,7 @@ impl Drive {
                         self.state = DriveState::Writing;
                     }
                     17 => {
-                        self.cache.clear();
+                        self.ra_cache.clear();
                         self.state = DriveState::Formatting;
                         self.done_at = Some(now + self.delay_clocks);
                     }
@@ -370,6 +393,7 @@ impl Drive {
         self.done_at = None;
         match self.state {
             DriveState::Reading => {
+                self.chunked = self.io_size as usize > SECTOR;
                 let off = self.sector as usize * SECTOR;
                 for i in 0..self.io_size as usize {
                     self.tx.push_back(*self.image.get(off + i).unwrap_or(&0));
@@ -404,7 +428,8 @@ impl Drive {
         if self.serial_polling {
             return Some((self.spoll | if self.srq { 0x40 } else { 0 }, true));
         }
-        self.tx.front().map(|&b| (b, self.tx.len() == 1))
+        let n = self.tx.len();
+        self.tx.front().map(|&b| (b, n == 1 || self.chunked && n % SECTOR == 1))
     }
 
     fn pop_talk(&mut self, now: u64) {
@@ -418,6 +443,10 @@ impl Drive {
         }
         else {
             self.tx.pop_front();
+            if self.chunked && self.tx.len() % SECTOR == 0 {
+                // End of a page: the box stops talking until it is addressed again.
+                self.talking = false;
+            }
             if self.tx.is_empty() && gpib_log() {
                 eprintln!("GPIB {} lastbyte", now);
             }
@@ -484,7 +513,9 @@ impl Gpib {
             now: 0,
             drives: Vec::new(),
             send_clocks: 40,
-            talk_clocks: 100,
+            // The real 2101 delivers a page in about 19 ms a read from its cache (GRiDBench
+            // 2.1 e41), so the box keeps up with the host's pseudo-DMA loop.
+            talk_clocks: 35,
             trace: Vec::new(),
             trace_on: false,
         }

@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.7)
+## Status (0.3.8)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -20,13 +20,20 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - TMS9914 GPIB with the pseudo-DMA window at E0000h; 2101 hard disk (address 4), 2101
   floppy (5) and 2102 floppy (6) at the level of GRiD's disk protocol. In exact mode the
   hard disk has mechanics like a real 2101 with an ST-225: 3600 rpm, 17 sectors a track,
-  4 heads, interleave 5, seeks of 20 ms + 0.215 ms a cylinder, a 6-page read-ahead cache
-  that writes drop, and writes answered at once and done while the next command waits
-  (`HD_NOMECH=1` turns this off; fast mode never uses it). Sequential page reads take
-  about 23 ms as on the real box.
+  4 heads, interleave 5, seeks interpolated from real measurements (1 cylinder 26.4 ms,
+  38 cylinders 80 ms, full stroke 148 ms), a 6-page read-ahead cache that writes drop, and
+  writes answered at once and done while the next command waits (`HD_NOMECH=1` turns this
+  off; fast mode never uses it). A multi-page read replies in 512-byte pages, each ending
+  with EOI, as GRiD's BB2 driver accepts only 512-byte replies. Against a real 1101 + 2101
+  (GRiDBench 2.1b): same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0
+  (130.3), steps of 1/16 120.6 (122.5), 8 pages 65 (53.5).
 - 8259 interrupt controller: a request that is pending when its IR is unmasked (or a lower
   one after an EOI) raises INT at once. Before 0.3.7 it waited for the next unrelated
   interrupt, so each disk command waited for an IR3 tick (3 refreshes a page).
+- Interrupts are sampled inside REP string instructions (`ExternalBoard::intr_now`) and
+  INTR is updated before the next instruction starts, so a pseudo-DMA `REP MOVSB` stops
+  right after the byte that raised the GPIB END interrupt (it used to copy 1-2 more bytes,
+  which made the BB2 driver reinitialize the bus for half a second).
 - MM58174 real-time clock.
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02).
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact

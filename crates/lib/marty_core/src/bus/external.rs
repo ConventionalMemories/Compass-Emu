@@ -36,6 +36,11 @@ pub trait ExternalBoard: Any {
 
     /// Is the INTR line asserted?
     fn intr(&self) -> bool;
+    /// Would INTR be asserted right now (including a request the PIC has not passed on yet)?
+    /// Used for the in-instruction interrupt check of REP string ops.
+    fn intr_now(&self) -> bool {
+        self.intr()
+    }
     /// Interrupt acknowledge: return the vector.
     fn inta(&mut self) -> Option<u8>;
 

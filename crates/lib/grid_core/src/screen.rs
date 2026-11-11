@@ -1,5 +1,5 @@
 //! Display timing. Patent US 4,571,456: 15 MHz crystal, CPU = /3 (5 MHz), pixel clock /2.
-//! Geometry from GRiDBench 2.0 on Kurt's real 1101 (2026-11-11): the frame is ~83740 CPU
+//! Geometry from GRiDBench 2.0 on a real 1101 (2026-11-11): the frame is ~83740 CPU
 //! clocks (d11/d12), the beam finder gives ~274 clocks a line (so ~306 lines) and shows the
 //! refresh tick (IR3) arriving as the picture starts at the top. (YL3AKC's earlier 16.17 kHz
 //! hsync, 309 clocks, doesn't fit those numbers.) Everything here is in CPU clocks (5 MHz).

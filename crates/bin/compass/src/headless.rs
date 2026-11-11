@@ -110,6 +110,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
                     Err(e) => fail(&format!("cannot use folder: {e}")),
                 }
             }
+            m.board_mut().gpib.add_2101_floppy_slot();
             m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(bub.unwrap_or_else(|| vec![0u8; 3 * grid_core::bubble::MBM_SIZE])));
             m
         }

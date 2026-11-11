@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.9: a GRiD Compass in a window.
+//! Compass-Emu 0.3.10: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -43,7 +43,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.9";
+pub const VERSION: &str = "0.3.10";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -205,6 +205,7 @@ fn main() {
         }
     });
 
+    m.board_mut().gpib.add_2101_floppy_slot();
     if let Some(p) = &bubble {
         let img = fs::read(p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]);
         m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(img));

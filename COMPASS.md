@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.9)
+## Status (0.3.10)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -27,6 +27,14 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   with EOI, as GRiD's BB2 driver accepts only 512-byte replies. Against a real 1101 + 2101
   (GRiDBench 2.1b): same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0
   (130.3), steps of 1/16 120.6 (122.5), 8 pages 65 (53.5).
+- Floppies (exact mode): 300 rpm, 9 sectors, interleave 5 with side 1 skewed by 7 sectors,
+  3 ms a cylinder + 30 ms settle, one WD279x command a page. The 2102 reads one page a
+  command and is slow (about 40 ms to take a command, 60 us a byte over its bit-banged GPIB).
+  Against a real 2102 with a Gotek (GRiDBench 2.1b): same page 197 ms (real 212),
+  sequential 121 (133), first/last 395 (415), steps of 1/16 211 (172). With a 2101 hard
+  disk and no floppy image, the box's floppy slot answers as empty (error 128, as on a
+  real 2101), so GRiD-OS's polls of address 5 don't hang. `GPIBREG=clock` prints every
+  9914 register access from that clock on.
 - A PC folder as a GRiD drive (`--folder DIR`, `grid_core::hostdir`): at start the folder is
   built into a GRiD volume (files in the root, sub-folders as subjects, up to 32 MB with 4 MB
   free) on the 2101 floppy address (GPIB 5); the volume is named after the folder. On quit,

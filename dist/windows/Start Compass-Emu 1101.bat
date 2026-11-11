@@ -1,5 +1,5 @@
 @echo off
-rem Compass-Emu 0.3.2: GRiD Compass 1101 booting the merged hard disk.
+rem Compass-Emu: GRiD Compass 1101 booting the merged hard disk.
 rem Put this folder inside your GRiD-MAME folder (next to roms, disks and tools).
 rem It uses its own copy of the disk, so MAME's disk is never touched.
 cd /d "%~dp0"

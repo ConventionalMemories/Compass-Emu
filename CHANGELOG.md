@@ -2,6 +2,13 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.4.0
+
+- Demo tools (see above): cycle counter marks, frame meter overlay (F10),
+  debugger console with breakpoints and stepping (F8), profiler.
+- The Claude Code hook has grid_debug with the same debugger, profiler and
+  cycle counter.
+
 ## 0.3.12
 
 - Application ROM sockets on the Compass II models (see Application ROMs).

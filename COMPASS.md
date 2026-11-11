@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.12)
+## Status (0.4.0)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -51,6 +51,14 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   INTR is updated before the next instruction starts, so a pseudo-DMA `REP MOVSB` stops
   right after the byte that raised the GPIB END interrupt (it used to copy 1-2 more bytes,
   which made the BB2 driver reinitialize the bus for half a second).
+- Demo tools (0.4.0): cycle counter marks in `grid_core::marks` (OUT 0F0h/0F2h,AL start/end
+  section AL, OUT 0F4h,AL frame mark; the board catches writes to ports >= 80h, which a real
+  Compass doesn't decode), debugger and profiler in `grid_core::debug` (code breakpoints
+  checked before each instruction, port and IR breakpoints reported by the board, memory
+  write watches by comparing the bytes after each instruction, so they work on both cores;
+  disassembly with MartyPC's decoder). Window: F10 overlay, F9 clear, F8 pause, console
+  commands on stdin. MCP: `grid_debug`. The per-instruction checks run only while a
+  breakpoint, watch or profile is set (`GridMachine::run_debug`).
 - MM58174 real-time clock.
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02). Its
   P2.4 (kbdDma) is wired to the GPIB wait: a DMA window access holds the CPU until the

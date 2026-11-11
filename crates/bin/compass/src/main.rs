@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.12: a GRiD Compass in a window.
+//! Compass-Emu 0.4.0: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -49,7 +49,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.12";
+pub const VERSION: &str = "0.4.0";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Overlay colours (demo tools): text box and the beam tick of the last frame mark.

@@ -1,4 +1,4 @@
-//! Compass-Emu 0.3.11: a GRiD Compass in a window.
+//! Compass-Emu 0.3.12: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -12,6 +12,8 @@
 //!   --folder D                   a PC folder as the 2101 "Floppy Disk" (GPIB 5): its files and
 //!                                sub-folders (= subjects) are copied in at start, and files GRiD
 //!                                made, changed or erased are written back when you quit
+//!   --rom0 F .. --rom3 F         application ROM chip in socket 0-3 (Compass II models only; a
+//!                                32K, 64K or 128K dump, e.g. from Rom Toolbox)
 //!   --bubble F                   bubble memory image (384K; a new blank one is made if F is missing)
 //!   --serial S                   serial port: tcp:PORT (listen on localhost), tcp:HOST:PORT,
 //!                                connect:[HOST:]PORT (link to another emulator) or a port name (COM3)
@@ -44,7 +46,7 @@ mod winkeys;
 
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
-pub const VERSION: &str = "0.3.11";
+pub const VERSION: &str = "0.3.12";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
@@ -53,7 +55,7 @@ const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -128,6 +130,7 @@ fn main() {
     let mut kbd: Option<PathBuf> = None;
     let mut drives: Vec<(DriveKind, PathBuf)> = Vec::new();
     let mut folder: Option<PathBuf> = None;
+    let mut rom_files: Vec<(usize, PathBuf)> = Vec::new();
     let mut readonly = false;
     let mut bubble: Option<PathBuf> = None;
     let mut serial_spec: Option<String> = None;
@@ -151,6 +154,7 @@ fn main() {
             "--flop" => drives.push((DriveKind::Floppy2102, val())),
             "--flop2101" => drives.push((DriveKind::Floppy2101, val())),
             "--folder" => folder = Some(val()),
+            "--rom0" | "--rom1" | "--rom2" | "--rom3" => rom_files.push(((a.as_bytes()[5] - b'0') as usize, val())),
             "--readonly" => readonly = true,
             "--bubble" => bubble = Some(val()),
             "--serial" => serial_spec = Some(val().to_string_lossy().to_string()),
@@ -207,6 +211,13 @@ fn main() {
     });
 
     m.board_mut().gpib.add_2101_floppy_slot();
+    for (slot, path) in &rom_files {
+        let chip = read(path, "ROM chip");
+        if let Err(e) = m.board_mut().insert_rom(*slot, chip) {
+            eprintln!("{}: {e}", path.display());
+            std::process::exit(1)
+        }
+    }
     if let Some(p) = &bubble {
         let img = fs::read(p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]);
         m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(img));

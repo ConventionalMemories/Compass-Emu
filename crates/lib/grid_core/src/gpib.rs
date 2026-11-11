@@ -593,6 +593,9 @@ pub struct Gpib {
     srq_prev: bool,
     /// Latest time seen.
     pub now: u64,
+    /// Bytes talked by drives (counted only for the GPIB_STALL test hook).
+    #[serde(skip)]
+    talked: u64,
     pub drives: Vec<Drive>,
     /// Clocks for the 9914 to send one byte to the acceptors.
     pub send_clocks: u64,
@@ -632,6 +635,7 @@ impl Gpib {
             in_at: None,
             srq_prev: false,
             now: 0,
+            talked: 0,
             drives: Vec::new(),
             send_clocks: 40,
             // The real 2101 delivers a page in about 19 ms a read from its cache (GRiDBench
@@ -693,9 +697,25 @@ impl Gpib {
     }
 
     fn schedule_in(&mut self) {
+        fn stall_at() -> Option<u64> {
+            static S: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+            *S.get_or_init(|| std::env::var("GPIB_STALL").ok().and_then(|v| v.parse().ok()))
+        }
         if self.in_at.is_none() && self.listener_active() && !self.di_full && self.talker().is_some() {
             let i = self.talker().unwrap();
-            let c = self.drives[i].talk_clocks().unwrap_or(self.talk_clocks);
+            let mut c = self.drives[i].talk_clocks().unwrap_or(self.talk_clocks);
+            // Test hook: GPIB_STALL=N holds the Nth byte a drive talks for 10 s (to see the
+            // keyboard watchdog end a hung transfer).
+            if let Some(n) = stall_at() {
+                self.talked += 1;
+                if self.talked % 50_000 == 0 {
+                    eprintln!("GPIB_STALL: {} bytes talked at {:.2} s", self.talked, self.now as f64 / 5e6);
+                }
+                if self.talked == n {
+                    eprintln!("GPIB_STALL: holding byte {n} for 10 s at {:.2} s", self.now as f64 / 5e6);
+                    c += 50_000_000;
+                }
+            }
             self.in_at = Some(self.now + c);
         }
     }
@@ -792,9 +812,10 @@ impl Gpib {
                     next = next.min(at);
                 }
             }
-            if next == u64::MAX || next > start + limit {
-                let end = start + limit.min(if next == u64::MAX { 0 } else { limit });
-                self.advance(end);
+            if next > start + limit {
+                // Nothing will free the bus in time (or at all): the CPU stays held; the
+                // board stops the wait when the keyboard's watchdog drops kbdDma.
+                self.advance(start + limit);
                 return self.now - start;
             }
             self.advance(next);

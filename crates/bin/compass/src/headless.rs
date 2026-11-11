@@ -42,6 +42,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     let mut bubble: Option<PathBuf> = None;
     let mut flop: Option<PathBuf> = None;
     let mut folder: Option<PathBuf> = None;
+    let mut rom_files: Vec<(usize, PathBuf)> = Vec::new();
     let mut state: Option<PathBuf> = None;
     let mut command: Option<String> = None;
     let mut exact = false;
@@ -58,6 +59,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             "--bubble" => bubble = Some(val().into()),
             "--flop" => flop = Some(val().into()),
             "--folder" => folder = Some(val().into()),
+            "--rom0" | "--rom1" | "--rom2" | "--rom3" => rom_files.push(((a.as_bytes()[5] - b'0') as usize, val().into())),
             "--state" => state = Some(val().into()),
             "--exact" => exact = true,
             "--fast" => exact = false,
@@ -115,6 +117,10 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             m
         }
     };
+    for (slot, path) in &rom_files {
+        let chip = fs::read(path).unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", path.display())));
+        m.board_mut().insert_rom(*slot, chip).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display())));
+    }
     m.board_mut().sound.enabled = false;
     m.board_mut().log_unhandled = false;
     if std::env::var("GRID_NO_CONTENTION").is_ok() {

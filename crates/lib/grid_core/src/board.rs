@@ -67,12 +67,23 @@ pub struct GridBoard {
     /// CPU clocks since power-on (advanced by tick()).
     pub clocks: u64,
     pic: Pic,
-    /// 80130 timers (8254-like at ports 08-0E). Only the counts are kept: timer 2 is the baud
-    /// clock for the 8274; no timer output reaches an IRQ on the Compass.
+    /// 80130 timers (8254-like at ports 08-0E), counting at the 5 MHz CPU clock (assumed; the
+    /// input clock and readback are still to be checked on hardware, tests P3/P4). Timer 2 is
+    /// the baud clock for the 8274; no timer output reaches an IRQ on the Compass.
     timer_regs: [u8; 4],
     pit_count: [u16; 3],
     pit_lsb_next: [bool; 3],
     pit_rl: [u8; 3],
+    #[serde(default)]
+    pit_mode: [u8; 3],
+    /// CPU clock at which each counter was last loaded.
+    #[serde(default)]
+    pit_t0: [u64; 3],
+    /// Counter latch (counter latch command), read out before the live count.
+    #[serde(default)]
+    pit_latch: [Option<u16>; 3],
+    #[serde(default = "pit_read_lsb_default")]
+    pit_read_lsb: [bool; 3],
     // 8741 keyboard (HLE for now)
     kbd_status: u8,
     kbd_queue: std::collections::VecDeque<u8>,
@@ -124,6 +135,21 @@ pub struct GridBoard {
 }
 
 impl GridBoard {
+    /// Live count of 80130 timer r: down from the loaded value at the CPU clock; modes 2/3
+    /// reload (mode 3 counts by 2, twice a period), the others wrap through 0.
+    fn pit_now(&self, r: usize) -> u16 {
+        let n = if self.pit_count[r] == 0 { 65536u64 } else { self.pit_count[r] as u64 };
+        let e = self.clocks.saturating_sub(self.pit_t0[r]);
+        match self.pit_mode[r] {
+            2 | 6 => (n - e % n) as u16,
+            3 | 7 => {
+                let half = (n + 1) / 2;
+                (n - 2 * (e % half)) as u16 & !1
+            }
+            _ => (n as u64).wrapping_sub(e) as u16,
+        }
+    }
+
     /// A 1101 board. `even` and `odd` are the two 8K PROM chips.
     pub fn new(even: &[u8], odd: &[u8]) -> GridBoard {
         Self::new_model(GridModel::Compass1101, even, odd)
@@ -145,6 +171,10 @@ impl GridBoard {
             pit_count: [0; 3],
             pit_lsb_next: [true; 3],
             pit_rl: [3; 3],
+            pit_mode: [0; 3],
+            pit_t0: [0; 3],
+            pit_latch: [None; 3],
+            pit_read_lsb: [true; 3],
             kbd_status: 0,
             kbd_queue: Default::default(),
             kbd_commands: Vec::new(),
@@ -490,7 +520,28 @@ impl ExternalBoard for GridBoard {
         match port {
             0x00 => self.pic.handle_command_register_read(),
             0x02 => self.pic.handle_data_register_read(),
-            0x08 | 0x0A | 0x0C | 0x0E => self.timer_regs[((port - 8) / 2) as usize],
+            0x0E => self.timer_regs[3],
+            0x08 | 0x0A | 0x0C => {
+                let r = ((port - 8) / 2) as usize;
+                let v = match self.pit_latch[r] {
+                    Some(v) => v,
+                    None => self.pit_now(r),
+                };
+                let b = match self.pit_rl[r] {
+                    1 => v as u8,
+                    2 => (v >> 8) as u8,
+                    _ => {
+                        let lsb = self.pit_read_lsb[r];
+                        self.pit_read_lsb[r] = !lsb;
+                        if lsb { v as u8 } else { (v >> 8) as u8 }
+                    }
+                };
+                // the latch is released once read out completely
+                if self.pit_rl[r] != 3 || self.pit_read_lsb[r] {
+                    self.pit_latch[r] = None;
+                }
+                b
+            }
             _ => 0xFF,
         }
     }
@@ -507,7 +558,15 @@ impl ExternalBoard for GridBoard {
                     let c = (data >> 6) as usize;
                     if c < 3 && (data >> 4) & 3 != 0 {
                         self.pit_rl[c] = (data >> 4) & 3;
+                        self.pit_mode[c] = (data >> 1) & 7;
                         self.pit_lsb_next[c] = true;
+                        self.pit_read_lsb[c] = true;
+                        self.pit_latch[c] = None;
+                    }
+                    else if c < 3 && self.pit_latch[c].is_none() {
+                        // counter latch command
+                        self.pit_latch[c] = Some(self.pit_now(c));
+                        self.pit_read_lsb[c] = true;
                     }
                 }
                 else {
@@ -523,6 +582,9 @@ impl ExternalBoard for GridBoard {
                             }
                             self.pit_lsb_next[r] = !self.pit_lsb_next[r];
                         }
+                    }
+                    if self.pit_rl[r] != 3 || self.pit_lsb_next[r] {
+                        self.pit_t0[r] = self.clocks;
                     }
                     if r == 2 {
                         let now = self.clocks;
@@ -555,4 +617,8 @@ impl ExternalBoard for GridBoard {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+fn pit_read_lsb_default() -> [bool; 3] {
+    [true; 3]
 }

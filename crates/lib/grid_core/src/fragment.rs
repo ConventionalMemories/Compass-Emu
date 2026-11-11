@@ -52,3 +52,24 @@ pub fn run(model: GridModel, code: &[u8], max_clocks: u64) -> FragmentResult {
     );
     FragmentResult { clocks: m.board().clocks - start, instructions, timed_out, registers, machine: m }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cycle counter marks time a LOOP of 100 turns.
+    #[test]
+    fn marks_time_a_loop() {
+        // MOV AL,1; OUT F0,AL; MOV CX,100; L: LOOP L; OUT F2,AL; OUT F4,AL; HLT
+        let code = [0xB0, 0x01, 0xE6, 0xF0, 0xB9, 0x64, 0x00, 0xE2, 0xFE, 0xE6, 0xF2, 0xE6, 0xF4, 0xF4];
+        let r = run(GridModel::Compass1101, &code, 100_000);
+        assert!(!r.timed_out);
+        let b = r.machine.board();
+        let s = &b.marks.sections[&1];
+        assert_eq!(s.count, 1);
+        // LOOP 17 clocks a turn (5 for the last), plus MOV CX and the OUT, plus contention
+        assert!((1700..2200).contains(&s.last), "section took {} clocks", s.last);
+        assert_eq!(b.marks.frame.count, 1);
+        println!("{}", b.marks.report(b.frame_clocks(), crate::screen::CPU_HZ));
+    }
+}

@@ -133,6 +133,12 @@ pub struct GridBoard {
     /// Split board only: also answer the 1101's GPIB DMA window at E0000, so a 1101 boot
     /// PROM can stand in for a missing 1121/1129 PROM.
     pub e0000_dma: bool,
+    /// Cycle counter marks (OUT 0F0h/0F2h/0F4h, see marks.rs).
+    #[serde(skip)]
+    pub marks: crate::marks::Marks,
+    /// Breakpoints (see debug.rs); the board reports port and interrupt hits.
+    #[serde(skip)]
+    pub debug: crate::debug::Debugger,
     /// Split board application ROM sockets 0-3 (chip images; empty = no chip).
     #[serde(skip)]
     pub rom_slots: [Vec<u8>; 4],
@@ -220,6 +226,8 @@ impl GridBoard {
             wide: false,
             next_slow: 0,
             e0000_dma: false,
+            marks: Default::default(),
+            debug: Default::default(),
             rom_slots: Default::default(),
             rom_quarter: [0; 4],
             rom_32k: 0,
@@ -242,6 +250,11 @@ impl GridBoard {
         if r == 2 && self.split_regs[0] == 1 && self.model.wide_screen() {
             self.wide = data & 4 == 0;
         }
+    }
+
+    /// CPU clocks in one display frame.
+    pub fn frame_clocks(&self) -> u64 {
+        self.display.frame_clocks()
     }
 
     /// Put a chip image in application ROM socket `slot` (0-3).
@@ -642,6 +655,9 @@ impl ExternalBoard for GridBoard {
     }
 
     fn io_read_u8(&mut self, port: u16, _cycles: u32) -> u8 {
+        if self.debug.ports.contains(&port) {
+            self.debug.hit = Some(format!("port {port:02X}h read"));
+        }
         if port >= 0x80 || port & 1 == 1 || matches!(port & 0x0F, 4 | 6) {
             return bus_value(port as usize);
         }
@@ -677,7 +693,24 @@ impl ExternalBoard for GridBoard {
     }
 
     fn io_write_u8(&mut self, port: u16, data: u8, _cycles: u32) {
+        if self.debug.ports.contains(&port) {
+            self.debug.hit = Some(format!("port {port:02X}h written: {data:02X}"));
+        }
         if port >= 0x80 {
+            // Not decoded on a real Compass: the emulator's cycle counter marks.
+            let now = self.clocks + _cycles as u64;
+            match port {
+                crate::marks::PORT_START => self.marks.start(data, now),
+                crate::marks::PORT_END => self.marks.end(data, now),
+                crate::marks::PORT_FRAME => {
+                    let d = &self.display;
+                    let fc = d.frame_clocks();
+                    let t = now.saturating_sub(d.ir3_line * d.line_clocks);
+                    let line = (now % fc) / d.line_clocks;
+                    self.marks.frame_mark(t % fc, t / fc, line);
+                }
+                _ => {}
+            }
             return;
         }
         let port = port & 0x0F;
@@ -742,7 +775,13 @@ impl ExternalBoard for GridBoard {
 
     fn inta(&mut self) -> Option<u8> {
         if self.pic.query_interrupt_line() {
-            self.pic.get_interrupt_vector()
+            let v = self.pic.get_interrupt_vector();
+            if let Some(v) = v {
+                if self.debug.irqs.contains(&(v & 7)) {
+                    self.debug.hit = Some(format!("interrupt IR{} (vector {v:02X}h) taken", v & 7));
+                }
+            }
+            v
         }
         else {
             None

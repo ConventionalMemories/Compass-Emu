@@ -20,8 +20,11 @@
 //!   --mute                       no sound
 //!   --readonly                   never write disk changes back to the image files
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
+//!   --overlay                    start with the demo tools overlay on (F10)
 //! Keys: PC keys map to the Compass keys by position; Alt = CODE, Ctrl = CTRL.
-//!   F11 = save screenshot, F12 = turbo on/off, Esc = Compass ESC. Close the window to quit
+//!   Debugger: type commands in the console window (h = help), F8 = pause / go on.
+//!   F9 = clear the cycle counter marks, F10 = demo tools overlay (marks, see
+//!   grid_core::marks), F11 = save screenshot, F12 = turbo on/off, Esc = Compass ESC. Close the window to quit
 //!   (changed disks are written back unless --readonly).
 
 use std::{
@@ -49,13 +52,66 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 pub const VERSION: &str = "0.3.12";
 const AMBER: u32 = 0xFFB040;
 const DARK: u32 = 0x1A0E00;
+/// Overlay colours (demo tools): text box and the beam tick of the last frame mark.
+const OVL_FG: u32 = 0xFFFFFF;
+const OVL_BG: u32 = 0x003040;
+const BEAM_TICK: u32 = 0x40D0FF;
+/// 8x8 font for the overlay (MartyPC's CGA font: row r of glyph g at r * 256 + g).
+const FONT: &[u8] = include_bytes!("../../../lib/marty_core/assets/cga_8by8.bin");
+
+/// A breakpoint was met: pause and show where.
+fn stop(m: &mut GridMachine, why: &str, paused: &mut bool) {
+    if why.starts_with("profile done") {
+        println!("{why}");
+        return;
+    }
+    *paused = true;
+    let (cs, ip) = m.cs_ip();
+    println!("{why}\n{}\n{}", m.reg_dump(), m.disassemble(cs, ip, 3));
+}
+
+fn draw_text(buf: &mut [u32], w: usize, x: usize, y: usize, text: &str) {
+    for (i, ch) in text.bytes().enumerate() {
+        let x0 = x + i * 8;
+        if x0 + 8 > w {
+            break;
+        }
+        for r in 0..8 {
+            let bits = FONT[r * 256 + ch as usize];
+            for c in 0..8 {
+                let o = (y + r) * w + x0 + c;
+                if o < buf.len() {
+                    buf[o] = if bits & (0x80 >> c) != 0 { OVL_FG } else { OVL_BG };
+                }
+            }
+        }
+    }
+}
+
+/// Demo tools overlay: the cycle counter table at the top and a tick at the left edge on
+/// the display line where the last frame mark was reached.
+fn draw_overlay(buf: &mut [u32], w: usize, h: usize, marks: &grid_core::marks::Marks, frame_clocks: u64) {
+    let mut lines = marks.lines(frame_clocks);
+    if marks.is_empty() {
+        lines = vec!["no marks: OUT 0F0h/0F2h,AL".into(), "F9 = clear  F10 = hide".into()];
+    }
+    for (i, l) in lines.iter().take(h / 8).enumerate() {
+        draw_text(buf, w, 0, i * 8, l);
+    }
+    if marks.frame.count > 0 && (marks.frame_line as usize) < h {
+        let y = marks.frame_line as usize;
+        for x in 0..12.min(w) {
+            buf[y * w + x] = BEAM_TICK;
+        }
+    }
+}
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
 /// seen by the 8741 scan.
 const MIN_HOLD: u64 = 300_000;
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay]\nROM defaults are looked for in a roms folder next to the program.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -132,6 +188,7 @@ fn main() {
     let mut folder: Option<PathBuf> = None;
     let mut rom_files: Vec<(usize, PathBuf)> = Vec::new();
     let mut readonly = false;
+    let mut overlay_on = false;
     let mut bubble: Option<PathBuf> = None;
     let mut serial_spec: Option<String> = None;
     let mut mute = false;
@@ -156,6 +213,7 @@ fn main() {
             "--folder" => folder = Some(val()),
             "--rom0" | "--rom1" | "--rom2" | "--rom3" => rom_files.push(((a.as_bytes()[5] - b'0') as usize, val())),
             "--readonly" => readonly = true,
+            "--overlay" => overlay_on = true,
             "--bubble" => bubble = Some(val()),
             "--serial" => serial_spec = Some(val().to_string_lossy().to_string()),
             "--mute" => mute = true,
@@ -270,6 +328,19 @@ fn main() {
     let mut last_title = Instant::now();
     let mut last_clock = 0u64;
     let mut shot = 0;
+    let mut overlay = overlay_on;
+    // Debugger console: commands typed in the console window (h for help), F8 = pause/go.
+    let (dbg_tx, dbg_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while std::io::stdin().read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+            if dbg_tx.send(line.trim().to_string()).is_err() {
+                break;
+            }
+            line.clear();
+        }
+    });
+    let mut paused = false;
 
     while win.is_open() {
         // Keyboard: keys held now plus keys tapped since the last frame, each kept down at
@@ -343,12 +414,33 @@ fn main() {
             base_wall = Instant::now();
             base_clock = m.board().clocks;
         }
+        let was_paused = paused;
+        if win.is_key_pressed(Key::F8, KeyRepeat::No) {
+            let (out, p) = m.debug_command(if paused { "g" } else { "p" }, paused);
+            print!("{out}");
+            paused = p;
+        }
+        while let Ok(line) = dbg_rx.try_recv() {
+            let (out, p) = m.debug_command(&line, paused);
+            print!("{out}");
+            paused = p;
+        }
+        if was_paused && !paused {
+            base_wall = Instant::now();
+            base_clock = m.board().clocks;
+        }
 
         // Run the emulation: real time, or as much as fits in ~15 ms in turbo.
-        if turbo {
+        if paused {
+            // stopped in the debugger: only the window and the console run
+        }
+        else if turbo {
             let t = Instant::now();
             while t.elapsed() < Duration::from_millis(15) {
-                m.run_clocks(50_000);
+                if let Some(why) = m.run_debug(50_000) {
+                    stop(&mut m, &why, &mut paused);
+                    break;
+                }
             }
         }
         else {
@@ -363,7 +455,9 @@ fn main() {
             }
             let behind = behind.min(max_step);
             if behind > 0 {
-                m.run_clocks(behind);
+                if let Some(why) = m.run_debug(behind) {
+                    stop(&mut m, &why, &mut paused);
+                }
             }
         }
 
@@ -390,6 +484,18 @@ fn main() {
         for (o, &p) in buf.iter_mut().zip(pix.iter()) {
             *o = if p != 0 { AMBER } else { DARK };
         }
+        if win.is_key_pressed(Key::F10, KeyRepeat::No) {
+            overlay = !overlay;
+            let b = m.board();
+            print!("{}", b.marks.report(b.frame_clocks(), screen::CPU_HZ));
+        }
+        if win.is_key_pressed(Key::F9, KeyRepeat::No) {
+            m.board_mut().marks.reset();
+        }
+        if overlay {
+            let b = m.board();
+            draw_overlay(&mut buf, sw, sh, &b.marks, b.frame_clocks());
+        }
         if win.is_key_pressed(Key::F11, KeyRepeat::No) {
             shot += 1;
             let name = format!("compass-{shot:03}.png");
@@ -400,16 +506,31 @@ fn main() {
         if last_title.elapsed() > Duration::from_secs(1) {
             let c = m.board().clocks;
             let speed = (c - last_clock) as f64 / screen::CPU_HZ / last_title.elapsed().as_secs_f64();
+            let b = m.board();
+            let marks = b.marks.summary(b.frame_clocks());
             win.set_title(&format!(
-                "{title} - {:.0}%{}",
+                "{title} - {:.0}%{}{}{}",
                 speed * 100.0,
-                if turbo { " (turbo, F12)" } else { "" }
+                if turbo { " (turbo, F12)" } else { "" },
+                if marks.is_empty() { "" } else { " - " },
+                marks
             ));
             last_clock = c;
             last_title = Instant::now();
         }
     }
 
+    {
+        let b = m.board();
+        if !b.marks.is_empty() {
+            let r = b.marks.report(b.frame_clocks(), screen::CPU_HZ);
+            print!("{r}");
+            match fs::write("compass-marks.txt", &r) {
+                Ok(_) => println!("saved compass-marks.txt"),
+                Err(e) => eprintln!("could not save compass-marks.txt: {e}"),
+            }
+        }
+    }
     if !readonly {
         let b = m.board();
         if let (Some(p), Some(bub)) = (&bubble, &b.bubble) {

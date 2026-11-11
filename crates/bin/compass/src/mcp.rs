@@ -19,7 +19,7 @@ use grid_core::{
     session::{png_bytes, Session},
     GridModel,
 };
-use marty_core::cpu_common::{Cpu, Register16};
+use marty_core::cpu_common::Cpu;
 use serde_json::{json, Value};
 
 const PROTOCOL: &str = "2024-11-05";
@@ -79,6 +79,11 @@ fn tools() -> Value {
             "name": "grid_save_disk",
             "description": "Write the running Compass's hard disk (with the changes GRiD-OS made) to a file.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+        },
+        {
+            "name": "grid_debug",
+            "description": "Debugger and cycle counter on the running Compass (after grid_boot). command is one of: b ADDR (code breakpoint, SSSS:OOOO or linear hex), bio PORT, bi N (hardware interrupt IR0-7, 3 = vertical sync), bw ADDR [LEN] (memory write watch), bl, bc, s [N] (step N instructions, shows clocks), r, m ADDR [LEN], u [SSSS:OOOO] [N] (disassemble), marks (cycle counter report: programs mark sections with OUT 0F0h,AL / OUT 0F2h,AL and frames with OUT 0F4h,AL; ports a real Compass ignores), marks-clear, g [SECONDS] (run until a breakpoint or SECONDS emulated seconds, default 10; returns the reason and the screen).",
+            "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
         },
         {
             "name": "grid_fragment",
@@ -176,8 +181,7 @@ impl Server {
     fn screen(&mut self, note: &str) -> Result<Vec<Value>, String> {
         let s = self.session()?;
         let (w, h, px) = s.screen();
-        let cs = s.m.cpu.get_register16(Register16::CS);
-        let ip = s.m.cpu.get_ip();
+        let (cs, ip) = s.m.cs_ip();
         let mode = s.m.screen_mode();
         let info = format!(
             "{note}Compass {} at {:.1} emulated s, CS:IP {cs:04X}:{ip:04X}, screen {}x{}",
@@ -265,6 +269,30 @@ impl Server {
                 let d = s.m.board().gpib.drives.first().ok_or("no disk")?;
                 std::fs::write(&p, &d.image).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
                 Ok(vec![text(format!("disk written to {}", p.display()))])
+            }
+            "grid_debug" => {
+                let cmd = a["command"].as_str().ok_or("command is needed")?.trim().to_string();
+                let s = self.session()?;
+                let mut words = cmd.split_whitespace();
+                if matches!(words.next(), Some("g") | Some("go") | Some("c")) {
+                    let secs: f64 = words.next().and_then(|t| t.parse().ok()).unwrap_or(10.0);
+                    let end = s.m.board().clocks + (secs * 5_000_000.0) as u64;
+                    let mut why = None;
+                    while why.is_none() && s.m.board().clocks < end {
+                        let left = end - s.m.board().clocks;
+                        why = s.m.run_debug(left.min(500_000));
+                    }
+                    let note = match why {
+                        Some(w) => {
+                            let (cs, ip) = s.m.cs_ip();
+                            format!("{w}\n{}\n{}", s.m.reg_dump(), s.m.disassemble(cs, ip, 3))
+                        }
+                        None => format!("no breakpoint in {secs} emulated seconds\n"),
+                    };
+                    return self.screen(&note);
+                }
+                let (out, _) = s.m.debug_command(&cmd, true);
+                Ok(vec![text(out)])
             }
             "grid_fragment" => {
                 let code = if let Some(h) = a.get("code_hex").and_then(|v| v.as_str()) {

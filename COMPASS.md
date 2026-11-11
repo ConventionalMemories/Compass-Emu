@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.3.6)
+## Status (0.3.7)
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
   timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
@@ -18,7 +18,15 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - 1101 board (`crates/lib/grid_core`): 16K boot PROM, 256K RAM, 80130 interrupt
   controller, IR3 vertical blank, 320x240 screen at 0400h.
 - TMS9914 GPIB with the pseudo-DMA window at E0000h; 2101 hard disk (address 4), 2101
-  floppy (5) and 2102 floppy (6) at the level of GRiD's disk protocol.
+  floppy (5) and 2102 floppy (6) at the level of GRiD's disk protocol. In exact mode the
+  hard disk has mechanics like a real 2101 with an ST-225: 3600 rpm, 17 sectors a track,
+  4 heads, interleave 5, seeks of 20 ms + 0.215 ms a cylinder, a 6-page read-ahead cache
+  that writes drop, and writes answered at once and done while the next command waits
+  (`HD_NOMECH=1` turns this off; fast mode never uses it). Sequential page reads take
+  about 23 ms as on the real box.
+- 8259 interrupt controller: a request that is pending when its IR is unmasked (or a lower
+  one after an EOI) raises INT at once. Before 0.3.7 it waited for the next unrelated
+  interrupt, so each disk command waited for an IR3 tick (3 refreshes a page).
 - MM58174 real-time clock.
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02).
 - 8087 (`crates/lib/i8087`) on the 8086's ESC/WAIT hooks: 80-bit registers with bit-exact
@@ -175,7 +183,8 @@ keys by position (Alt = CODE), F12 turbo, F11 screenshot.
 Environment variables: `GRID_HD`, `GRID_FLOP` (2102), `GRID_FLOP2101` for drive images;
 `GRID_KBD_ROM` for the 8741 firmware; `GRID_KEYS="seconds:text|..."` to type keys
 (`{ret} {esc} {tab} {bs} {left} {right} {up} {down} {code+x} {ctrl+x}`);
-`GRID_GPIB_TRACE=1` writes gpib_trace.txt; `GRID_DUMP=file` saves RAM at the end.
+`GRID_GPIB_TRACE=1` writes gpib_trace.txt; `GPIBLOG=1` prints disk commands, SRQs and
+transfer ends with their clock on stderr; `GRID_DUMP=file` saves RAM at the end.
 
 `gridfrag code.bin` runs a code fragment at 1000:0000 until HLT and prints the clocks and
 the 8087 state (`FPU_EXTRA`, `FPU_WAITMIN` override the 8087 timing fit; `DISP_CONTENTION=0`,

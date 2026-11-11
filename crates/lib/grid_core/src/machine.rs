@@ -278,6 +278,10 @@ impl GridMachine {
     /// clock counts (no prefetch queue, wait states or display contention): several times
     /// quicker, for builds, never for timing. Switch between instructions only.
     pub fn set_fast(&mut self, on: bool) {
+        // Disk mechanics (seek, rotation) only in exact mode: fast mode is for builds.
+        for d in self.board_mut().gpib.drives.iter_mut() {
+            d.mechanics = !on;
+        }
         if on == self.fast.is_some() {
             return;
         }

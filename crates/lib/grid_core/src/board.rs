@@ -244,7 +244,14 @@ impl GridBoard {
 
     /// Advance board time to CPU clock `now`.
     pub fn tick_to(&mut self, now: u64) {
+        let elapsed = now.saturating_sub(self.clocks);
         self.clocks = now.max(self.clocks);
+        // The 8259 raises INT for a request that is pending when its IR is unmasked (or a
+        // lower one after an EOI) from its own run step; without it such a request waited
+        // for the next unrelated interrupt (each disk command waited for an IR3 tick).
+        if elapsed > 0 {
+            self.pic.run(elapsed.min(u32::MAX as u64) as u32);
+        }
         // IR3: high from the start of line ir3_line for ir3_len lines.
         let d = &self.display;
         let line = (self.clocks % d.frame_clocks()) / d.line_clocks;

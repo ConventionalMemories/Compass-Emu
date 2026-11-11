@@ -3,7 +3,7 @@
 //! of MAME + gridbuild.lua.
 //!
 //!   compass do [--model M] --hd disk.img [--roms DIR] [--shot screen.png] [--start S]
-//!              [--max-seconds N] [--bubble F] "Do build"
+//!              [--max-seconds N] [--bubble F] [--flop F] "Do build"
 //!
 //! Boots, waits for a steady "=>" prompt (not before --start emulated seconds, default 20),
 //! types the command and Return, waits until the prompt comes back, saves --shot and writes
@@ -12,6 +12,9 @@
 //!
 //! Runs on the fast CPU core (whole instructions, approximate clocks) unless --exact is
 //! given; build output does not depend on timing, so builds take the fast path.
+//!
+//! --flop F: a 2102 portable floppy image (GPIB 6) next to the hard disk, written back when
+//! changed. The machine still boots from the hard disk.
 //!
 //! --state F: if F exists, start from that saved state (taken at the prompt) instead of
 //! booting, with the disk image from --hd attached; otherwise boot and save the state at the
@@ -34,6 +37,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     let mut start = 20.0;
     let mut max_s = 10800.0;
     let mut bubble: Option<PathBuf> = None;
+    let mut flop: Option<PathBuf> = None;
     let mut state: Option<PathBuf> = None;
     let mut command: Option<String> = None;
     let mut exact = false;
@@ -48,6 +52,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             "--start" => start = val().parse().unwrap_or(20.0),
             "--max-seconds" => max_s = val().parse().unwrap_or(10800.0),
             "--bubble" => bubble = Some(val().into()),
+            "--flop" => flop = Some(val().into()),
             "--state" => state = Some(val().into()),
             "--exact" => exact = true,
             "--fast" => exact = false,
@@ -83,6 +88,10 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
         None => {
             let mut m = grid_core::roms::machine(model, &roms).unwrap_or_else(|e| fail(&e));
             m.board_mut().gpib.drives.push(Drive::new(DriveKind::Hdd2101, img));
+            if let Some(f) = &flop {
+                let data = fs::read(f).unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", f.display())));
+                m.board_mut().gpib.drives.push(Drive::new(DriveKind::Floppy2102, data));
+            }
             m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(bub.unwrap_or_else(|| vec![0u8; 3 * grid_core::bubble::MBM_SIZE])));
             m
         }
@@ -149,6 +158,11 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
                 eprintln!("cannot write {}: {e}", hd.display());
                 return 1;
             }
+        }
+    }
+    if let Some(f) = &flop {
+        if let Some(d) = b.gpib.drives.iter().find(|d| d.kind == DriveKind::Floppy2102 && d.dirty) {
+            let _ = fs::write(f, &d.image);
         }
     }
     if let (Some(p), Some(bb)) = (&bubble, &b.bubble) {

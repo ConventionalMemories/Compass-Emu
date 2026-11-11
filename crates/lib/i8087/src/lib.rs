@@ -1015,6 +1015,16 @@ impl I8087 {
                         }
                         else {
                             self.sw |= SW_PE;
+                            if xf > 0.0 && xf.is_finite() {
+                                // time by how far the mantissa (folded to 0.707 .. 1.414) is from 1
+                                let mut m = (x.to_bits() as u64) as f64 / 2f64.powi(63);
+                                if m > std::f64::consts::SQRT_2 {
+                                    m /= 2.0;
+                                }
+                                let e = (m - 1.0).abs().log2().floor().max(-60.0) as i32;
+                                let t: &[(i32, f64)] = if m >= 1.0 { &FYL2X_ABOVE_C } else { &FYL2X_BELOW_C };
+                                c = busy_from_c(interp(e, t), 1078, 1110.9);
+                            }
                             self.from_q(trans::mul_q(to_q(y), trans::log2(to_q(x))))
                         };
                         self.set_st(1, r);
@@ -1128,13 +1138,20 @@ impl I8087 {
                 }
                 1 => {
                     // FYL2XP1
+                    let mut c = 790;
                     if let (Some(x), Some(y)) = (self.src(0), self.src(1)) {
                         let r = self.from_q(trans::mul_q(to_q(y), trans::log2_1p(to_q(x))));
                         self.set_st(1, r);
                         self.sw |= SW_PE;
+                        let xf = f80_to_f64(x);
+                        if xf != 0.0 && xf.is_finite() {
+                            let e = xf.abs().log2().floor().max(-60.0) as i32;
+                            let neg = if xf < 0.0 { 155.0 } else { 0.0 };
+                            c = busy_from_c(interp(e, &FYL2XP1_C) - neg, 790, 793.7);
+                        }
                     }
                     self.pop();
-                    790
+                    c
                 }
                 2 => {
                     // FSQRT
@@ -1240,6 +1257,11 @@ impl I8087 {
 /// Times GRiDBench 2.0 measured on a real 1101 ("c": clocks scaled by AAM = 83, the way its
 /// report prints them), by the exponent of the argument (F2XM1) or of y/x (FPATAN).
 const F2XM1_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 461.0), (-10, 505.0), (-7, 575.0), (-4, 650.0), (-2, 704.0), (-1, 705.0)];
+/// FYL2X by the exponent of |m - 1| (m = mantissa folded to 0.707 .. 1.414), above and
+/// below 1; FYL2XP1 by the exponent of x (x < 0 about 155 less).
+const FYL2X_ABOVE_C: [(i32, f64); 3] = [(-24, 706.0), (-3, 1079.0), (-2, 1105.0)];
+const FYL2X_BELOW_C: [(i32, f64); 4] = [(-24, 549.0), (-6, 864.0), (-4, 923.0), (-2, 947.0)];
+const FYL2XP1_C: [(i32, f64); 7] = [(-60, 665.0), (-16, 675.0), (-12, 764.0), (-10, 812.0), (-7, 905.0), (-4, 969.0), (-2, 1023.0)];
 const FPATAN_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 466.0), (-10, 510.0), (-4, 695.0), (-2, 760.0), (-1, 713.0), (0, 713.0)];
 
 /// Piecewise linear in e, flat outside the table.

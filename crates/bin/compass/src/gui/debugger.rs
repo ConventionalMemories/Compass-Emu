@@ -639,6 +639,12 @@ pub fn chips_window(app: &mut App, ctx: &egui::Context) {
                         if d.busy() { "busy" } else { "idle" },
                         if d.dirty { ", changed" } else { "" }
                     ));
+                    if let Some(t) = d.display() {
+                        ui.monospace(format!("  low-level 2101, display [{t}]"));
+                    }
+                    if d.low_level() && d.lle2101.is_none() && d.lle.is_none() {
+                        ui.monospace("  answered by the low-level 2101");
+                    }
                 }
                 ui.checkbox(&mut b.gpib.trace_on, "Trace GPIB traffic");
                 if !b.gpib.trace.is_empty() {

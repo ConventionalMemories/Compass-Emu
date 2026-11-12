@@ -93,6 +93,9 @@ Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when pre
 2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
 the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
 without it the protocol model answers as before.
+2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
+box), the 2101's own firmware. With it the 2101 runs low-level (see CHANGELOG
+0.8.0); without it the protocol model answers as before.
 ```
 
 ## Build mode (replaces MAME for build.bat)

@@ -27,6 +27,19 @@ pub struct RomSet {
     /// 2102 floppy firmware (300237-02 or -01): with it the 2102 runs low-level. Set
     /// GRID_2102=protocol to use the protocol-level model anyway.
     pub fd2102: Option<PathBuf>,
+    /// 2101 firmware: 300205-05 (20 MB drive) and 300205-06 (10 MB). The one that fits the
+    /// hard disk image runs the 2101 low-level. Set GRID_2101=protocol to use the
+    /// protocol-level model anyway.
+    pub hd2101: [Option<PathBuf>; 2],
+}
+
+/// The 2101 firmware files in `dir`: [-05, -06].
+pub fn find_2101(dir: &Path) -> [Option<PathBuf>; 2] {
+    if std::env::var("GRID_2101").is_ok_and(|v| v.eq_ignore_ascii_case("protocol")) {
+        return [None, None];
+    }
+    let f = |names: &[&str]| names.iter().map(|n| dir.join(n)).find(|p| p.exists());
+    [f(&["300205-05.bin", "2101.bin"]), f(&["300205-06.bin"])]
 }
 
 /// The 2102 firmware in `dir`, newest first.
@@ -59,7 +72,7 @@ pub fn find(model: GridModel, dir: &Path) -> RomSet {
     };
     let k2 = p("300001-02.bin");
     let keyboard = if model.split_board() && k2.exists() { k2 } else { p("300067-01.bin") };
-    RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note, fd2102: find_2102(dir) }
+    RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note, fd2102: find_2102(dir), hd2101: find_2101(dir) }
 }
 
 /// A ready machine for `model` with the ROMs from `dir` (keyboard firmware loaded, the
@@ -73,6 +86,11 @@ pub fn machine(model: GridModel, dir: &Path) -> Result<crate::GridMachine, Strin
     m.board_mut().e0000_dma = r.e0000_dma;
     if let Some(p) = &r.fd2102 {
         m.board_mut().gpib.rom_2102 = Some(rd(p)?);
+    }
+    for (i, p) in r.hd2101.iter().enumerate() {
+        if let Some(p) = p {
+            m.board_mut().gpib.rom_2101[i] = Some(rd(p)?);
+        }
     }
     Ok(m)
 }

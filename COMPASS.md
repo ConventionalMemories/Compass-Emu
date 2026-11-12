@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.7.0)
+## Status (0.8.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -72,6 +72,24 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   `GRID_2102=protocol` uses the protocol model instead; `BOXLOG=1` prints the bytes the box
   moves, `FDCLOG=1` every WD2797 command. Bench test: `FD2102_ROM=rom cargo test --test
   lle2102`.
+- 2101 low-level (when `roms` holds `300205-05.bin` (20 MB) or `300205-06.bin` (10 MB), or
+  `2101.bin`; picked from the hard disk image size): the box's own 8088 runs the real ROM
+  (`box2101`, on `fast86` with bus holds), 4 MHz (12 MHz crystal, 8284A), 8 KB RAM at 0,
+  ROM at E000h, WD2797 at 4000h-5800h, display at 6000h-6003h (reading 6000h gives the
+  DIP switches: address 4), Intel 8291A at 8000h-9C00h (`i8291`, line-level handshake),
+  74LS259 latch at A000h-A00Eh (floppy light, display reset, floppy select, READY hold for
+  pseudo-DMA, HD light, SASI SEL and RST), SASI status at A000h, SASI data at C000h. INTR =
+  8291A INT or WD INTRQ (no 8259), NMI = the back-panel test button. The Xebec S1410 stays at
+  command level (`s1410`: TUR, recal, sense, format, check, read, read long, write, seek,
+  init params, buffer commands, diagnostics; format fill 6Ch), timed after an ST-225:
+  seeks 1/38/200/611 cylinders 20/62/85/130 ms, 3600 rpm, 17 sectors, interleave 4
+  (`S1410_IL`, `S1410_SEEK`). Against a real 1101 + 2101 (GRiDBench 2.1b): same page 17.0
+  (real 19.0), sequential 23.8 (21.1), random 55.8 (53.5), first/last 133.7 (130.3), steps
+  117.8 (122.5). The 2101 floppy (address 5) goes through the firmware too: its format
+  writes interleave 3 with no skew, and an empty slot gives error 128 (the WD READY line).
+  The 4-character display shows in the status bar. `GRID_2101=protocol` uses the protocol
+  model; `GRID_2101_EARLY` (default 4 s), `GRID_2101_MHZ`. Bench test: `HD2101_ROM=rom
+  cargo test --test lle2101`.
 - A PC folder as a GRiD drive (`--folder DIR`, `grid_core::hostdir`): at start the folder is
   built into a GRiD volume (files in the root, sub-folders as subjects, up to 32 MB with 4 MB
   free) on the 2101 floppy address (GPIB 5); the volume is named after the folder. On quit,

@@ -2,6 +2,24 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.8.0
+
+- The 2101 hard disk box runs low-level when roms holds its firmware
+  (300205-05.bin for the 20 MB box, 300205-06.bin for the 10 MB one; 2101.bin
+  also works): the box's 8088 (4 MHz) runs the real ROM, with an 8291A GPIB
+  chip, the 74LS259 latch, a WD2797 floppy controller and a Xebec S1410 SASI
+  controller (the S1410 at command level, timed after its ROM and a real 2101
+  with an ST-225). The ROM is picked from the hard disk image size.
+- The 2101's 4-character display shows in the status bar and in the debugger.
+- The 2101 floppy goes through the box's firmware too: a format writes
+  interleave 3, and an empty slot gives error 128 as on the real box.
+- Disk timing fitted to GRiDBench 2.1b on a real 1101 + 2101 (ms, emulated vs
+  real): same page 17.0 / 19.0, sequential 23.8 / 21.1, random 55.8 / 53.5,
+  first/last 133.7 / 130.3, steps 117.8 / 122.5. The drive is taken as formatted
+  at interleave 4 (S1410_IL changes it; S1410_SEEK the seek curve).
+- GRID_2101=protocol uses the protocol-level model; it is also used when no
+  2101 ROM is there, or when a PC folder is the 2101 floppy.
+
 ## 0.7.0
 
 - The 2102 portable floppy runs low-level when roms holds its firmware

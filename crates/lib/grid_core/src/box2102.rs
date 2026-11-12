@@ -90,7 +90,7 @@ impl Ctx<'_> {
         let selected = hw.p3 & 0x10 != 0;
         let spinning = selected && hw.p3 & 0x01 != 0 && !image.is_empty();
         let Hw { fdc, mech, disk, us, .. } = hw;
-        (fdc, Env { now: *us, spinning, selected, mech, disk, image, dirty, write_protect: false })
+        (fdc, Env { now: *us, spinning, selected, mech, disk, image, dirty, write_protect: false, ready: true })
     }
 }
 

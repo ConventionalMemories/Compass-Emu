@@ -30,6 +30,14 @@ pub trait Bus86 {
     fn wait_min(&mut self) -> u64 {
         0
     }
+    /// The bus can hold an access (READY low): see `stalled`.
+    const WAITS: bool = false;
+    /// The last access could not complete yet (READY low). The core then puts the
+    /// instruction back (a REP string instruction keeps the iterations it has done) so it runs
+    /// again, after any pending interrupt, once the bus is ready.
+    fn stalled(&mut self) -> bool {
+        false
+    }
 }
 
 // register numbers (ModRM order)
@@ -68,6 +76,9 @@ pub struct Fast86 {
     pub instructions: u64,
     /// No interrupt after this instruction (MOV/POP to a segment register, prefixes).
     inhibit: bool,
+    /// A REP string instruction stopped on a held access, keeping its progress.
+    #[serde(default)]
+    paused: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -342,6 +353,11 @@ impl Fast86 {
         v
     }
 
+    /// Non-maskable interrupt (vector 2).
+    pub fn nmi<B: Bus86>(&mut self, b: &mut B) {
+        self.interrupt(b, 2);
+    }
+
     fn interrupt<B: Bus86>(&mut self, b: &mut B, n: u8) {
         let f = self.flags;
         self.push(b, f);
@@ -371,10 +387,24 @@ impl Fast86 {
         }
         else {
             let tf = self.f(TF);
+            let saved = if B::WAITS { Some(*self) } else { None };
             self.exec(b);
-            self.instructions += 1;
-            if tf && self.f(TF) {
-                self.interrupt(b, 1);
+            if B::WAITS && b.stalled() {
+                // READY low: undo the instruction (a REP string instruction keeps what it did),
+                // then take a pending interrupt as the real CPU would between iterations.
+                if self.paused {
+                    self.paused = false;
+                }
+                else if let Some(s) = saved {
+                    *self = s;
+                }
+            }
+            else {
+                self.paused = false;
+                self.instructions += 1;
+                if tf && self.f(TF) {
+                    self.interrupt(b, 1);
+                }
             }
         }
         if self.inhibit {
@@ -991,7 +1021,15 @@ impl Fast86 {
                     }
                     else {
                         let v = b.read8(lin(src, self.r[SI]));
+                        if B::WAITS && b.stalled() {
+                            self.pause(c);
+                            return;
+                        }
                         b.write8(lin(self.s[ES], self.r[DI]), v);
+                        if B::WAITS && b.stalled() {
+                            self.pause(c);
+                            return;
+                        }
                     }
                     self.r[SI] = self.r[SI].wrapping_add(delta);
                     self.r[DI] = self.r[DI].wrapping_add(delta);
@@ -1014,6 +1052,10 @@ impl Fast86 {
                     }
                     else {
                         b.write8(lin(self.s[ES], self.r[DI]), self.r8(0));
+                        if B::WAITS && b.stalled() {
+                            self.pause(c);
+                            return;
+                        }
                     }
                     self.r[DI] = self.r[DI].wrapping_add(delta);
                 }
@@ -1023,6 +1065,10 @@ impl Fast86 {
                     }
                     else {
                         let v = b.read8(lin(src, self.r[SI]));
+                        if B::WAITS && b.stalled() {
+                            self.pause(c);
+                            return;
+                        }
                         self.set_r8(0, v);
                     }
                     self.r[SI] = self.r[SI].wrapping_add(delta);
@@ -1046,7 +1092,19 @@ impl Fast86 {
                     break;
                 }
             }
+            // A real 8086 takes a pending interrupt between iterations and then resumes the
+            // instruction (only modelled where the bus can hold accesses: the 2101's 8088).
+            if B::WAITS && self.r[CX] != 0 && self.f(IF) && b.intr() {
+                self.ip = c.start_ip;
+                return;
+            }
         }
+    }
+
+    /// Stop a string instruction on a held access: it runs again from its first prefix.
+    fn pause(&mut self, c: &Ctx) {
+        self.ip = c.start_ip;
+        self.paused = true;
     }
 
     fn group3<B: Bus86>(&mut self, b: &mut B, c: &Ctx, op: u8) {

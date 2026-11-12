@@ -2,6 +2,28 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.6.2
+
+Fitted to the GRiDProbe runs on a real 1101 and a real 1137:
+- Bubble memory turns like the real one: the loops only move while a command
+  runs and stop where it ends, so a read waits for its page to come round.
+  The next page costs 12.5 ms, two on 20 ms, half the bubble away 46 ms, the
+  same page again a full turn (87 ms); streaming 7.2 ms a page, bytes reach
+  the FIFO one at a time (2 bubble interrupts a page, as on the real 1101).
+  Initialize, Read FSA Status, Reset FIFO, Software Reset, Abort and Purge
+  take their real times; Abort during a transfer drops the FIFO.
+- The interrupt controller ignores a non-specific EOI (OUT 0,20H), as the
+  real 1101 does; GRiD-OS uses specific EOIs.
+- Refresh tick (IR3) stays high most of the frame like the real machines
+  (1101: low ~8000 clocks a frame; 113x: low only ~1500). 1101 frame 270
+  clocks x 306 lines (60.5 Hz).
+- 1131/1139: DFE00 = 1 darkens the screen until it is set back to 0, as on
+  the real 1137.
+- Display memory slowdown on every line, blank ones too (the real machines
+  show the same slowdown all through the frame), refitted: the full GRiDBench
+  2.2 report now matches the real 1101 within 1.04% on average (was 1.14%)
+  and the real 1137 within 1.97% (was 2.83%).
+
 ## 0.6.1
 
 Timing fitted to GRiDBench 2.2 runs on a real 1101 and a real 1137:

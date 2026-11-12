@@ -1,19 +1,19 @@
 //! Display timing. Patent US 4,571,456: 15 MHz crystal, CPU = /3 (5 MHz), pixel clock /2.
 //! Geometry from GRiDBench on a real 1101: the beam finder (2.0/2.1) shows 306 line times a
 //! frame and the refresh tick (IR3) arriving as the picture starts at the top; the frame is
-//! ~82900 CPU clocks (2.2 d11 in AAM-77 clocks, corrected by the emulator's own d11 bias),
-//! so 271 clocks a line (60.3 Hz at 5 MHz). Everything here is in CPU clocks (5 MHz).
+//! ~82900 CPU clocks by GRiDBench 2.2 d11 and ~82350 by GRiDProbe d15 (both corrected by the
+//! emulator's own bias), so 270 clocks a line (60.5 Hz at 5 MHz). Everything here is in CPU clocks (5 MHz).
 
 pub const CPU_HZ: f64 = 5_000_000.0;
-/// CPU clocks per scan line (54.2 us).
-pub const LINE_CLOCKS: u64 = 271;
-/// Total lines per frame (60.3 Hz), visible lines.
+/// CPU clocks per scan line (54.0 us).
+pub const LINE_CLOCKS: u64 = 270;
+/// Total lines per frame (60.5 Hz), visible lines.
 pub const FRAME_LINES: u64 = 306;
 pub const VISIBLE_LINES: u64 = 240;
 /// IR3 rises at the start of this line (lines from the top of the picture) and stays high
-/// for IR3_LEN lines.
+/// for IR3_LEN lines: on a real 1101 it is high ~75000 clocks and low ~8000 (GRiDProbe d16/p65).
 pub const IR3_LINE: u64 = 2;
-pub const IR3_LEN: u64 = 26;
+pub const IR3_LEN: u64 = 276;
 
 fn default_ir3_len() -> u64 {
     IR3_LEN
@@ -61,6 +61,9 @@ pub struct DisplayTiming {
     pub frame_lines: u64,
     pub visible_lines: u64,
     pub line_words: usize,
+    /// The display fetches on every line, not just the visible ones.
+    #[serde(default)]
+    pub all_lines: bool,
 }
 
 impl Default for DisplayTiming {
@@ -68,14 +71,14 @@ impl Default for DisplayTiming {
         DisplayTiming {
             // Fitted with the bus steal in machine.rs (4 clocks every 48) and the JMP SHORT
             // quirk (machine.rs) to a real 1101's GRiDBench 2.2 gap rows (c50-c61, j01-j30,
-            // REP per-word costs: 1.2% rms, 4% at most): one display word every 40 states, so
-            // the 20 words of a line fill it; reads that overlap a display slot wait, writes
-            // only when they start inside one.
+            // REP per-word costs: 1.05% rms, 3% at most): one display word every 32 states on
+            // every line (GRiDProbe: the slowdown is the same in the blank as in the picture);
+            // a CPU access that starts inside a display slot waits for its end.
             contention: true,
-            fetch_period: 40,
+            fetch_period: 32,
             fetch_len: 5,
             fetch_offset: 0,
-            cpu_len: 2,
+            cpu_len: 0,
             cpu_write_len: 0,
             ir3_line: IR3_LINE,
             ir3_len: IR3_LEN,
@@ -83,6 +86,7 @@ impl Default for DisplayTiming {
             frame_lines: FRAME_LINES,
             visible_lines: VISIBLE_LINES,
             line_words: LINE_WORDS,
+            all_lines: true,
         }
     }
 }
@@ -90,8 +94,8 @@ impl Default for DisplayTiming {
 /// The 113x (Compass II 1131/1139) large screen: 512 x 256. From GRiDBench 2.2 on a real 1137
 /// (2026-11-12, RTC dead): the AAM loop measured in refreshes against the emulator's gives a
 /// frame of ~83500 CPU clocks (59.9 Hz), the beam finder ~297 line times with the tick at the
-/// top of the picture like the 1101, so 281 clocks a line. 32 words a visible line, one every
-/// 23 states (fitted to the gap rows: 3.3% rms).
+/// top of the picture like the 1101, so 281 clocks a line. 32 words a line (every line), one every
+/// 16 states (fitted to the gap rows: 2.0% rms).
 pub const WIDE_W: usize = 512;
 pub const WIDE_H: usize = 256;
 
@@ -99,10 +103,12 @@ impl DisplayTiming {
     /// Timing of the 113x large screen (to be measured on a real 1131/1139).
     pub fn wide() -> DisplayTiming {
         DisplayTiming {
-            fetch_period: 23,
-            fetch_len: 7,
+            fetch_period: 16,
+            fetch_len: 5,
             line_clocks: 281,
             frame_lines: 297,
+            // GRiDProbe on a real 1137: IR3 low only ~1500 clocks a frame.
+            ir3_len: 292,
             visible_lines: WIDE_H as u64,
             line_words: WIDE_W / 16,
             ..DisplayTiming::default()
@@ -137,7 +143,7 @@ impl DisplayTiming {
             return 0;
         }
         let in_frame = now % self.frame_clocks();
-        if in_frame >= self.visible_lines * self.line_clocks {
+        if !self.all_lines && in_frame >= self.visible_lines * self.line_clocks {
             return 0;
         }
         let x = (in_frame % self.line_clocks) as i64 * 3 - self.fetch_offset as i64;

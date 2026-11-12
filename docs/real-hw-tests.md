@@ -5,8 +5,9 @@ were measured on a real 1101 with GRiDBench 2.0-2.2 (gridbench/reports/real-1101
 fitted in Compass-Emu 0.3.6-0.3.10; the CPU gap rows of GRiDBench 2.2 and a real 1137 run
 (real-1137-2.2.txt: large-screen frame, contention, split-board bus) were fitted in 0.6.1
 (1101: 271 clocks a line, 306 lines; 113x: 281 x 297; IR3 at the top of the picture on both).
-Still open: bubble B1-B6, the large-screen register tests L1-L4, P2 interrupt latency and the
-K2 third key; GRiDProbe 0.0.1 (gridprobe/) tests them and waits for a real run.
+GRiDProbe 0.0.7 (1137) and 0.0.11 (1101) results (gridprobe/reports/) were fitted in 0.6.2:
+bubble seeks/streaming/command times, IR3 level length, non-specific EOI ignored, DFE00 dark
+screen on the 113x; P2 latency and the K2 third key already matched.
 
 Collected while building Compass-Emu (display timing 0.0.5; bubble, serial and sound 0.1.0). The emulator has
 adjustable settings for each item; these tests pin them down. To be bundled with the 8086,

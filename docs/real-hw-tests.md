@@ -2,9 +2,11 @@
 
 **Status (2026-11-12):** the display items D1-D7 and most serial, sound, 8086 and 8087 items
 were measured on a real 1101 with GRiDBench 2.0-2.2 (gridbench/reports/real-1101-2.*.txt) and
-fitted in Compass-Emu 0.3.6-0.3.10 (display now 274 clocks a line, 306 lines, IR3 at the top of
-the picture). Still open: bubble B1-B6 (need direct 7220 access, like Bubble Fix), the large
-screen L1-L4 (need a 113x), and the CPU gap fit from GRiDBench 2.2 (real-1101-2.2.txt).
+fitted in Compass-Emu 0.3.6-0.3.10; the CPU gap rows of GRiDBench 2.2 and a real 1137 run
+(real-1137-2.2.txt: large-screen frame, contention, split-board bus) were fitted in 0.6.1
+(1101: 271 clocks a line, 306 lines; 113x: 281 x 297; IR3 at the top of the picture on both).
+Still open: bubble B1-B6, the large-screen register tests L1-L4, P2 interrupt latency and the
+K2 third key; GRiDProbe 0.0.1 (gridprobe/) tests them and waits for a real run.
 
 Collected while building Compass-Emu (display timing 0.0.5; bubble, serial and sound 0.1.0). The emulator has
 adjustable settings for each item; these tests pin them down. To be bundled with the 8086,

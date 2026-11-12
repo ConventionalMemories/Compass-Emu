@@ -535,9 +535,12 @@ impl ExternalBoard for GridBoard {
                 let idn = if off & 1 == 1 { idb & 0xF0 } else { (idb & 0x0F) << 4 };
                 idn | (self.rtc.read(off) & 0x0F)
             }
-            0xC0000..=0xCFFFF if self.model.split_board() => 0xFF,
             0x80000..=0x9FFFF if self.model.split_board() => self.rom_read(address),
-            0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
+            // The 7220 answers at DFE80/82; on the split board (real 1137, GRiDBench 2.2 u40) it
+            // repeats every 4 bytes up to DFE8F.
+            0xDFE80..=0xDFE8F
+                if address & 1 == 0 && self.bubble.is_some() && (address <= 0xDFE83 || self.model.split_board()) =>
+            {
                 let now = self.clocks + _cycles as u64;
                 let v = self.bubble.as_mut().unwrap().read((address >> 1) & 1, now);
                 self.sync_bubble_int();
@@ -554,7 +557,10 @@ impl ExternalBoard for GridBoard {
                 self.log(address, false, 0xFF);
                 0xFF
             }
-            _ if self.model.split_board() => 0xFF,
+            // Real 1137 (GRiDBench 2.2 u01-u09): the PROM shows again at F8000-FBFFF only, and
+            // everything else unclaimed reads the address left on the bus (no FF lane at D0000).
+            0xF8000..=0xFBFFF if self.model.split_board() => self.prom[(address - 0xF8000) % self.prom.len()],
+            _ if self.model.split_board() => bus_value(address),
             // Real 1101 (GRiDBench 2.0, U1): the PROM also answers at F0000-FBFFF; D0000-DEFFF
             // pulls the even byte lane to FF; elsewhere nothing drives the bus and a read gets
             // the address still on it (A0-A7 on even bytes, A8-A15 on odd ones).
@@ -663,10 +669,13 @@ impl ExternalBoard for GridBoard {
         if self.debug.ports.contains(&port) {
             self.debug.hit = Some(format!("port {port:02X}h read"));
         }
-        if port >= 0x80 || port & 1 == 1 || matches!(port & 0x0F, 4 | 6) {
+        // 1101: ports 4/6 are not decoded and 0E reads FF. Split board (real 1137): 4/6 answer
+        // like the PIC at 0/2 and 0E is not decoded.
+        let split = self.model.split_board();
+        if port >= 0x80 || port & 1 == 1 || (!split && matches!(port & 0x0F, 4 | 6)) || (split && port & 0x0F == 0x0E) {
             return bus_value(port as usize);
         }
-        let port = port & 0x0F;
+        let port = if split && matches!(port & 0x0F, 4 | 6) { port & 0x0B } else { port & 0x0F };
         match port {
             0x00 => self.pic.handle_command_register_read(),
             0x02 => self.pic.handle_data_register_read(),

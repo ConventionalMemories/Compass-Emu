@@ -23,10 +23,11 @@ fn model_table() {
 #[test]
 fn ram_size_and_large_screen() {
     let mut m = machine(GridModel::Compass1131);
-    // 256K: nothing above 3FFFF
+    // 256K: nothing above 3FFFF, a read gets the address left on the bus (real 1137 u05-u08)
     let b = m.board_mut();
     assert!(b.mem_ranges().iter().any(|&(s, _)| s == 0x40000));
-    assert_eq!(b.mem_read_u8(0x40000, 0), 0xFF);
+    assert_eq!(b.mem_read_u8(0x40002, 0), 0x02);
+    assert_eq!(b.mem_read_u8(0x40203, 0), 0x02);
     assert_eq!(m.screen_mode(), (320, 240));
     // the 113x OS: video chip on, 0Ah (256K, large screen), video chip off
     let b = m.board_mut();

@@ -176,7 +176,18 @@ impl Bus86 for FastBus<'_> {
 
 impl GridMachine {
     pub fn new(model: GridModel, prom_even: &[u8], prom_odd: &[u8]) -> GridMachine {
-        let mut cpu = CpuBuilder::new().with_cpu_type(CpuType::Intel8086).build().expect("cpu");
+        // GRID_TRACE=file writes a cycle trace (debugging the core's timing).
+        let trace = std::env::var("GRID_TRACE").ok();
+        let mut b = CpuBuilder::new().with_cpu_type(CpuType::Intel8086);
+        if let Some(f) = &trace {
+            b = b
+                .with_trace_mode(marty_core::cpu_common::TraceMode::CycleText)
+                .with_trace_logger(marty_core::tracelogger::TraceLogger::from_filename(f));
+        }
+        let mut cpu = b.build().expect("cpu");
+        if trace.is_some() {
+            cpu.set_option(CpuOption::TraceLoggingEnabled(true));
+        }
         // Plain RAM: clear it.
         for a in 0..model.ram_size() {
             let _ = cpu.bus_mut().write_u8(a, 0, 0);
@@ -209,6 +220,11 @@ impl GridMachine {
             cpu.set_option(CpuOption::ScheduleDramRefresh(true, period, period, true));
             cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(4)));
         }
+        // JMP SHORT quirk: on a real Compass a chain of JMP SHORTs runs like taken Jcc's (1101
+        // and 1137 GRiDBench 2.2 j01-j05, c55, c58, c59), as if the jump spent one more clock
+        // before suspending prefetch. JMP_EXTRA overrides it (0 = the plain 8086).
+        marty_core::cpu_808x::JMP_SHORT_EXTRA
+            .store(env_u32("JMP_EXTRA").unwrap_or(1), std::sync::atomic::Ordering::Relaxed);
         let size = if model.wide_screen() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
         let mut m = GridMachine {
             cpu,

@@ -188,6 +188,9 @@ impl Session {
         m.board_mut().e0000_dma =
             roms.e0000_dma || (model.split_board() && !model.wide_screen() && (prom.is_some() || prom_even.is_some()));
         m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")?));
+        if let Some(p) = &roms.fd2102 {
+            m.board_mut().gpib.rom_2102 = Some(read(p, "2102 floppy firmware")?);
+        }
 
         let mut media = vec![];
         for (kind, path) in [(DriveKind::Hdd2101, &cfg.hd), (DriveKind::Floppy2102, &cfg.flop), (DriveKind::Floppy2101, &cfg.flop2101)] {

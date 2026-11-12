@@ -73,9 +73,14 @@ pub struct BubbleTiming {
     /// From the last page passing to busy off (read / write).
     pub read_tail_clocks: u64,
     pub write_tail_clocks: u64,
-    /// Initialize: fixed part, then the loops turn to the next of `init_stops` stop positions.
+    /// Write: the FIFO only takes data (status bit 0, DRQ) from this long before the first
+    /// page passes (GRiDProbe b21-b24 and b55 on a real 1101: no byte goes in before then).
+    pub write_lead_clocks: u64,
+    /// Initialize: fixed part, then (unless an MBM Purge came since the last transfer) `init_turn_clocks`
+    /// more and a turn of the loops to the next of `init_stops` stop positions.
     pub init_clocks: u64,
     pub init_stops: u64,
+    pub init_turn_clocks: u64,
     pub fsa_clocks: u64,
     /// Reset FIFO, Software Reset.
     pub reset_clocks: u64,
@@ -95,16 +100,18 @@ impl Default for BubbleTiming {
             stride: 181,
             start_clocks: 26_500,
             write_start_clocks: 1_500,
-            byte_clocks: 200,
-            read_tail_clocks: 16_500,
+            byte_clocks: 400,
+            read_tail_clocks: 25_600,
             write_tail_clocks: 29_000,
+            write_lead_clocks: 6_000,
             init_clocks: 2_400,
-            init_stops: 5,
-            fsa_clocks: 700,
-            reset_clocks: 400,
-            abort_clocks: 800,
+            init_stops: 40,
+            init_turn_clocks: 30_000,
+            fsa_clocks: 200,
+            reset_clocks: 200,
+            abort_clocks: 400,
             abort_busy_clocks: 700,
-            purge_clocks: 2_150,
+            purge_clocks: 1_250,
             fail_clocks: 1_500,
         }
     }
@@ -136,6 +143,12 @@ pub struct Bubble {
     rot_start: u64,
     #[serde(default)]
     reach: u64,
+    /// An MBM Purge came after the last data transfer (Initialize is short).
+    #[serde(default)]
+    purged: bool,
+    /// A write's FIFO takes data (see `write_lead_clocks`).
+    #[serde(default)]
+    armed: bool,
 }
 
 impl Bubble {
@@ -162,6 +175,8 @@ impl Bubble {
             theta: [0; 16],
             rot_start: 0,
             reach: 0,
+            purged: false,
+            armed: false,
         }
     }
 
@@ -199,7 +214,7 @@ impl Bubble {
         self.drq = self.phase == Phase::Exec
             && match self.op {
                 Op::Read => self.fifo.len() >= 22,
-                Op::Write => self.fifo.len() < FIFO_SIZE - 22,
+                Op::Write => self.armed && self.fifo.len() < FIFO_SIZE - 22,
                 _ => false,
             };
     }
@@ -279,6 +294,15 @@ impl Bubble {
             );
         }
         let t = self.timing;
+        // After an MBM Purge, Initialize stays short (GRiDProbe b48 on a real 1101: 0.49 ms
+        // four times in a row) until the next data transfer.
+        if cmd == 0x0E {
+            self.purged = true;
+        }
+        else if matches!(cmd, 2 | 3) {
+            self.purged = false;
+        }
+        let purged = self.purged;
         match cmd {
             1 => {
                 // Initialize: the loops turn to the next stop position.
@@ -287,9 +311,16 @@ impl Bubble {
                     self.next = now + t.fail_clocks;
                 }
                 else {
+                    // GRiDProbe on a real 1101: 6.0 .. 8.6 ms, but 0.49 ms after a Purge
                     let q = (self.loop_clocks() / t.init_stops.max(1)).max(1);
                     let th = self.theta[0];
-                    let wait = (q - th % q) % q;
+                    let wait = if purged {
+                        0
+                    }
+                    else {
+                        let turn = t.init_turn_clocks;
+                        turn + (q - (th + turn) % q) % q
+                    };
                     let l = self.loop_clocks();
                     for th in self.theta.iter_mut() {
                         *th = (*th + wait) % l;
@@ -315,7 +346,16 @@ impl Bubble {
                     let l = self.loop_clocks();
                     let pos = (self.addr() as u64 * t.stride % t.loop_slots) * t.slot_clocks;
                     self.reach = self.rot_start + (pos + l - self.theta[self.mbm()]) % l;
-                    self.next = if self.limit == 0 { self.transfer_end() } else { self.byte_time(0) };
+                    self.armed = cmd == 2;
+                    self.next = if self.limit == 0 {
+                        self.transfer_end()
+                    }
+                    else if cmd == 3 {
+                        self.byte_time(0).saturating_sub(t.write_lead_clocks).max(now)
+                    }
+                    else {
+                        self.byte_time(0)
+                    };
                 }
             }
             0x0E => {
@@ -371,6 +411,11 @@ impl Bubble {
                     }
                     self.end(true);
                 }
+                Op::Write if !self.armed => {
+                    self.armed = true;
+                    self.update_drq();
+                    self.next = self.byte_time(0);
+                }
                 Op::Read | Op::Write => {
                     if self.counter < self.limit {
                         let o = self.byte_offset(self.counter);
@@ -417,7 +462,7 @@ impl Bubble {
                 v |= SR_BUSY;
                 match self.op {
                     Op::Read if !self.fifo.is_empty() => v |= SR_FIFO,
-                    Op::Write if self.fifo.len() < FIFO_SIZE => v |= SR_FIFO,
+                    Op::Write if self.armed && self.fifo.len() < FIFO_SIZE => v |= SR_FIFO,
                     _ => {}
                 }
             }

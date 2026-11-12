@@ -2,6 +2,33 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.8.1
+
+Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
+- 8087 FPATAN and F2XM1 take as long as the real chip for each input: their
+  time follows the chip's digit loop (steps from the first non-zero digit, and
+  the digits themselves), within about 6 clocks on 36 and 34 inputs (FPATAN
+  was a flat 712 clocks for most inputs, the real chip 380 to 843). FYL2X near
+  1 is about 50 clocks longer, a long FMUL whose significands multiply to 2 or
+  more about 11 shorter, and a store that has to denormalize its result (FST
+  of a number too small for a double) 49 longer, as on the real chip.
+- The 113x models (1131, 1139) use the real 1137's memory timing: a RAM read or
+  write takes about one clock more than on the 1101, the display slots are
+  shorter and the refresh steal is 2 clocks. Gap rows against the real 1137:
+  1.2 % rms (was 2.0 %).
+- Bubble: a page's 64 bytes come into the FIFO over about 5 ms (400 clocks a
+  byte), so a read gives two FIFO interrupts a page (35 + 29 bytes) as on the
+  real 1101. Read FSA Status, Reset FIFO, Software Reset, Abort and MBM Purge
+  are shorter; Initialize takes 6 to 9 ms (the real 6.0 to 8.6), but stays
+  short (0.5 ms) after an MBM Purge until the next transfer. On a write the
+  FIFO takes data only from 1.2 ms before the first page passes, as the real
+  7220 (no bytes before the first interrupt).
+- Results, GRiDBench 2.2 against the real machines: 1101 CPU/bus rows 1.07 %
+  rms, 8087 rows 2.5 % (was 5.7 %); 1139 against the real 1137 CPU/bus 1.49 %
+  (was 1.96 %). GRiDBench's bubble rows (GRiDBench 2.1b on a real 1101), ms,
+  emulated / real: same page 100.2 / 99.9, sequential 126.0 / 127.7, random
+  112.6 / 123.6, first/last 98.1 / 100.9.
+
 ## 0.8.0
 
 - The 2101 hard disk box runs low-level when roms holds its firmware

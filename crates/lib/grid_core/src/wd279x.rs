@@ -291,6 +291,9 @@ pub struct Env<'a> {
     pub image: &'a mut Vec<u8>,
     pub dirty: &'a mut bool,
     pub write_protect: bool,
+    /// The READY input (tied high on the 2102; the drive's ready line on the 2101, low with
+    /// no disk).
+    pub ready: bool,
 }
 
 impl Env<'_> {
@@ -385,7 +388,10 @@ impl Wd2797 {
         match reg & 3 {
             0 => {
                 self.intrq = false;
-                let mut s = self.status;
+                let mut s = self.status & 0x7F;
+                if !e.ready {
+                    s |= 0x80;
+                }
                 if self.type1 {
                     s &= !0x46;
                     if e.index() {
@@ -498,6 +504,13 @@ impl Wd2797 {
             return;
         }
         self.type1 = false;
+        if !e.ready {
+            // Type II/III with the drive not ready: ends at once.
+            self.status = 0x80;
+            self.done(now);
+            self.status |= 0x80;
+            return;
+        }
         self.side = (v >> 1) & 1;
         let delay = if v & 0x04 != 0 { 30_000 } else { 0 };
         match v >> 4 {

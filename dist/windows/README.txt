@@ -1,4 +1,4 @@
-Compass-Emu 0.7.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
+Compass-Emu 0.8.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
 ==============================================================================
 
 Setup
@@ -87,6 +87,9 @@ Command line
   2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
   the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
   without it the protocol model answers as before.
+  2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
+  box), the 2101's own firmware. With it the 2101 runs low-level (see New in
+  0.8.0); without it the protocol model answers as before.
 
 Build mode (replaces MAME for build.bat)
   Copy tools\gridbuild.py from this folder over GRiD-MAME\tools\gridbuild.py
@@ -224,6 +227,16 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.8.0
+  - The 2101 hard disk box runs low-level when roms holds its firmware
+    (300205-05.bin 20 MB, 300205-06.bin 10 MB): the box's 8088 runs the real
+    ROM; the Xebec controller is modelled at command level, timed after a real
+    2101. Its 4-character display shows in the status bar.
+  - The 2101 floppy goes through the firmware too; an empty slot gives error
+    128 as on the real box.
+  - Disk speed fitted to GRiDBench on a real 1101 + 2101 (within about 10%).
+  - GRID_2101=protocol uses the old protocol-level model instead.
 
 New in 0.7.0
   - The 2102 portable floppy runs low-level when roms holds its firmware

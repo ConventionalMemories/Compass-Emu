@@ -579,6 +579,10 @@ impl App {
                     if lit { Color32::from_rgb(0xFF, 0xB0, 0x00) } else { Color32::from_rgb(0x4A, 0x4A, 0x52) },
                 );
                 ui.label(if d.dirty { format!("{name} *") } else { name.to_string() });
+                if let Some(t) = d.display() {
+                    // The low-level 2101's four-character display.
+                    ui.label(RichText::new(format!("[{t}]")).monospace()).on_hover_text("2101 display");
+                }
             }
             if let Some(l) = &s.serial {
                 ui.separator();

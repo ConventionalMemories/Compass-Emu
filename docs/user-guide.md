@@ -90,6 +90,9 @@ compass-emu\roms. Without it the 1101 PROM stands in (slower boot).
 The 1101 boots the later rev 4 PROM (1101even/odd.rev4.bin, in MAME's grid1101.zip)
 when it is there, else rev 3.
 Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when present).
+2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
+the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
+without it the protocol model answers as before.
 ```
 
 ## Build mode (replaces MAME for build.bat)

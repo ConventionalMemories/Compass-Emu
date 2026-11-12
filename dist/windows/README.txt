@@ -1,4 +1,4 @@
-Compass-Emu 0.6.2 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
+Compass-Emu 0.7.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
 ==============================================================================
 
 Setup
@@ -84,6 +84,9 @@ Command line
   The 1101 boots the later rev 4 PROM (1101even/odd.rev4.bin, in MAME's grid1101.zip)
   when it is there, else rev 3.
   Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when present).
+  2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
+  the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
+  without it the protocol model answers as before.
 
 Build mode (replaces MAME for build.bat)
   Copy tools\gridbuild.py from this folder over GRiD-MAME\tools\gridbuild.py
@@ -221,6 +224,17 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.7.0
+  - The 2102 portable floppy runs low-level when roms holds its firmware
+    (300237-02.bin or 300237-01.bin): the box's 8051 runs the real ROM, with a
+    WD2797 controller and a 5.25" drive, wired from the 2102 schematic. Reads,
+    writes, get status, set status and formatting (whole disk and one track) all go
+    through GRiD's own firmware, at its speed: the first access after 10 s idle
+    powers the drive up again (about 1.8 s), as the ROM does.
+  - The box is switched on 4 s before the Compass, so it has finished its self test
+    when the boot PROM looks for it. GRID_2102_EARLY=0 switches both on together.
+  - GRID_2102=protocol uses the old protocol-level model instead.
 
 New in 0.6.2
   Fitted to the GRiDProbe runs on a real 1101 and a real 1137:

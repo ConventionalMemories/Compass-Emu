@@ -2,6 +2,18 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.7.0
+
+- The 2102 portable floppy runs low-level when roms holds its firmware
+  (300237-02.bin or 300237-01.bin): the box's 8051 runs the real ROM, with a
+  WD2797 controller and a 5.25" drive, wired from the 2102 schematic. Reads,
+  writes, get status, set status and formatting (whole disk and one track) all go
+  through GRiD's own firmware, at its speed: the first access after 10 s idle
+  powers the drive up again (about 1.8 s), as the ROM does.
+- The box is switched on 4 s before the Compass, so it has finished its self test
+  when the boot PROM looks for it. GRID_2102_EARLY=0 switches both on together.
+- GRID_2102=protocol uses the old protocol-level model instead.
+
 ## 0.6.2
 
 Fitted to the GRiDProbe runs on a real 1101 and a real 1137:

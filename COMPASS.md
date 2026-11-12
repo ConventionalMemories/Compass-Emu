@@ -132,8 +132,9 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   the precision flag follows the real one (FSQRT, FYL2X, F2XM1 0). Busy time per instruction is the data-sheet
   time (a few adjusted to a real 1101); FPATAN and F2XM1 time follows the chip's digit loop
   (16 steps from the first non-zero digit, plus each digit), fitted to GRiDBench 2.2 within
-  ~6 clocks. Not modelled: the real chip loads a double denormal as an unnormal (same value,
-  other bits). 8087 code is slow on a real Compass because GRiD-OS's
+  ~6 clocks. Like the chip, FLD of a denormal single or double gives an unnormal (exponent
+  3F81h / 3C01h, integer bit 0), and FLD m80 keeps an unnormal; FSTP m80, FSAVE and FXAM see
+  that pattern, arithmetic uses its value (the chip's unnormal arithmetic is not modelled). 8087 code is slow on a real Compass because GRiD-OS's
   loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
   within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with

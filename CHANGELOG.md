@@ -12,6 +12,10 @@ Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
   1 is about 50 clocks longer, a long FMUL whose significands multiply to 2 or
   more about 11 shorter, and a store that has to denormalize its result (FST
   of a number too small for a double) 49 longer, as on the real chip.
+- 8087 loads like the real chip: FLD of a denormal double or single gives an
+  unnormal (GRiDBench h33 reads back 3C010093445B87315800 as on the real 1101,
+  not the normalized 3BF9...), and FLD m80 of an unnormal keeps it (it used to
+  turn into a NaN). FSTP m80, FSAVE and FXAM see the chip's bit pattern.
 - The 113x models (1131, 1139) use the real 1137's memory timing: a RAM read or
   write takes about one clock more than on the 1101, the display slots are
   shorter and the refresh steal is 2 clocks. Gap rows against the real 1137:

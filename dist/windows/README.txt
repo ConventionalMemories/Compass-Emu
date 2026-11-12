@@ -77,8 +77,8 @@ Command line
   --no-catch crash catcher off (see Program symbols and the crash catcher).
   The start .bat uses ..\disks\Compass-Emu bubble.img and serial on tcp:2323.
   Boot PROM defaults, under MAME's names in roms: the model's own pair if it is there
-  (1129even.ccprom.bin ...), else the nearest: the 1101's for the 1109, the
-  1129's for the 1121, 1139even/odd.ccprom.bin for the 1131. The 1129 and builds need
+  (1129even.ccprom.bin ...), else the PROM it shares: the 1101's for the 1109,
+  the 1129's for the 1121, 1139even/odd.ccprom.bin for the 1131. The 1129 and builds need
   the 1129 PROM: put grid1129.zip (MAME set) in GRiD-MAME\roms, or its two files in
   compass-emu\roms. Without it the 1101 PROM stands in (slower boot).
   The 1101 boots the later rev 4 PROM (1101even/odd.rev4.bin, in MAME's grid1101.zip)

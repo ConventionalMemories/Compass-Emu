@@ -184,11 +184,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
   | Model | Board | RAM | Screen | Boot PROM used |
   |-------|-------|-----|--------|----------------|
-  | 1101 | original | 256K | 320 x 240 | 1101 rev 3 |
-  | 1109 | original | 512K | 320 x 240 | its own if present, else 1101 rev 3 |
-  | 1121 | split | 256K | 320 x 240 | its own if present (never dumped), else 1129, else 1101 rev 3 |
-  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101 rev 3) |
-  | 1131 | split | 256K | 512 x 256 | its own if present (never dumped), else 1139 |
+  | 1101 | original | 256K | 320 x 240 | 1101 rev 4 (rev 3 if rev 4 is missing) |
+  | 1109 | original | 512K | 320 x 240 | 1101 (same PROM) |
+  | 1121 | split | 256K | 320 x 240 | 1129 (same PROM; if missing, 1101) |
+  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101) |
+  | 1131 | split | 256K | 512 x 256 | 1139 (same PROM) |
   | 1139 | split | 512K | 512 x 256 | 1139 |
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
@@ -208,10 +208,10 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
   DFE8F.
   All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
-  build). The 1139 PROM can't stand in for the missing 1121/1129 PROMs: it keeps its data
+  build). The 1139 PROM can't stand in for the 1121/1129 PROM: it keeps its data
   at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
   error in CCOS". The 1129 PROM (data at 0298:0, like the 1101's) boots the 11xx build on
-  the plain split-board map, and also serves the 1121. Without it the 1101 rev 3 PROM
+  the plain split-board map, and is also the 1121's. Without it the 1101 PROM
   stands in, with the split board also answering the 1101's DMA window at E0000h
   (`GridBoard::e0000_dma`). ROM choice: grid_core/src/roms.rs.
 

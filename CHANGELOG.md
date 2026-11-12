@@ -2,6 +2,22 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.6.1
+
+Timing fitted to GRiDBench 2.2 runs on a real 1101 and a real 1137:
+- 1101: the branch, prefetch and REP rows of the gap test now match within
+  1.2% on average (4% at most; JMP SHORT chains were 14% too fast). A chain
+  of JMP SHORTs runs like a chain of taken conditional jumps, as on the real
+  machines. The frame is 271 clocks x 306 lines (60.3 Hz).
+- 1131/1139: frame 281 clocks x 297 lines (59.9 Hz), refresh tick at the top
+  of the picture like the 1101, display memory slowdown fitted to the 1137
+  (gap rows within 3.3% on average).
+- Compass II split board: empty memory reads the address on the bus (not FF),
+  the boot PROM also shows at F8000, ports 4/6 answer like the interrupt
+  controller at 0/2, port 0E is not decoded, and the bubble controller repeats
+  every 4 bytes up to DFE8F, as on the real 1137.
+- GRID_TRACE=file writes a clock-by-clock CPU trace (for timing work).
+
 ## 0.6.0
 
 - Program symbols for the debugger from a debug build (debug.bat,

@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.6.0)
+## Status (0.6.1)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -25,7 +25,8 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   RAM by its fixup-masked code bytes, since the bound .run keeps no symbols.
 
 - 8086 with prefetch queue and bus timing (MartyPC, `CpuSubType::Intel8086`), with one
-  timing fix for ALU r/m,imm writes. SingleStepTests 8086 suite: 0 register/flag/memory
+  timing fix for ALU r/m,imm writes. A fitted Compass quirk adds one clock before a JMP SHORT
+  suspends prefetch (`cpu_808x::JMP_SHORT_EXTRA`, set by grid_core, `JMP_EXTRA` overrides). SingleStepTests 8086 suite: 0 register/flag/memory
   errors, about 94.5% of tests with exact clock counts.
 - A fast whole-instruction 8086 core for build mode (`grid_core::fast86`), switchable at any
   instruction boundary; same SingleStepTests results for registers, flags and memory.
@@ -94,12 +95,13 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
   within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
   real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
-- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 274 clocks a line, 306
-  lines (59.6 Hz), IR3 as the picture starts at the top (all from GRiDBench 2.0 on a real
-  1101: frame length and beam finder), and display RAM contention: the
-  display takes one RAM slot every 12 clocks in the visible part of each line, and a CPU
-  access that collides waits. The settings are adjustable and fitted to GRiDBench's 8086
-  and memory numbers (mean error 2.0% over 27 tests) until they are measured directly.
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 271 clocks a line, 306
+  lines (60.3 Hz), IR3 as the picture starts at the top (GRiDBench on a real 1101: beam
+  finder for the lines, 2.2 d11 for the frame in CPU clocks), and display RAM contention:
+  the display takes one RAM slot every 40 states (13.3 clocks) in the visible part of each
+  line, and a CPU access that collides waits; plus a 4-clock bus steal every 48 clocks.
+  Fitted with the JMP SHORT quirk to GRiDBench 2.2's gap rows (c50-c61, j01-j30, REP per
+  word: 1.2% rms, 4% at most) and the whole 1101 report (1.1% rms over 138 lines).
   The window shows each screen word as the beam fetched it, so racing the beam (and
   tearing) looks as on the real screen.
 - 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
@@ -141,9 +143,12 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   half (lower half FFh, as Rom Toolbox found on a real 1137), a 32K part shows in every
   quarter. With the four ROMs of a real 1137 the PROM boots CCOS from socket 1 (with or
   without a disk) and the programs show on "Read Only Memory". The 113x build of GRiD-OS turns on the 512 x 256 screen; until then a
-  113x shows the 320 x 240 picture centred. Large-screen timing is estimated (the same
-  309-clock line, 269 lines, 32 display fetches a line, one every 8 clocks) and fits
-  GRiDBench on a real 1137 at 3.1% mean error.
+  113x shows the 320 x 240 picture centred. Large-screen timing is from GRiDBench 2.2 on a
+  real 1137: 281 clocks a line, 297 lines (59.9 Hz; AAM loop in refreshes, the 1137's RTC
+  was dead), IR3 at the top, 32 display fetches a line, one every 23 states (gap rows 3.3%
+  rms). The split board's bus also follows the 1137: empty memory reads the address, the
+  PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
+  DFE8F.
   All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
   build). The 1139 PROM can't stand in for the missing 1121/1129 PROMs: it keeps its data
   at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
@@ -250,8 +255,11 @@ transfer ends with their clock on stderr; `GRID_DUMP=file` saves RAM at the end.
 
 `gridfrag code.bin` runs a code fragment at 1000:0000 until HLT and prints the clocks and
 the 8087 state (`FPU_EXTRA`, `FPU_WAITMIN` override the 8087 timing fit; `DISP_CONTENTION=0`,
-`DISP_FETCH_LEN`, `DISP_CPU_LEN`, `DISP_CPU_WRITE_LEN` the display contention; `FRAG_MODEL`
-the model, `RAM_EXTRA_WAIT` extra wait states on every RAM access).
+`DISP_FETCH_LEN`, `DISP_FETCH_PERIOD`, `DISP_CPU_LEN`, `DISP_CPU_WRITE_LEN`,
+`DISP_LINE_CLOCKS`, `DISP_FRAME_LINES` the display; `FRAG_MODEL` the model, `RAM_EXTRA_WAIT`
+extra wait states on every RAM access, `JMP_EXTRA` the JMP SHORT quirk, `GRID_REFRESH` /
+`GRID_REFRESH_WAIT` the bus steal). `GRID_TRACE=file` (any tool) writes a clock-by-clock
+CPU trace.
 
 Headless extras: `GRID_BUBBLE` (+ `GRID_BUBBLE_SAVE`, `GRID_BUBBLE_LOG`), `GRID_SERIAL_IN`
 / `GRID_SERIAL_OUT` files, `GRID_WAV` to record the sound.

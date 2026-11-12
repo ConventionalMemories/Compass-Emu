@@ -99,7 +99,7 @@ impl Profile {
         let mut s = format!(
             "Profile: {} CPU clocks ({:.1} frames of the 1101 = {:.2} s)\n",
             self.total,
-            self.total as f64 / 83_844.0,
+            self.total as f64 / crate::screen::FRAME_CLOCKS as f64,
             self.total as f64 / 5e6
         );
         // routines: the procedure from the symbols, else the nearest CALL target at or below

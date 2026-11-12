@@ -803,6 +803,14 @@ impl Intel808x {
     /// Opcodes E9, EB
     pub fn mc_0d0(&mut self) {
         let rel = self.read_operand(self.i.operand1_type, self.i.segment_override);
+        // Fitted machine quirk (GRiD Compass): extra clocks before a JMP SHORT suspends
+        // prefetching. 0 = the plain 8086.
+        let n = crate::cpu_808x::JMP_SHORT_EXTRA.load(std::sync::atomic::Ordering::Relaxed);
+        if self.i.opcode == 0xEB {
+            for _ in 0..n {
+                self.cycle();
+            }
+        }
         if self.i.width == InstructionWidth::Byte {
             self.reljmp2(rel as i8 as i16, true); // We jump directly into reljmp
         }

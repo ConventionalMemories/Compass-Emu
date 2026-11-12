@@ -6,7 +6,8 @@
 //! Prints clocks used, instructions, and the 8087 state. Environment: FPU_EXTRA, FPU_WAITMIN
 //! (8087 timing), DISP_CONTENTION (0 = off), DISP_FETCH_LEN, DISP_FETCH_PERIOD,
 //! FRAG_PNG=file saves the last displayed frame. FRAG_MODEL=1139 etc. picks the model,
-//! RAM_EXTRA_WAIT the extra wait states on every RAM access. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states).
+//! RAM_EXTRA_WAIT the extra wait states on every RAM access. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states),
+//! DISP_LINE_CLOCKS, DISP_FRAME_LINES (geometry); JMP_EXTRA, GRID_REFRESH, GRID_REFRESH_WAIT, GRID_TRACE (see grid_core).
 
 use grid_core::{GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, CpuAddress, Register16};
@@ -55,6 +56,12 @@ fn main() {
         }
         if let Some(v) = env("DISP_CPU_WRITE_LEN") {
             d.cpu_write_len = v;
+        }
+        if let Some(v) = env("DISP_LINE_CLOCKS") {
+            d.line_clocks = v as u64;
+        }
+        if let Some(v) = env("DISP_FRAME_LINES") {
+            d.frame_lines = v as u64;
         }
     }
     for (i, b) in code.iter().enumerate() {

@@ -13,6 +13,8 @@
 
 use std::collections::VecDeque;
 
+use crate::box2102::{Box2102, HostLines, Lines};
+
 // INT0 bits
 pub const INT0_MAC: u8 = 0x01;
 pub const INT0_END: u8 = 0x08;
@@ -112,6 +114,9 @@ pub struct Drive {
     pub mechanics: bool,
     #[serde(skip)]
     pub log: Vec<String>,
+    /// Low-level 2102: the box's own 8051 firmware answers instead of the protocol model.
+    #[serde(default)]
+    pub lle: Option<Box<Box2102>>,
 }
 
 /// GPIBLOG set: print drive commands, SRQs, serial polls and ends of data on stderr.
@@ -249,6 +254,7 @@ impl Drive {
             busy_until: 0,
             mechanics: true,
             log: Vec::new(),
+            lle: None,
         }
     }
 
@@ -263,6 +269,9 @@ impl Drive {
 
     /// A command is being carried out (for a drive activity light).
     pub fn busy(&self) -> bool {
+        if let Some(l) = &self.lle {
+            return l.motor_on();
+        }
         self.state != DriveState::Idle || self.done_at.is_some()
     }
 
@@ -401,6 +410,9 @@ impl Drive {
 
     /// Command byte (ATN asserted).
     fn command(&mut self, b: u8) {
+        if self.lle.is_some() {
+            return;
+        }
         let group = b & 0xE0;
         let addr = b & 0x1F;
         if group == 0x20 {
@@ -427,6 +439,9 @@ impl Drive {
 
     /// Data byte while listening.
     fn data(&mut self, b: u8, eoi: bool, now: u64) {
+        if self.lle.is_some() {
+            return;
+        }
         self.rx.push(b);
         if eoi {
             self.accept(now);
@@ -538,7 +553,7 @@ impl Drive {
 
     /// Next byte this drive would put on the bus as talker (ATN released): (byte, eoi).
     fn peek_talk(&self) -> Option<(u8, bool)> {
-        if !self.talking {
+        if !self.talking || self.lle.is_some() {
             return None;
         }
         if self.serial_polling {
@@ -608,6 +623,16 @@ pub struct Gpib {
     pub talk_clocks: u64,
     pub trace: Vec<String>,
     pub trace_on: bool,
+    /// Low-level 2102 on the bus: the 9914 has DAV asserted for the byte in `out`.
+    #[serde(default)]
+    host_dav: bool,
+    /// Low-level 2102 talking: the 9914 has latched the byte on the bus (NDAC released).
+    #[serde(default)]
+    host_latched: bool,
+    /// 2102 firmware: with it, every 2102 drive on the bus runs low-level (its 8051 runs this
+    /// ROM); without it, the protocol-level model answers.
+    #[serde(skip)]
+    pub rom_2102: Option<Vec<u8>>,
 }
 
 impl Gpib {
@@ -648,6 +673,155 @@ impl Gpib {
             talk_clocks: 35,
             trace: Vec::new(),
             trace_on: false,
+            host_dav: false,
+            host_latched: false,
+            rom_2102: None,
+        }
+    }
+
+    /// Give 2102 drives added without firmware their low-level box (once a ROM is set).
+    fn attach_lle(&mut self) {
+        let Some(rom) = &self.rom_2102
+        else {
+            return;
+        };
+        // GRID_2102_EARLY: seconds the box was switched on before the Compass (default 4; 0 =
+        // together, when the box is still busy with its self test as the boot PROM calls it).
+        let early = std::env::var("GRID_2102_EARLY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+        for d in &mut self.drives {
+            if d.kind == DriveKind::Floppy2102 && d.lle.is_none() {
+                let mut b = Box2102::new(rom.clone(), DriveKind::Floppy2102.address());
+                b.set_us(Self::to_us(self.now));
+                if self.now == 0 {
+                    b.power_on_early((early * 1e6) as u64, &mut d.image, &mut d.dirty);
+                }
+                d.lle = Some(Box::new(b));
+            }
+        }
+    }
+
+    fn lle_idx(&self) -> Option<usize> {
+        self.drives.iter().position(|d| d.lle.is_some())
+    }
+
+    fn lle_lines(&self) -> Lines {
+        self.lle_idx().map(|i| self.drives[i].lle.as_ref().unwrap().lines()).unwrap_or_default()
+    }
+
+    /// Box time (us) for a machine clock count, and back.
+    fn to_us(t: u64) -> u64 {
+        (t as u128 * 1_000_000 / hd::CPU_HZ as u128) as u64
+    }
+    fn from_us(us: u64) -> u64 {
+        (us as u128 * hd::CPU_HZ as u128).div_ceil(1_000_000) as u64
+    }
+
+    /// The lines the 9914 drives, as the low-level 2102 sees them.
+    fn host_lines(&self) -> HostLines {
+        let sourcing = self.host_dav;
+        let listen = self.listener_active();
+        HostLines {
+            atn: !self.swrst && self.atn(),
+            ifc: self.sic,
+            dav: sourcing,
+            eoi: sourcing && self.out.is_some_and(|o| o.2 && !o.1),
+            dio: if sourcing { self.out.map(|o| o.0).unwrap_or(0) } else { 0 },
+            nrfd: listen && (self.di_full || self.host_latched),
+            ndac: listen && !self.host_latched,
+        }
+    }
+
+    fn push_host(&mut self) {
+        let h = self.host_lines();
+        if let Some(i) = self.lle_idx() {
+            self.drives[i].lle.as_mut().unwrap().set_host(h);
+        }
+    }
+
+    /// Would the byte being sent complete now (low-level 2102 present)? It needs DAV up and
+    /// every acceptor's NDAC released.
+    fn out_ready(&self, l: &Lines) -> bool {
+        self.host_dav && !l.ndac
+    }
+
+    /// React to the lines the low-level 2102 drives. Returns true if something the CPU can see
+    /// changed (a byte latched or sent).
+    fn on_lines(&mut self) -> bool {
+        let l = self.lle_lines();
+        let mut seen = false;
+        if self.out.is_none() {
+            self.host_dav = false;
+        }
+        if let Some((b, atn, eoi, at)) = self.out {
+            if !self.host_dav && !l.nrfd {
+                self.host_dav = true;
+            }
+            if self.out_ready(&l) && self.now >= at {
+                self.complete_out(b, atn, eoi);
+                seen = true;
+            }
+        }
+        if self.listener_active() {
+            if l.dav && !self.host_latched && !self.di_full {
+                self.host_latched = true;
+                self.di = l.dio;
+                self.di_full = true;
+                self.int0 |= INT0_BI;
+                if l.eoi {
+                    self.int0 |= INT0_END;
+                }
+                self.tr(format!("in  {:02X}{} (2102)", l.dio, if l.eoi { " EOI" } else { "" }));
+                seen = true;
+            }
+        }
+        if !l.dav {
+            self.host_latched = false;
+        }
+        self.push_host();
+        seen
+    }
+
+    /// The byte in `out` was accepted by everyone on the bus.
+    fn complete_out(&mut self, b: u8, atn: bool, eoi: bool) {
+        self.out = None;
+        self.host_dav = false;
+        let now = self.now;
+        for d in &mut self.drives {
+            if atn {
+                d.command(b);
+            }
+            else if d.listening {
+                d.data(b, eoi, now);
+            }
+        }
+        if self.can_send() {
+            self.int0 |= INT0_BO;
+        }
+    }
+
+    /// Run the low-level 2102 up to clock `t`, handling each change of its lines. With `stop`,
+    /// return at the first change the CPU can see. Returns true if it stopped early.
+    fn run_lle(&mut self, t: u64, stop: bool) -> bool {
+        let Some(i) = self.lle_idx()
+        else {
+            return false;
+        };
+        let target = Self::to_us(t);
+        loop {
+            let d = &mut self.drives[i];
+            let lle = d.lle.as_mut().unwrap();
+            let ahead = lle.ahead;
+            if !lle.run(target + ahead, &mut d.image, &mut d.dirty) {
+                return false;
+            }
+            let at = Self::from_us(lle.us() - ahead).max(self.now);
+            self.now = at.min(t);
+            let cs = self.can_send();
+            let seen = self.on_lines();
+            self.update(cs);
+            if seen || !stop {
+                return true;
+            }
         }
     }
 
@@ -681,7 +855,7 @@ impl Gpib {
     }
 
     fn srq_line(&self) -> bool {
-        self.drives.iter().any(|d| d.srq)
+        self.drives.iter().any(|d| d.srq) || self.lle_lines().srq
     }
 
     /// Re-evaluate state after a change: BO when becoming able to send, talker scheduling, SRQ.
@@ -727,43 +901,61 @@ impl Gpib {
 
     /// Run the bus and drives up to time `t`.
     pub fn advance(&mut self, t: u64) {
+        self.advance_inner(t, false);
+    }
+
+    /// Earliest pending event (protocol drives, bytes in flight).
+    fn next_event(&self, lle: bool) -> u64 {
+        let mut next = u64::MAX;
+        if let Some((_, _, _, at)) = self.out {
+            // With a low-level 2102 the byte also waits for the box's handshake.
+            if !lle || self.out_ready(&self.lle_lines()) {
+                next = next.min(at);
+            }
+        }
+        if let Some(at) = self.in_at {
+            next = next.min(at);
+        }
+        for d in &self.drives {
+            if let Some(at) = d.done_at {
+                next = next.min(at);
+            }
+        }
+        next
+    }
+
+    /// Run up to `t`. With `stop`, return after the first event the CPU can see (a byte in DI,
+    /// a byte sent, a drive's reply) instead.
+    fn advance_inner(&mut self, t: u64, stop: bool) {
         if t < self.now {
             return;
         }
+        if self.rom_2102.is_some() {
+            self.attach_lle();
+        }
+        let lle = self.lle_idx().is_some();
+        if lle {
+            self.push_host();
+        }
         loop {
-            // Earliest pending event at or before t.
-            let mut next = u64::MAX;
-            if let Some((_, _, _, at)) = self.out {
-                next = next.min(at);
-            }
-            if let Some(at) = self.in_at {
-                next = next.min(at);
-            }
-            for d in &self.drives {
-                if let Some(at) = d.done_at {
-                    next = next.min(at);
+            let next = self.next_event(lle);
+            if lle {
+                let target = next.min(t);
+                if self.run_lle(target, stop) {
+                    if stop && self.ready_seen() {
+                        return;
+                    }
+                    continue;
                 }
             }
             if next > t {
                 break;
             }
-            self.now = next;
+            self.now = self.now.max(next);
             let cs = self.can_send();
             if let Some((b, atn, eoi, at)) = self.out {
-                if at <= next {
-                    self.out = None;
-                    let now = self.now;
-                    for d in &mut self.drives {
-                        if atn {
-                            d.command(b);
-                        }
-                        else if d.listening {
-                            d.data(b, eoi, now);
-                        }
-                    }
-                    if self.can_send() {
-                        self.int0 |= INT0_BO;
-                    }
+                if at <= self.now && (!lle || self.out_ready(&self.lle_lines())) {
+                    self.complete_out(b, atn, eoi);
                 }
             }
             for i in 0..self.drives.len() {
@@ -771,7 +963,7 @@ impl Gpib {
                 self.drives[i].advance(now);
             }
             if let Some(at) = self.in_at {
-                if at <= next {
+                if at <= self.now {
                     self.in_at = None;
                     if self.listener_active() && !self.di_full {
                         if let Some(i) = self.talker() {
@@ -789,10 +981,21 @@ impl Gpib {
                 }
             }
             self.update(cs);
+            if lle {
+                self.on_lines();
+            }
+            if stop {
+                return;
+            }
         }
         self.now = t;
         let cs = self.can_send();
         self.update(cs);
+    }
+
+    /// For dma_wait with a low-level 2102: something a waiting access cares about happened.
+    fn ready_seen(&self) -> bool {
+        self.di_full || self.out.is_none() || self.int_line()
     }
 
     /// Clocks until a pseudo-DMA access at the current time can complete (0 if now).
@@ -800,6 +1003,15 @@ impl Gpib {
     /// when the 9914 raises its INT line (END, ERR), as the driver relies on, or after `limit`.
     pub fn dma_wait(&mut self, write: bool, limit: u64) -> u64 {
         let start = self.now;
+        if self.lle_idx().is_some() {
+            loop {
+                let ready = if write { self.out.is_none() } else { self.di_full };
+                if ready || self.int_line() || self.now >= start + limit {
+                    return self.now - start;
+                }
+                self.advance_inner(start + limit, true);
+            }
+        }
         loop {
             let ready = if write { self.out.is_none() } else { self.di_full };
             if ready || self.int_line() {
@@ -828,6 +1040,14 @@ impl Gpib {
     }
 
     pub fn read(&mut self, reg: usize) -> u8 {
+        let r = self.read_inner(reg);
+        if reg == 7 && self.lle_idx().is_some() {
+            self.on_lines();
+        }
+        r
+    }
+
+    fn read_inner(&mut self, reg: usize) -> u8 {
         let r = match reg {
             0 => {
                 let mut v = self.int0 & 0x3F;
@@ -871,6 +1091,15 @@ impl Gpib {
                 if self.sic {
                     v |= 0x02;
                 }
+                if self.lle_idx().is_some() {
+                    let l = self.lle_lines();
+                    let h = self.host_lines();
+                    v &= !0x30;
+                    v |= if l.dav || h.dav { 0x40 } else { 0 }
+                        | if l.ndac || h.ndac { 0x20 } else { 0 }
+                        | if l.nrfd || h.nrfd { 0x10 } else { 0 }
+                        | if l.eoi || h.eoi { 0x08 } else { 0 };
+                }
                 v
             }
             6 => self.di,
@@ -893,6 +1122,13 @@ impl Gpib {
     }
 
     pub fn write(&mut self, reg: usize, data: u8) {
+        self.write_inner(reg, data);
+        if self.lle_idx().is_some() {
+            self.on_lines();
+        }
+    }
+
+    fn write_inner(&mut self, reg: usize, data: u8) {
         self.tr(format!("W{} = {:02X}", reg, data));
         let cs = self.can_send();
         match reg {
@@ -906,7 +1142,8 @@ impl Gpib {
                     return;
                 }
                 let atn = self.atn();
-                let has_acceptor = atn && !self.drives.is_empty() || self.drives.iter().any(|d| d.listening);
+                let l = self.lle_lines();
+                let has_acceptor = atn && !self.drives.is_empty() || self.drives.iter().any(|d| d.listening) || l.ndac || l.nrfd;
                 if !self.can_send() {
                     return;
                 }

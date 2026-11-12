@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.6.2)
+## Status (0.7.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -50,6 +50,28 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   disk and no floppy image, the box's floppy slot answers as empty (error 128, as on a
   real 2101), so GRiD-OS's polls of address 5 don't hang. `GPIBREG=clock` prints every
   9914 register access from that clock on.
+- 2102 low-level (when `roms` holds the 2102 firmware `300237-02.bin` or `300237-01.bin`):
+  the box's own 8051 runs the real ROM (`grid_core::i8051`, `box2102`), wired from the 2102
+  schematic: 12 MHz (1 us a machine cycle), 2 KB RAM at 1000h, WD2797 at 2000h-2C00h
+  (`wd279x`, 1 MHz clock: 5.25" step rates and 30 ms settle, MFM 32 us a byte, READY and
+  HLT tied high), DIP switches at 3000h (address 6), GPIB data latch at 4000h, handshake
+  lines bit-banged on P1 through a DS75161 (IFC, DRQ, ATN, SRQ, DAV, NRFD, NDAC, EOI), drive
+  power/select, motor and precompensation on P3, WD INTRQ on INT1. The 9914 meets it at
+  the handshake level (DAV/NRFD/NDAC/EOI/SRQ/ATN/IFC), so timing comes from the firmware:
+  get status and write answer without a service request, a read or format with one;
+  the first access after 10 s idle powers the drive up again (about 1.8 s); the error
+  block is error code, 0, drive, page (low, high), 0, 0; page 720 passes the ROM's range
+  check and gives record not found (68h), 721 and up invalid page (66h). Unformatted
+  images get the protocol model's layout (interleave 5, side 1 skewed 7, IDs 10-18 on
+  side 1, or 1-9 for a PC boot sector; `FD_IL`, `FD_SKEW`); a format by the 2102 writes
+  2:1 interleave with no skew and keeps the IDs and positions it wrote. The box starts
+  4 s ahead of the Compass, as if switched on first (`GRID_2102_EARLY=0`: together, and the
+  boot PROM's first try fails while the box runs its self test). Against the real 2102
+  (GRiDBench 2.1b, a Gotek in the box) with the motor running: same page 200 ms (real 212),
+  sequential 121 (133), random 243 (235), first/last 403 (415), steps of 1/16 196 (172).
+  `GRID_2102=protocol` uses the protocol model instead; `BOXLOG=1` prints the bytes the box
+  moves, `FDCLOG=1` every WD2797 command. Bench test: `FD2102_ROM=rom cargo test --test
+  lle2102`.
 - A PC folder as a GRiD drive (`--folder DIR`, `grid_core::hostdir`): at start the folder is
   built into a GRiD volume (files in the root, sub-folders as subjects, up to 32 MB with 4 MB
   free) on the 2101 floppy address (GPIB 5); the volume is named after the folder. On quit,

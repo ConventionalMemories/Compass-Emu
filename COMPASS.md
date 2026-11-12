@@ -114,7 +114,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   disassembly with MartyPC's decoder). Window: F10 overlay, F9 clear, F8 pause, console
   commands on stdin. MCP: `grid_debug`. The per-instruction checks run only while a
   breakpoint, watch or profile is set (`GridMachine::run_debug`).
-- MM58174 real-time clock.
+- MM58174 real-time clock (digits read 0Fh for ~30 us after each tenth while it updates).
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02). Its
   P2.4 (kbdDma) is wired to the GPIB wait: a DMA window access holds the CPU until the
   9914 is ready, its interrupt is up, or the firmware's watchdog drops kbdDma (about 4 s

@@ -105,3 +105,61 @@ fn sound_square_and_dtmf() {
     s.write_8255(1, 0x76 | 0x80, 200 * half); // '1'
     assert_eq!(s.dtmf(), Some((697.0, 1209.0)));
 }
+
+/// GRiDProbe B1/B3 on a real 1101: 1-page reads in a given address order, timed from the
+/// command to busy off (ms), polled every 205 clocks like GRiDProbe's loop.
+fn bubble_ops(b: &mut Bubble, t: &mut u64, addrs: &[u16], pages: u16) -> Vec<f64> {
+    let mut out = Vec::new();
+    for &a in addrs {
+        params(b, 0x1000 | pages, a, *t);
+        let t0 = *t;
+        b.write(1, 0x12, *t);
+        loop {
+            *t += 205;
+            let s = b.read(1, *t);
+            if s & 1 != 0 {
+                b.read(0, *t);
+            }
+            else if s & 0x80 == 0 {
+                break;
+            }
+        }
+        out.push((*t - t0) as f64 / 5000.0);
+        *t += 20_000;
+    }
+    out
+}
+
+#[test]
+fn bubble_seek_times_like_a_real_1101() {
+    let mut b = Bubble::new(vec![0; 3 * 128 * 1024]);
+    let mut t = 0u64;
+    params(&mut b, 0x1000, 0, t);
+    b.write(1, 0x11, t);
+    t += 200_000;
+    let avg = |v: &[f64]| v[1..].iter().sum::<f64>() / (v.len() - 1) as f64;
+    let seq = |f: &dyn Fn(u16) -> u16| (0..16).map(f).collect::<Vec<u16>>();
+    // real: b31 87, b32 12.8, b33 20.3, b34 41.9, b35 46.3, b36 46 (80/12.5), b37 80, b38 25.9
+    let cases: [(&str, Vec<u16>, f64); 8] = [
+        ("same", seq(&|_| 0), 87.0),
+        ("step 1", seq(&|i| i), 12.8),
+        ("step 2", seq(&|i| i * 2), 20.3),
+        ("step 16", seq(&|i| i * 16), 41.9),
+        ("0/1024", seq(&|i| (i & 1) * 1024), 46.3),
+        ("0/2047", seq(&|i| (i & 1) * 2047), 46.3),
+        ("2047 down", seq(&|i| 2047 - i), 80.0),
+        ("step 512", seq(&|i| (i * 512) & 2047), 25.9),
+    ];
+    for (name, addrs, real) in cases {
+        let v = bubble_ops(&mut b, &mut t, &addrs, 1);
+        let a = avg(&v);
+        eprintln!("{name}: {a:.2} ms (real {real})");
+        assert!((a - real).abs() / real < 0.08, "{name}: {a:.2} ms, real {real}");
+    }
+    // b13/b14: 16 and 64 pages from page 0, repeated (real 1101 170.7 and 515.7 ms)
+    let p16 = bubble_ops(&mut b, &mut t, &[0; 8], 16);
+    let p64 = bubble_ops(&mut b, &mut t, &[0; 4], 64);
+    let (a16, a64) = (p16.iter().sum::<f64>() / 8.0, p64.iter().sum::<f64>() / 4.0);
+    eprintln!("16 pages {a16:.1} ms, 64 pages {a64:.1} ms, a page {:.3}", (a64 - a16) / 48.0);
+    assert!((a16 - 170.7).abs() < 10.0 && (a64 - 515.7).abs() < 25.0);
+}

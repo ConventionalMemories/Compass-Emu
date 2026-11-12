@@ -249,6 +249,12 @@ impl GridBoard {
         self.wide
     }
 
+    /// Split board with DFE00 = 1 (video chip selected): the real 1137 shows a dark screen
+    /// until the OS writes DFE00 = 0 again (GRiDProbe).
+    pub fn screen_dark(&self) -> bool {
+        self.model.split_board() && self.split_regs[0] & 1 != 0
+    }
+
     fn split_write(&mut self, address: usize, data: u8) {
         let r = (address >> 1) & 3;
         self.split_regs[r] = data;
@@ -729,6 +735,9 @@ impl ExternalBoard for GridBoard {
         }
         let port = port & 0x0F;
         match port {
+            // A non-specific EOI (OCW2 20h) leaves the in-service bit set on a real 1101
+            // (GRiDProbe B5); GRiD-OS sends specific EOIs (60h + level).
+            0x00 if data & 0xF8 == 0x20 => {}
             0x00 => self.pic.handle_command_register_write(data),
             0x02 => self.pic.handle_data_register_write(data),
             0x08 | 0x0A | 0x0C | 0x0E => {

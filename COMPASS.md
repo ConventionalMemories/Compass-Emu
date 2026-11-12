@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.6.1)
+## Status (0.6.2)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -95,18 +95,28 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
   within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
   real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
-- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 271 clocks a line, 306
-  lines (60.3 Hz), IR3 as the picture starts at the top (GRiDBench on a real 1101: beam
-  finder for the lines, 2.2 d11 for the frame in CPU clocks), and display RAM contention:
-  the display takes one RAM slot every 40 states (13.3 clocks) in the visible part of each
-  line, and a CPU access that collides waits; plus a 4-clock bus steal every 48 clocks.
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 270 clocks a line, 306
+  lines (60.5 Hz), IR3 rising as the picture starts at the top and high for 276 lines (113x:
+  292 of 297) (GRiDBench on a real 1101: beam finder for the lines, 2.2 d11 and GRiDProbe
+  d15/d16 for the frame and the IR3 level in CPU clocks), and display RAM contention:
+  the display takes one RAM slot (5 states) every 32 states (10.7 clocks, 20 a line; 113x:
+  every 16 states, 32 a line) on every line, blank ones too (GRiDProbe's contention map is
+  flat across the frame), and a CPU access that starts inside a slot waits for its end; plus a 4-clock bus steal every 48 clocks.
   Fitted with the JMP SHORT quirk to GRiDBench 2.2's gap rows (c50-c61, j01-j30, REP per
-  word: 1.2% rms, 4% at most) and the whole 1101 report (1.1% rms over 138 lines).
+  word: 1.05% rms, 3% at most) and the whole 1101 report.
   The window shows each screen word as the beam fetched it, so racing the beam (and
   tearing) looks as on the real screen.
 - 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
   interrupt-driven driver (DRQ on IR1) reads and writes it. A blank image must be
-  formatted with Initialize Media.
+  formatted with Initialize Media. Timing (`BubbleTiming`) fitted to GRiDProbe on a real
+  1101: each MBM's loops turn only during a command (2048 slots of 199 clocks, 81.5 ms a
+  turn) and stop where it ends; address `a` passes at slot `a * 181`, so consecutive pages
+  stream 7.2 ms apart and a 1-page read costs 5.3 ms start + the wait for its slot + 3.3 ms
+  (next page 12.5 ms, same page 87 ms, half a turn away 46 ms). Bytes move one every 200
+  clocks while a page passes. Initialize turns to the next of 5 stop positions; the short
+  commands take their measured 0.08-0.43 ms. `tests/devices.rs` replays GRiDProbe's seek
+  patterns against the real numbers.
+- The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5).
 - Bus details measured on a real 1101: empty memory and ports read the address still on
   the bus (low byte on even addresses, A8-A15 on odd ones), D0000-DEFFF reads FF on even
   bytes, the PROM also shows at F0000-FBFFF, ports 00-7F mirror the 80130 every 10h,
@@ -135,7 +145,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
   DFE00h (DFE00 = 1 selects the video chip, DFE04 bit 2 clear = large screen; the 113x OS
-  writes 0Bh or 0Ah, the PROM 0Eh), serial port latches at DFE10h, application ROM
+  writes 0Bh or 0Ah, the PROM 0Eh; dark screen while DFE00 = 1), serial port latches at DFE10h, application ROM
   sockets at 80000h (`--rom0..3`, from Cp/Rom.Asm and Cp/BankSwitch.PLM): DFEA8h = 1
   enables the window, DFE08/0A/0C/0E pick the socket (bits 0-1; bits 2-3 = 3 - wait
   states) for each 32K quarter, DFEA2h = 32K-part mode (stored, not needed for the
@@ -145,7 +155,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   without a disk) and the programs show on "Read Only Memory". The 113x build of GRiD-OS turns on the 512 x 256 screen; until then a
   113x shows the 320 x 240 picture centred. Large-screen timing is from GRiDBench 2.2 on a
   real 1137: 281 clocks a line, 297 lines (59.9 Hz; AAM loop in refreshes, the 1137's RTC
-  was dead), IR3 at the top, 32 display fetches a line, one every 23 states (gap rows 3.3%
+  was dead), IR3 at the top, 32 display fetches on every line, one every 16 states (gap rows 2.0%
   rms). The split board's bus also follows the 1137: empty memory reads the address, the
   PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
   DFE8F.

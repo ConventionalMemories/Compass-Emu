@@ -483,6 +483,9 @@ impl GridMachine {
     fn render_ram(&self, ram: &[u8]) -> Vec<u8> {
         let (w, h) = self.screen_mode();
         let (pw, ph) = self.screen_size();
+        if self.board().screen_dark() {
+            return vec![0; pw * ph];
+        }
         screen::render_into(ram, w, h, pw, ph)
     }
 

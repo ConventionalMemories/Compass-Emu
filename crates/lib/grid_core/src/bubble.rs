@@ -47,25 +47,66 @@ enum Op {
     ReadFsa,
     Read,
     Write,
+    /// A command that just ends (OK) at `next`.
+    Quick,
 }
 
-/// Adjustable timing, in CPU clocks (to be measured on a real 1101).
+/// Adjustable timing, in CPU clocks, fitted to GRiDProbe on a real 1101 (the 1137 times the
+/// same). The MBM loops only turn while a command runs and stop where it ends. Page `a` passes
+/// the detector at slot `a * stride` of a `loop_slots` loop, so the next address comes round
+/// one page time (`stride` slots, 7.2 ms) later: 1 page on is 12.5 ms, 2 on 20 ms, half the
+/// loop on 46 ms, the same page again a full turn (87 ms).
 #[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BubbleTiming {
-    /// Time to move one 32-byte FSA page between the bubble and the FIFO.
-    pub page_clocks: u64,
-    /// Time before the first page of a read or write (seek to the page).
+    /// One loop position (field rotations of the 7110).
+    pub slot_clocks: u64,
+    pub loop_slots: u64,
+    /// Slots between consecutive page addresses (odd).
+    pub stride: u64,
+    /// Read: from the command to the loops starting to turn.
     pub start_clocks: u64,
-    /// Initialize / Read FSA Status, per MBM.
-    pub init_clocks_per_mbm: u64,
+    /// Write: from the command to the loops starting to turn.
+    pub write_start_clocks: u64,
+    /// One byte into (read) or out of (write) the FIFO while a page passes.
+    pub byte_clocks: u64,
+    /// From the last page passing to busy off (read / write).
+    pub read_tail_clocks: u64,
+    pub write_tail_clocks: u64,
+    /// Initialize: fixed part, then the loops turn to the next of `init_stops` stop positions.
+    pub init_clocks: u64,
+    pub init_stops: u64,
+    pub fsa_clocks: u64,
+    /// Reset FIFO, Software Reset.
+    pub reset_clocks: u64,
+    /// Abort when idle / during a transfer.
+    pub abort_clocks: u64,
+    pub abort_busy_clocks: u64,
+    pub purge_clocks: u64,
     /// A failing command.
     pub fail_clocks: u64,
 }
 
 impl Default for BubbleTiming {
     fn default() -> Self {
-        // MAME's values (4 MHz controller clock), converted to 5 MHz CPU clocks.
-        BubbleTiming { page_clocks: 6750, start_clocks: 6750, init_clocks_per_mbm: 75, fail_clocks: 1500 }
+        BubbleTiming {
+            slot_clocks: 199,
+            loop_slots: 2048,
+            stride: 181,
+            start_clocks: 26_500,
+            write_start_clocks: 1_500,
+            byte_clocks: 200,
+            read_tail_clocks: 16_500,
+            write_tail_clocks: 29_000,
+            init_clocks: 2_400,
+            init_stops: 5,
+            fsa_clocks: 700,
+            reset_clocks: 400,
+            abort_clocks: 800,
+            abort_busy_clocks: 700,
+            purge_clocks: 2_150,
+            fail_clocks: 1_500,
+        }
     }
 }
 
@@ -87,6 +128,14 @@ pub struct Bubble {
     limit: usize,
     drq: bool,
     pub log: bool,
+    /// Where each MBM's loops stopped (clocks into the loop).
+    #[serde(default)]
+    theta: [u64; 16],
+    /// Current transfer: loops turning from `rot_start`, first page passing at `reach`.
+    #[serde(default)]
+    rot_start: u64,
+    #[serde(default)]
+    reach: u64,
 }
 
 impl Bubble {
@@ -110,6 +159,9 @@ impl Bubble {
             limit: 0,
             drq: false,
             log: false,
+            theta: [0; 16],
+            rot_start: 0,
+            reach: 0,
         }
     }
 
@@ -178,6 +230,41 @@ impl Bubble {
         self.update_drq();
     }
 
+    fn loop_clocks(&self) -> u64 {
+        self.timing.slot_clocks * self.timing.loop_slots
+    }
+
+    /// Stop the current MBM's loops at clock `t` (they turned from `rot_start`).
+    fn stop_loops(&mut self, t: u64) {
+        let l = self.loop_clocks();
+        let m = self.mbm();
+        self.theta[m] = (self.theta[m] + t.saturating_sub(self.rot_start)) % l;
+    }
+
+    /// Bytes in one bubble page (64 with 2 FSA channels).
+    fn page_bytes(&self) -> usize {
+        self.nfc() * 32
+    }
+
+    /// When transfer byte `c` goes into (read) or out of (write) the FIFO.
+    fn byte_time(&self, c: usize) -> u64 {
+        let t = self.timing;
+        let pb = self.page_bytes();
+        self.reach + (c / pb) as u64 * t.stride * t.slot_clocks + (c % pb) as u64 * t.byte_clocks
+    }
+
+    /// When the last page has passed and busy goes off.
+    fn transfer_end(&self) -> u64 {
+        let t = self.timing;
+        let last = (self.pages().max(1) - 1) as u64 * t.stride * t.slot_clocks;
+        self.reach + last + if self.op == Op::Write { t.write_tail_clocks } else { t.read_tail_clocks }
+    }
+
+    fn quick(&mut self, now: u64, clocks: u64) {
+        self.op = Op::Quick;
+        self.next = now + clocks;
+    }
+
     fn start(&mut self, cmd: u8, now: u64) {
         self.phase = Phase::Exec;
         self.str_ &= !SR_CLEAR;
@@ -194,19 +281,26 @@ impl Bubble {
         let t = self.timing;
         match cmd {
             1 => {
-                // Initialize
+                // Initialize: the loops turn to the next stop position.
                 if self.nfc() != 2 {
                     self.op = Op::Fail;
                     self.next = now + t.fail_clocks;
                 }
                 else {
+                    let q = (self.loop_clocks() / t.init_stops.max(1)).max(1);
+                    let th = self.theta[0];
+                    let wait = (q - th % q) % q;
+                    let l = self.loop_clocks();
+                    for th in self.theta.iter_mut() {
+                        *th = (*th + wait) % l;
+                    }
                     self.op = Op::Init;
-                    self.next = now + t.init_clocks_per_mbm * self.mbms as u64;
+                    self.next = now + t.init_clocks + wait;
                 }
             }
             8 => {
                 self.op = Op::ReadFsa;
-                self.next = now + t.init_clocks_per_mbm * self.mbms as u64;
+                self.next = now + t.fsa_clocks;
             }
             2 | 3 => {
                 if self.mbm() >= self.mbms || self.nfc() != 2 {
@@ -216,31 +310,40 @@ impl Bubble {
                 else {
                     self.op = if cmd == 2 { Op::Read } else { Op::Write };
                     self.counter = 0;
-                    self.limit = self.pages() * self.nfc();
-                    self.next = now + t.start_clocks;
+                    self.limit = self.pages() * self.page_bytes();
+                    self.rot_start = now + if cmd == 2 { t.start_clocks } else { t.write_start_clocks };
+                    let l = self.loop_clocks();
+                    let pos = (self.addr() as u64 * t.stride % t.loop_slots) * t.slot_clocks;
+                    self.reach = self.rot_start + (pos + l - self.theta[self.mbm()]) % l;
+                    self.next = if self.limit == 0 { self.transfer_end() } else { self.byte_time(0) };
                 }
             }
             0x0E => {
                 // MBM Purge
                 self.regs[R_AR_L] = 0;
                 self.regs[R_AR_M] &= !7;
-                self.end(true);
+                self.quick(now, t.purge_clocks);
             }
             9 => {
-                // Abort
-                if self.op == Op::None {
+                // Abort: a transfer stops at once, its FIFO is dropped.
+                if matches!(self.op, Op::Read | Op::Write) {
+                    self.stop_loops(now.max(self.rot_start));
                     self.fifo_clear();
+                    self.quick(now, t.abort_busy_clocks);
                 }
-                self.end(true);
+                else {
+                    self.fifo_clear();
+                    self.quick(now, t.abort_clocks);
+                }
             }
             0x0D => {
                 self.fifo_clear();
-                self.end(true);
+                self.quick(now, t.reset_clocks);
             }
             0x0F => {
                 self.regs[R_UR] = 0;
                 self.fifo_clear();
-                self.end(true);
+                self.quick(now, t.reset_clocks);
             }
             _ => {
                 self.op = Op::Fail;
@@ -250,9 +353,9 @@ impl Bubble {
         self.update_drq();
     }
 
-    /// Byte offset in the image of FSA page `k` (32 bytes) of the current transfer.
-    fn page_offset(&self, k: usize) -> usize {
-        self.addr() * 32 * self.nfc() + self.mbm() * MBM_SIZE + k * 32
+    /// Byte offset in the image of transfer byte `c`.
+    fn byte_offset(&self, c: usize) -> usize {
+        self.addr() * self.page_bytes() + self.mbm() * MBM_SIZE + c
     }
 
     /// Run the controller up to CPU clock `now`.
@@ -261,43 +364,32 @@ impl Bubble {
             let t = self.next;
             match self.op {
                 Op::Fail => self.end(false),
-                Op::Init => self.end(true),
+                Op::Init | Op::Quick => self.end(true),
                 Op::ReadFsa => {
                     for _ in 0..self.mbms * 2 {
                         self.fifo_push(0x28);
                     }
                     self.end(true);
                 }
-                Op::Read => {
+                Op::Read | Op::Write => {
                     if self.counter < self.limit {
-                        let o = self.page_offset(self.counter);
-                        for i in 0..32 {
-                            let v = self.image.get(o + i).copied().unwrap_or(0);
+                        let o = self.byte_offset(self.counter);
+                        if self.op == Op::Read {
+                            let v = self.image.get(o).copied().unwrap_or(0);
                             self.fifo_push(v);
                         }
-                        self.counter += 1;
-                        self.next = t + self.timing.page_clocks;
-                    }
-                    else {
-                        self.end(true);
-                    }
-                }
-                Op::Write => {
-                    if self.fifo.len() >= 32 {
-                        let o = self.page_offset(self.counter);
-                        for i in 0..32 {
+                        else {
                             let v = self.fifo_pop();
-                            if o + i < self.image.len() {
-                                self.image[o + i] = v;
+                            if o < self.image.len() {
+                                self.image[o] = v;
+                                self.dirty = true;
                             }
                         }
-                        self.dirty = true;
                         self.counter += 1;
-                    }
-                    if self.counter < self.limit {
-                        self.next = t + self.timing.page_clocks;
+                        self.next = if self.counter < self.limit { self.byte_time(self.counter) } else { self.transfer_end() };
                     }
                     else {
+                        self.stop_loops(t);
                         self.end(true);
                     }
                 }

@@ -7,7 +7,7 @@
 //! (8087 timing), DISP_CONTENTION (0 = off), DISP_FETCH_LEN, DISP_FETCH_PERIOD,
 //! FRAG_PNG=file saves the last displayed frame. FRAG_MODEL=1139 etc. picks the model,
 //! RAM_EXTRA_WAIT the extra wait states on every RAM access. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states),
-//! DISP_LINE_CLOCKS, DISP_FRAME_LINES (geometry); JMP_EXTRA, GRID_REFRESH, GRID_REFRESH_WAIT, GRID_TRACE (see grid_core).
+//! DISP_LINE_CLOCKS, DISP_FRAME_LINES (geometry), DISP_ALL_LINES (0 = contention on visible lines only); JMP_EXTRA, GRID_REFRESH, GRID_REFRESH_WAIT, GRID_TRACE (see grid_core).
 
 use grid_core::{GridMachine, GridModel};
 use marty_core::cpu_common::{Cpu, CpuAddress, Register16};
@@ -56,6 +56,9 @@ fn main() {
         }
         if let Some(v) = env("DISP_CPU_WRITE_LEN") {
             d.cpu_write_len = v;
+        }
+        if let Some(v) = env("DISP_ALL_LINES") {
+            d.all_lines = v != 0;
         }
         if let Some(v) = env("DISP_LINE_CLOCKS") {
             d.line_clocks = v as u64;

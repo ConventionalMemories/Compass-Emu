@@ -13,6 +13,7 @@
 
 use std::collections::VecDeque;
 
+use crate::box2101::{Box2101, Media};
 use crate::box2102::{Box2102, HostLines, Lines};
 
 // INT0 bits
@@ -117,6 +118,16 @@ pub struct Drive {
     /// Low-level 2102: the box's own 8051 firmware answers instead of the protocol model.
     #[serde(default)]
     pub lle: Option<Box<Box2102>>,
+    /// Low-level 2101 (on the box's hard disk drive): the board's 8088 runs the real firmware
+    /// and answers on both of the box's addresses.
+    #[serde(default)]
+    pub lle2101: Option<Box<Box2101>>,
+    /// This 2101 floppy is answered by the low-level 2101 box (on the hard disk drive).
+    #[serde(default)]
+    pub served: bool,
+    /// The low-level 2101's light for this drive (kept up to date by the bus).
+    #[serde(default)]
+    served_busy: bool,
 }
 
 /// GPIBLOG set: print drive commands, SRQs, serial polls and ends of data on stderr.
@@ -255,6 +266,9 @@ impl Drive {
             mechanics: true,
             log: Vec::new(),
             lle: None,
+            lle2101: None,
+            served: false,
+            served_busy: false,
         }
     }
 
@@ -267,10 +281,26 @@ impl Drive {
         self.mechanics && self.kind != DriveKind::Hdd2101 && !self.image.is_empty() && self.image.len() <= 720 * SECTOR && std::env::var_os("FD_NOMECH").is_none()
     }
 
+    /// A low-level box answers for this drive (the protocol model stays quiet).
+    pub fn low_level(&self) -> bool {
+        self.lle.is_some() || self.lle2101.is_some() || self.served
+    }
+
+    /// The low-level 2101's four-character display, if this drive has the box.
+    pub fn display(&self) -> Option<String> {
+        self.lle2101.as_ref().map(|b| b.display())
+    }
+
     /// A command is being carried out (for a drive activity light).
     pub fn busy(&self) -> bool {
         if let Some(l) = &self.lle {
             return l.motor_on();
+        }
+        if let Some(b) = &self.lle2101 {
+            return b.hd_busy();
+        }
+        if self.served {
+            return self.served_busy;
         }
         self.state != DriveState::Idle || self.done_at.is_some()
     }
@@ -410,7 +440,7 @@ impl Drive {
 
     /// Command byte (ATN asserted).
     fn command(&mut self, b: u8) {
-        if self.lle.is_some() {
+        if self.low_level() {
             return;
         }
         let group = b & 0xE0;
@@ -439,7 +469,7 @@ impl Drive {
 
     /// Data byte while listening.
     fn data(&mut self, b: u8, eoi: bool, now: u64) {
-        if self.lle.is_some() {
+        if self.low_level() {
             return;
         }
         self.rx.push(b);
@@ -553,7 +583,7 @@ impl Drive {
 
     /// Next byte this drive would put on the bus as talker (ATN released): (byte, eoi).
     fn peek_talk(&self) -> Option<(u8, bool)> {
-        if !self.talking || self.lle.is_some() {
+        if !self.talking || self.low_level() {
             return None;
         }
         if self.serial_polling {
@@ -633,6 +663,10 @@ pub struct Gpib {
     /// ROM); without it, the protocol-level model answers.
     #[serde(skip)]
     pub rom_2102: Option<Vec<u8>>,
+    /// 2101 firmware: 300205-05 (20 MB drive) and 300205-06 (10 MB). With one that fits the
+    /// hard disk image (41616 or 20808 pages), the 2101 runs low-level.
+    #[serde(skip)]
+    pub rom_2101: [Option<Vec<u8>>; 2],
 }
 
 impl Gpib {
@@ -676,6 +710,7 @@ impl Gpib {
             host_dav: false,
             host_latched: false,
             rom_2102: None,
+            rom_2101: [None, None],
         }
     }
 
@@ -691,7 +726,7 @@ impl Gpib {
         for d in &mut self.drives {
             if d.kind == DriveKind::Floppy2102 && d.lle.is_none() {
                 let mut b = Box2102::new(rom.clone(), DriveKind::Floppy2102.address());
-                b.set_us(Self::to_us(self.now));
+                b.set_us(Self::to_ns(self.now) / 1000);
                 if self.now == 0 {
                     b.power_on_early((early * 1e6) as u64, &mut d.image, &mut d.dirty);
                 }
@@ -700,20 +735,161 @@ impl Gpib {
         }
     }
 
-    fn lle_idx(&self) -> Option<usize> {
-        self.drives.iter().position(|d| d.lle.is_some())
+    /// The 2101 firmware for a hard disk of `pages` pages: -05 for 41616 (612 cylinders), -06
+    /// for 20808 (306); an empty slot takes either. None: no ROM fits (protocol model).
+    pub fn rom_2101_for(&self, pages: usize) -> Option<&Vec<u8>> {
+        let [r05, r06] = &self.rom_2101;
+        match pages {
+            41616 => r05.as_ref(),
+            20808 => r06.as_ref(),
+            0 => r05.as_ref().or(r06.as_ref()),
+            _ => None,
+        }
     }
 
+    /// Give a 2101 box (hard disk and floppy) its low-level board once a ROM fits.
+    fn attach_2101(&mut self) {
+        if self.rom_2101.iter().all(|r| r.is_none()) {
+            return;
+        }
+        let hd = self.drives.iter().position(|d| d.kind == DriveKind::Hdd2101);
+        let fd = self.drives.iter().position(|d| d.kind == DriveKind::Floppy2101);
+        let Some(h) = hd
+        else {
+            return;
+        };
+        if self.drives[h].lle2101.is_some() {
+            return;
+        }
+        if fd.is_some_and(|f| self.drives[f].image.len() > 720 * SECTOR) {
+            // A PC folder on the floppy drive is larger than any floppy the firmware can use.
+            if !self.drives[h].log.iter().any(|l| l.starts_with("2101 low-level")) {
+                self.drives[h].log.push("2101 low-level: off with a PC folder as the floppy, protocol model used".into());
+            }
+            return;
+        }
+        let pages = self.drives[h].image.len() / SECTOR;
+        let Some(rom) = self.rom_2101_for(pages).cloned()
+        else {
+            if !self.drives[h].log.iter().any(|l| l.starts_with("2101 low-level")) {
+                self.drives[h].log.push(format!("2101 low-level: no ROM for a {pages}-page disk, protocol model used"));
+            }
+            return;
+        };
+        // GRID_2101_EARLY: seconds the box was switched on before the Compass (default 4).
+        let early = std::env::var("GRID_2101_EARLY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+        let mut b = Box2101::new(rom);
+        b.set_ns(Self::to_ns(self.now));
+        if let Some(f) = fd {
+            self.drives[f].served = true;
+        }
+        if self.now == 0 {
+            let (hd_d, fd_d) = Self::two(&mut self.drives, h, fd);
+            let mut empty = Vec::new();
+            let mut nd = false;
+            let (fdi, fdd) = match fd_d {
+                Some(d) => (&mut d.image, &mut d.dirty),
+                None => (&mut empty, &mut nd),
+            };
+            let mut m = Media { hd: &mut hd_d.image, hd_dirty: &mut hd_d.dirty, fd: fdi, fd_dirty: fdd };
+            b.power_on_early((early * 1e9) as u64, &mut m);
+        }
+        self.drives[h].lle2101 = Some(Box::new(b));
+    }
+
+    /// Drive `a` and optionally drive `b` (a != b), both mutable.
+    fn two(drives: &mut [Drive], a: usize, b: Option<usize>) -> (&mut Drive, Option<&mut Drive>) {
+        match b {
+            None => (&mut drives[a], None),
+            Some(b) if b > a => {
+                let (x, y) = drives.split_at_mut(b);
+                (&mut x[a], Some(&mut y[0]))
+            }
+            Some(b) => {
+                let (x, y) = drives.split_at_mut(a);
+                (&mut y[0], Some(&mut x[b]))
+            }
+        }
+    }
+
+    /// Drives that carry a low-level box.
+    fn boxes(&self) -> Vec<usize> {
+        (0..self.drives.len()).filter(|&i| self.drives[i].lle.is_some() || self.drives[i].lle2101.is_some()).collect()
+    }
+
+    fn lle_any(&self) -> bool {
+        self.drives.iter().any(|d| d.lle.is_some() || d.lle2101.is_some())
+    }
+
+    /// Box time (ns) of the box on drive `i`, in machine time (without its head start).
+    fn box_ns(&self, i: usize) -> u64 {
+        let d = &self.drives[i];
+        if let Some(b) = &d.lle {
+            (b.us() - b.ahead) * 1000
+        }
+        else if let Some(b) = &d.lle2101 {
+            b.ns() - b.ahead
+        }
+        else {
+            u64::MAX
+        }
+    }
+
+    /// Run the box on drive `i` to machine time `target` ns, or to its first line change.
+    fn run_box(&mut self, i: usize, target: u64) -> bool {
+        if self.drives[i].lle.is_some() {
+            let d = &mut self.drives[i];
+            let b = d.lle.as_mut().unwrap();
+            let ahead = b.ahead;
+            return b.run(target / 1000 + ahead, &mut d.image, &mut d.dirty);
+        }
+        let fd = self.drives.iter().position(|d| d.served);
+        let (hd_d, fd_d) = Self::two(&mut self.drives, i, fd);
+        let mut empty = Vec::new();
+        let mut nd = false;
+        let b = hd_d.lle2101.as_mut().unwrap();
+        let fbusy = b.fd_busy();
+        let (fdi, fdd) = match fd_d {
+            Some(d) => {
+                d.served_busy = fbusy;
+                (&mut d.image, &mut d.dirty)
+            }
+            None => (&mut empty, &mut nd),
+        };
+        let mut m = Media { hd: &mut hd_d.image, hd_dirty: &mut hd_d.dirty, fd: fdi, fd_dirty: fdd };
+        let ahead = b.ahead;
+        b.run(target + ahead, &mut m)
+    }
+
+    /// The lines all low-level boxes drive (wired OR).
     fn lle_lines(&self) -> Lines {
-        self.lle_idx().map(|i| self.drives[i].lle.as_ref().unwrap().lines()).unwrap_or_default()
+        let mut l = Lines::default();
+        for d in &self.drives {
+            let b = if let Some(b) = &d.lle {
+                b.lines()
+            }
+            else if let Some(b) = &d.lle2101 {
+                b.lines()
+            }
+            else {
+                continue;
+            };
+            l.dav |= b.dav;
+            l.eoi |= b.eoi;
+            l.nrfd |= b.nrfd;
+            l.ndac |= b.ndac;
+            l.srq |= b.srq;
+            l.dio |= b.dio;
+        }
+        l
     }
 
-    /// Box time (us) for a machine clock count, and back.
-    fn to_us(t: u64) -> u64 {
-        (t as u128 * 1_000_000 / hd::CPU_HZ as u128) as u64
+    /// Box time (ns) for a machine clock count, and back.
+    fn to_ns(t: u64) -> u64 {
+        (t as u128 * 1_000_000_000 / hd::CPU_HZ as u128) as u64
     }
-    fn from_us(us: u64) -> u64 {
-        (us as u128 * hd::CPU_HZ as u128).div_ceil(1_000_000) as u64
+    fn from_ns(ns: u64) -> u64 {
+        (ns as u128 * hd::CPU_HZ as u128).div_ceil(1_000_000_000) as u64
     }
 
     /// The lines the 9914 drives, as the low-level 2102 sees them.
@@ -733,8 +909,13 @@ impl Gpib {
 
     fn push_host(&mut self) {
         let h = self.host_lines();
-        if let Some(i) = self.lle_idx() {
-            self.drives[i].lle.as_mut().unwrap().set_host(h);
+        for d in &mut self.drives {
+            if let Some(b) = d.lle.as_mut() {
+                b.set_host(h);
+            }
+            if let Some(b) = d.lle2101.as_mut() {
+                b.set_host(h);
+            }
         }
     }
 
@@ -747,6 +928,20 @@ impl Gpib {
     /// React to the lines the low-level 2102 drives. Returns true if something the CPU can see
     /// changed (a byte latched or sent).
     fn on_lines(&mut self) -> bool {
+        // A box whose handshake runs in hardware (the 2101's 8291A) answers host line changes
+        // at once: go round until the lines settle.
+        let mut seen = false;
+        for _ in 0..8 {
+            let before = self.lle_lines();
+            seen |= self.on_lines_once();
+            if self.lle_lines() == before {
+                break;
+            }
+        }
+        seen
+    }
+
+    fn on_lines_once(&mut self) -> bool {
         let l = self.lle_lines();
         let mut seen = false;
         if self.out.is_none() {
@@ -802,25 +997,38 @@ impl Gpib {
     /// Run the low-level 2102 up to clock `t`, handling each change of its lines. With `stop`,
     /// return at the first change the CPU can see. Returns true if it stopped early.
     fn run_lle(&mut self, t: u64, stop: bool) -> bool {
-        let Some(i) = self.lle_idx()
-        else {
+        let boxes = self.boxes();
+        if boxes.is_empty() {
             return false;
-        };
-        let target = Self::to_us(t);
+        }
+        let target = Self::to_ns(t);
+        // Several boxes run in turns of at most 20 us, so each sees the others' handshakes
+        // (through the host) about when they happen.
+        const SLICE: u64 = 20_000;
         loop {
-            let d = &mut self.drives[i];
-            let lle = d.lle.as_mut().unwrap();
-            let ahead = lle.ahead;
-            if !lle.run(target + ahead, &mut d.image, &mut d.dirty) {
-                return false;
+            let slice_end = if boxes.len() > 1 {
+                boxes.iter().map(|&i| self.box_ns(i)).min().unwrap_or(target).saturating_add(SLICE).min(target)
             }
-            let at = Self::from_us(lle.us() - ahead).max(self.now);
-            self.now = at.min(t);
-            let cs = self.can_send();
-            let seen = self.on_lines();
-            self.update(cs);
-            if seen || !stop {
-                return true;
+            else {
+                target
+            };
+            for &i in &boxes {
+                while self.box_ns(i) < slice_end {
+                    if !self.run_box(i, slice_end) {
+                        break;
+                    }
+                    let at = Self::from_ns(self.box_ns(i)).max(self.now);
+                    self.now = at.min(t);
+                    let cs = self.can_send();
+                    let seen = self.on_lines();
+                    self.update(cs);
+                    if !stop || seen {
+                        return true;
+                    }
+                }
+            }
+            if slice_end >= target {
+                return false;
             }
         }
     }
@@ -933,7 +1141,8 @@ impl Gpib {
         if self.rom_2102.is_some() {
             self.attach_lle();
         }
-        let lle = self.lle_idx().is_some();
+        self.attach_2101();
+        let lle = self.lle_any();
         if lle {
             self.push_host();
         }
@@ -1003,7 +1212,7 @@ impl Gpib {
     /// when the 9914 raises its INT line (END, ERR), as the driver relies on, or after `limit`.
     pub fn dma_wait(&mut self, write: bool, limit: u64) -> u64 {
         let start = self.now;
-        if self.lle_idx().is_some() {
+        if self.lle_any() {
             loop {
                 let ready = if write { self.out.is_none() } else { self.di_full };
                 if ready || self.int_line() || self.now >= start + limit {
@@ -1041,7 +1250,7 @@ impl Gpib {
 
     pub fn read(&mut self, reg: usize) -> u8 {
         let r = self.read_inner(reg);
-        if reg == 7 && self.lle_idx().is_some() {
+        if reg == 7 && self.lle_any() {
             self.on_lines();
         }
         r
@@ -1091,7 +1300,7 @@ impl Gpib {
                 if self.sic {
                     v |= 0x02;
                 }
-                if self.lle_idx().is_some() {
+                if self.lle_any() {
                     let l = self.lle_lines();
                     let h = self.host_lines();
                     v &= !0x30;
@@ -1123,7 +1332,7 @@ impl Gpib {
 
     pub fn write(&mut self, reg: usize, data: u8) {
         self.write_inner(reg, data);
-        if self.lle_idx().is_some() {
+        if self.lle_any() {
             self.on_lines();
         }
     }

@@ -191,6 +191,11 @@ impl Session {
         if let Some(p) = &roms.fd2102 {
             m.board_mut().gpib.rom_2102 = Some(read(p, "2102 floppy firmware")?);
         }
+        for (i, p) in roms.hd2101.iter().enumerate() {
+            if let Some(p) = p {
+                m.board_mut().gpib.rom_2101[i] = Some(read(p, "2101 firmware")?);
+            }
+        }
 
         let mut media = vec![];
         for (kind, path) in [(DriveKind::Hdd2101, &cfg.hd), (DriveKind::Floppy2102, &cfg.flop), (DriveKind::Floppy2101, &cfg.flop2101)] {

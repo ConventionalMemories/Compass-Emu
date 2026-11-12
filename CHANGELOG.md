@@ -27,6 +27,10 @@ Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
   short (0.5 ms) after an MBM Purge until the next transfer. On a write the
   FIFO takes data only from 1.2 ms before the first page passes, as the real
   7220 (no bytes before the first interrupt).
+- Real-time clock: for a moment after each tenth (one 32.768 kHz period, about
+  30 us; the real length isn't measured, RTC_UPDATE_CLK sets it in CPU clocks)
+  the MM58174 is updating and its digits read 0Fh, as on the chip, so the
+  PROM's retry on 0Fh runs as on hardware.
 - Results, GRiDBench 2.2 against the real machines: 1101 CPU/bus rows 1.07 %
   rms, 8087 rows 2.5 % (was 5.7 %); 1139 against the real 1137 CPU/bus 1.49 %
   (was 1.96 %). GRiDBench's bubble rows (GRiDBench 2.1b on a real 1101), ms,

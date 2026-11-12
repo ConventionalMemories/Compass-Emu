@@ -1,4 +1,4 @@
-//! Compass-Emu 0.8.0: a GRiD Compass in a window.
+//! Compass-Emu 0.8.1: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
@@ -50,7 +50,7 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.8.0";
+pub const VERSION: &str = "0.8.1";
 
 fn usage() -> ! {
     eprintln!(

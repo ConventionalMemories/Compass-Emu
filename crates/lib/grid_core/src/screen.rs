@@ -104,7 +104,13 @@ impl DisplayTiming {
     pub fn wide() -> DisplayTiming {
         DisplayTiming {
             fetch_period: 16,
-            fetch_len: 5,
+            // 0.8.1 refit to the real 1137's gap rows (1.2% rms, was 2.0%): shorter display
+            // slots, but a CPU read or write needs the RAM for 4 states, so RAM data accesses
+            // cost ~1 clock more than on the 1101 (GRiDBench c06 15.3, c07 16.2), with the
+            // DRAM refresh steal at 2 clocks (machine.rs).
+            fetch_len: 3,
+            cpu_len: 4,
+            cpu_write_len: 4,
             line_clocks: 281,
             frame_lines: 297,
             // GRiDProbe on a real 1137: IR3 low only ~1500 clocks a frame.

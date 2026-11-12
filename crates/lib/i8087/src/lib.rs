@@ -96,6 +96,9 @@ pub struct I8087 {
     /// Clocks added to every instruction's busy time (0 = pure data sheet, the default; for
     /// experiments).
     pub extra_busy: u32,
+    /// Clocks the current instruction takes beyond its table time (a store that underflows).
+    #[serde(default, skip)]
+    penalty: u32,
     /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
     /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
@@ -149,6 +152,7 @@ impl I8087 {
             irq: false,
             stats: FpuStats::default(),
             extra_busy: 0,
+            penalty: 0,
             wait_min: 0,
         };
         f.finit();
@@ -470,6 +474,10 @@ impl I8087 {
     fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
         let r: StatusAnd<Single> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
+        if r.status.contains(Status::UNDERFLOW) {
+            // denormalizing the result: ~49 more clocks on a real 1101 (GRiDBench h33)
+            self.penalty += 49;
+        }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
             return;
         }
@@ -479,6 +487,10 @@ impl I8087 {
     fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
         let r: StatusAnd<Double> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
+        if r.status.contains(Status::UNDERFLOW) {
+            // denormalizing the result: ~49 more clocks on a real 1101 (GRiDBench h33)
+            self.penalty += 49;
+        }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
             return;
         }
@@ -547,6 +559,7 @@ impl I8087 {
                 self.dp = a;
             }
         }
+        let clocks = clocks + std::mem::take(&mut self.penalty);
         self.busy_until = start + clocks as u64 + self.extra_busy as u64;
         self.stats.instructions += 1;
         self.stats.busy_clocks += clocks as u64;
@@ -753,6 +766,10 @@ impl I8087 {
                 // D8: ST = ST op ST(i)
                 let ar = Arith::from(reg);
                 let short = Self::short_mul(self.st(0), self.st(i));
+                // a product of significands of 2 or more (no normalizing shift left) was ~11
+                // clocks faster on a real 1101 (GRiDBench h12 vs h13/h15)
+                let m = |v: F80| (v.to_bits() as u64) as u128;
+                let big = m(self.st(0)) * m(self.st(i)) >= 1 << 127;
                 if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
                     match ar {
                         Arith::Com => self.compare(a, b),
@@ -768,7 +785,7 @@ impl I8087 {
                     }
                 }
                 if reg == 1 && !short {
-                    138
+                    if big { 127 } else { 138 }
                 }
                 else {
                     [77, 97, 45, 47, 77, 77, 198, 199][reg as usize]
@@ -990,7 +1007,7 @@ impl I8087 {
                         }
                         else {
                             self.sw |= SW_PE;
-                            c = busy_from_c(interp(ax.ilogb(), &F2XM1_C), 618, 707.9);
+                            c = f2xm1_busy(f80_to_f64(ax));
                         }
                     }
                     c
@@ -1069,8 +1086,7 @@ impl I8087 {
                             let r = self.from_q(trans::atan2(to_q(y), to_q(x)));
                             self.set_st(1, r);
                             if xf != 0.0 && yf != 0.0 && xf.is_finite() && yf.is_finite() {
-                                let e = (yf / xf).abs().log2().floor() as i32;
-                                c = busy_from_c(interp(e, &FPATAN_C), 715, 713.0);
+                                c = fpatan_busy(yf, xf);
                             }
                         }
                         self.sw |= SW_PE;
@@ -1256,13 +1272,62 @@ impl I8087 {
 
 /// Times GRiDBench 2.0 measured on a real 1101 ("c": clocks scaled by AAM = 83, the way its
 /// report prints them), by the exponent of the argument (F2XM1) or of y/x (FPATAN).
-const F2XM1_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 461.0), (-10, 505.0), (-7, 575.0), (-4, 650.0), (-2, 704.0), (-1, 705.0)];
 /// FYL2X by the exponent of |m - 1| (m = mantissa folded to 0.707 .. 1.414), above and
 /// below 1; FYL2XP1 by the exponent of x (x < 0 about 155 less).
-const FYL2X_ABOVE_C: [(i32, f64); 3] = [(-24, 706.0), (-3, 1079.0), (-2, 1105.0)];
-const FYL2X_BELOW_C: [(i32, f64); 4] = [(-24, 549.0), (-6, 864.0), (-4, 923.0), (-2, 947.0)];
+const FYL2X_ABOVE_C: [(i32, f64); 3] = [(-24, 752.0), (-3, 1079.0), (-2, 1108.0)];
+const FYL2X_BELOW_C: [(i32, f64); 4] = [(-24, 595.0), (-6, 891.0), (-4, 923.0), (-2, 963.0)];
 const FYL2XP1_C: [(i32, f64); 7] = [(-60, 665.0), (-16, 675.0), (-12, 764.0), (-10, 812.0), (-7, 905.0), (-4, 969.0), (-2, 1023.0)];
-const FPATAN_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 466.0), (-10, 510.0), (-4, 695.0), (-2, 760.0), (-1, 713.0), (0, 713.0)];
+
+/// FPATAN and F2XM1 run a pseudo-divide (pseudo-multiply) loop on the chip: each of the first
+/// 16 steps from the first non-zero digit costs time, and so does each digit. Fitted to
+/// GRiDBench 2.2 on a real 1101 (36 FPATAN inputs, rms 6 clocks; 34 F2XM1 inputs, rms 6).
+/// `steps` counts the digits of y/x in the base atan(2^-i) (FPATAN), of x in ln(1 + 2^-i)
+/// (F2XM1), for i = 0 .. 15.
+fn pseudo_digits(v: f64, w: f64, atan: bool) -> (u32, u32) {
+    let (mut y, mut x, mut r) = (v, w, v);
+    let mut first = None;
+    let mut digits = 0;
+    for i in 0..16 {
+        let t = 2f64.powi(-i);
+        let c = (1.0 + t).ln();
+        let mut n = 0;
+        if atan {
+            while y >= x * t && n < 3 {
+                (y, x) = (y - x * t, x + y * t);
+                n += 1;
+            }
+        }
+        else {
+            while r >= c && n < 3 {
+                r -= c;
+                n += 1;
+            }
+        }
+        if n > 0 && first.is_none() {
+            first = Some(i);
+        }
+        digits += n;
+    }
+    (16 - first.unwrap_or(16) as u32, digits)
+}
+
+/// Busy clocks for FPATAN with |y| <= |x| (both finite, non-zero). GRiDBench prints
+/// 352.1 + 1.0796 (busy - 382) in the emulator; the real chip printed 377.05 + 19.59 steps +
+/// 17.55 digits.
+fn fpatan_busy(y: f64, x: f64) -> u32 {
+    let (y, x) = (y.abs(), x.abs());
+    let (steps, digits) = if y <= x { pseudo_digits(y, x, true) } else { pseudo_digits(x, y, true) };
+    let p = 377.05 + 19.59 * steps as f64 + 17.55 * digits as f64;
+    (382.0 + (p - 352.1) / 1.0796).round() as u32
+}
+
+/// Busy clocks for F2XM1 of |x| (0 < |x| <= 1). GRiDBench prints 354.8 + 1.0806 (busy - 290)
+/// in the emulator; the real chip printed 379.72 + 19.52 steps + 5.55 digits.
+fn f2xm1_busy(ax: f64) -> u32 {
+    let (steps, digits) = pseudo_digits(ax.abs().min(1.0), 1.0, false);
+    let p = 379.72 + 19.52 * steps as f64 + 5.55 * digits as f64;
+    (290.0 + (p - 354.8) / 1.0806).round() as u32
+}
 
 /// Piecewise linear in e, flat outside the table.
 fn interp(e: i32, t: &[(i32, f64)]) -> f64 {

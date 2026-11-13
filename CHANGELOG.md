@@ -2,6 +2,25 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.9.0
+
+- GRiDLink: the 8274 serial chip's synchronous SDLC mode, the one the GRiD
+  Server network uses. --gridlink tcp:2400 (or connect:HOST:PORT) carries
+  the Compass's frames over TCP, one message per frame (format in
+  docs/gridlink.md), for a GRiDLink server program on the PC. No GRiD
+  Server is built in: a Compass can only be a GRiDLink client, so two
+  emulators can't link to each other this way.
+- Tested with the real GRiDLink client code: CableTest from the GRiD
+  Server disks ("Programs for GRiD Compass") signs on, takes its station
+  address and passes its 520-byte test exchanges with no errors, against
+  a small test script playing the server.
+- Multidrop cable (default) or point-to-point (--gridlink-p2p, RTS looped
+  to CTS), as GRiDLink~Device~ checks at start. The serial port select
+  latches (DFE10-DFE16 on the Compass II board, DFE00-DFE06 on the 1101)
+  are kept and shown to the link.
+- Fix: the 8274's interrupt vector in 8086 mode (WR2A = 10h) now carries
+  the cause in bits 0-2, as on the chip; it was in bits 2-4.
+
 ## 0.8.1
 
 Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):

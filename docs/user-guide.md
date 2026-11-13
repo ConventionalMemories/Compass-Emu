@@ -59,7 +59,8 @@ skip through it.
 ```
 compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
             [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
-            [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn] [--mute]
+            [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
+            [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
             [--scale 1|2|4] [--overlay] [--fast] [--classic] [--symbols DIR] [--no-catch]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
@@ -76,6 +77,10 @@ compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop flop
 --serial   the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a
            terminal such as PuTTY in "Raw" mode), or a real PC
            port like COM3 (the bit rate follows what the GRiD program sets).
+--gridlink the same port with a GRiDLink cable: SDLC frames over TCP. tcp:2400
+           waits on 127.0.0.1:2400 for a GRiDLink server program, connect:HOST:PORT
+           connects to one. See GRiDLink below.
+--gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
 --mute     no sound.
 --fast     start with the fast CPU core (whole instructions, approximate timing).
 --classic  the plain window of 0.4 (no menus); --scale only applies there.
@@ -236,6 +241,18 @@ The Claude Code hook has the same commands, and grid_build has debug:true.
 
 Timing is cycle-exact against a real 1101 to about 2% on average; a few
 cases (some short jumps) are still up to 14% off, being measured.
+
+## GRiDLink
+
+GRiDLink is the GRiD Server network: 250 kbit/s synchronous (SDLC) on the
+serial port, with the server polling each Compass. With --gridlink the
+emulated 8274 sends every frame the Compass makes to the TCP connection and
+hands it every frame that comes back (docs/gridlink.md has the format and
+a short Python example). The other end has to play the GRiD Server; none is
+included yet. Without a server the Compass's GRiDLink~Device~ just waits
+for the server's poll. The machine setup page has the same two settings.
+Keep the emulator at real speed while linked: GRiDLink's timeouts run in
+emulated time, and turbo shortens them for the program at the other end.
 
 ## Two Compasses on a null-modem cable
 

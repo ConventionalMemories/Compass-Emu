@@ -648,3 +648,88 @@ fn arctangent() {
         eprintln!("atan({} / {}) = {:020X} sw {:04X} {:?}", y, x, m.st[1].bits(), m.sw, res.err());
     }
 }
+
+/// Run one transcendental on random operands and count how far the results are from the
+/// quad precision value, in units of the last place, by the exponent of ST(0).
+fn against_quad(
+    rom: &MicroRom,
+    modrm: u8,
+    gen: &mut dyn FnMut(&mut Rng) -> (u128, Option<u128>),
+    truth: &dyn Fn(rustc_apfloat::ieee::Quad, rustc_apfloat::ieee::Quad) -> rustc_apfloat::ieee::Quad,
+) -> (i128, [u32; 8]) {
+    use rustc_apfloat::ieee::{Quad, X87DoubleExtended as F80};
+    use rustc_apfloat::{Float, FloatConvert, Round};
+    let mut r = Rng(0x1980_0000 + modrm as u64);
+    let mut m = Micro8087::new(rom.clone());
+    let mut worst = 0i128;
+    let mut hist = [0u32; 8];
+    for _ in 0..20000 {
+        let (x, y) = gen(&mut r);
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        m.st[0] = Reg::from_bits(x);
+        if let Some(y) = y {
+            m.st[1] = Reg::from_bits(y);
+        }
+        let res = m.exec(1, modrm);
+        assert!(res.is_ok(), "{:020X} {:020X?}: {:?}", x, y, res);
+        let g = m.st[m.top as usize].bits();
+        let q = |v: u128| -> Quad { F80::from_bits(v).convert(&mut false).value };
+        let t: F80 = truth(q(x), q(y.unwrap_or(0))).convert_r(Round::NearestTiesToEven, &mut false).value;
+        let t = t.to_bits();
+        let e = (g as i128 - t as i128).abs();
+        hist[(e as usize).min(7)] += 1;
+        if e > worst {
+            worst = e;
+            eprintln!("D9 {:02X} of {:020X} {:020X?} = {:020X}, true {:020X} ({} units)", modrm, x, y, g, t, e);
+        }
+    }
+    eprintln!("D9 {:02X} error histogram in units of the last place: {:?}", modrm, hist);
+    (worst, hist)
+}
+
+/// F2XM1 on 0 < x <= 0.5 against the quad precision value.
+#[test]
+fn exponential() {
+    let Some(rom) = MicroRom::find() else { return };
+    runs(&rom, 0xD9, 0xF0);
+    let (worst, _) = against_quad(
+        &rom,
+        0xF0,
+        &mut |r| {
+            let span = if r.below(4) == 0 { 70 } else { 18 };
+            ((0x3FFD - r.below(span) as u128) << 64 | (r.next() | 1 << 63) as u128, None)
+        },
+        &|x, _| crate::trans::exp2m1(x),
+    );
+    assert!(worst <= 3, "worst error {} units", worst);
+}
+
+/// FYL2X and FYL2XP1 against the quad precision values.
+#[test]
+fn logarithm() {
+    let Some(rom) = MicroRom::find() else { return };
+    runs(&rom, 0xD9, 0xF1);
+    runs(&rom, 0xD9, 0xF9);
+    let real = |r: &mut Rng, lo: u64, span: u64, signed: bool| -> u128 {
+        let e = (lo + r.below(span)) as u128;
+        let s = if signed { r.below(2) as u128 } else { 0 };
+        s << 79 | e << 64 | (r.next() | 1 << 63) as u128
+    };
+    // y = 1: the logarithm alone
+    let (worst, _) = against_quad(&rom, 0xF1, &mut |r| (real(r, 0x3FFF - 40, 80, false), Some(0x3FFF_8000_0000_0000_0000)), &|x, _| crate::trans::log2(x));
+    assert!(worst <= 3, "FYL2X with y = 1: worst error {} units", worst);
+    let (worst, _) = against_quad(&rom, 0xF1, &mut |r| (real(r, 0x3FFF - 40, 80, false), Some(real(r, 0x3FFF - 20, 40, true))), &|x, y| crate::trans::mul_q(y, crate::trans::log2(x)));
+    assert!(worst <= 3, "FYL2X: worst error {} units", worst);
+    // |x| below 1 - sqrt(2)/2
+    let (worst, _) = against_quad(&rom, 0xF9, &mut |r| {
+        let x = real(r, 0x3FFC - 70, 71, true);
+        let x = if x & !(1 << 79) > 0x3FFD_95F6_0000_0000_0000 { x - (1 << 64) } else { x };
+        (x, Some(real(r, 0x3FFF - 20, 40, true)))
+    }, &|x, y| crate::trans::mul_q(y, crate::trans::log2_1p(x)));
+    assert!(worst <= 5, "FYL2XP1: worst error {} units", worst);
+}

@@ -165,8 +165,15 @@ micro-instructions of each kind that ran; a least-squares fit of one cost per ki
 and reproduces the tables within 7.5 % rms over about 100 instruction forms (FPREM left out: its time depends on the operands more than its table entry says). For
 FPTAN, FPATAN and F2XM1, whose table times were fitted to a real 1101 input by input, the
 microcode count follows the measured time with a correlation of 0.99 to 1.00. The costs
-themselves are not physical yet (a transfer cannot take 0.6 clocks): the fit wants real
-measurements per instruction, not the tables, before it replaces them.
+themselves are not physical (a transfer cannot take 0.6 clocks).
+
+A second fit, straight to the real 1101's clocks for its 121 dumped FPATAN, F2XM1, FYL2X,
+FYL2XP1 and FSQRT inputs (`timing_real`, also ignored), does worse than the tables: 20
+clocks rms with free costs, 29 with whole clocks per kind (1 for most, 2 for an add, about
+2 a multiply or root step and 1 a divide step), against about 6 for the hand-fitted
+tables. So the count by kind is not the whole story: the time must also depend on what a
+micro-instruction does (how far a shift goes, which loop a step belongs to). Until that
+is understood the tables stay.
 
 ## Not there yet
 

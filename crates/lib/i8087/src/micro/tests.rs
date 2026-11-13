@@ -999,3 +999,44 @@ fn transcendentals_real_chip() {
         assert!(exact >= least && worst <= 1, "D9 {:02X}: {} of {} exact, worst {} units", modrm, exact, t.len(), worst);
     }
 }
+
+/// Data for the timing fit from the real chip: the real 1101's clocks for each dumped input
+/// next to what the microcode did. Run with --ignored --nocapture.
+#[test]
+#[ignore]
+fn timing_real() {
+    let Some(rom) = MicroRom::find() else { return };
+    use super::real::*;
+    let mut m = Micro8087::new(rom.clone());
+    println!("name,clocks,steps,{}", KIND_NAMES.join(","));
+    let mut one = |name: &str, modrm: u8, v: &[u128], clocks: f32| {
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        let x = if v.len() == 3 { v[1] } else { v[0] };
+        m.st[0] = Reg::from_bits(x);
+        if v.len() == 3 {
+            m.st[1] = Reg::from_bits(v[0]);
+        }
+        let run = m.exec(1, modrm).unwrap();
+        println!("{},{},{},{}", name, clocks, run.steps, run.kinds.map(|k| k.to_string()).join(","));
+    };
+    for (v, _, c) in FPATAN.iter() {
+        one("FPATAN", 0xF3, v, *c);
+    }
+    for (v, _, c) in F2XM1.iter() {
+        one("F2XM1", 0xF0, v, *c);
+    }
+    for (v, _, c) in FYL2X.iter() {
+        one("FYL2X", 0xF1, v, *c);
+    }
+    for (v, _, c) in FYL2XP1.iter() {
+        one("FYL2XP1", 0xF9, v, *c);
+    }
+    for (v, _, c) in FSQRT.iter() {
+        one("FSQRT", 0xFA, v, *c);
+    }
+}

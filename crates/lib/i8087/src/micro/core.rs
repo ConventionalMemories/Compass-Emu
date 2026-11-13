@@ -174,6 +174,9 @@ pub struct Micro8087 {
     loop_steps: u32,
     pub trace: bool,
     round_next: bool,
+    alt_const: bool,
+    pub log: [u128; 16],
+    pub log_shift: u32,
 }
 
 /// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
@@ -195,6 +198,27 @@ const ATAN: [u128; 16] = [
     0x7ffffff5555556eef,
     0x7ffffffd5555556ef,
     0x7fffffff55555556f,
+];
+
+/// log2(1 + 2^-n) * 2^(n+66): the logarithm constants (computed, as above). The chip has
+/// no entries for n = 0 and 1.
+const LOG: [u128; 16] = [
+    0x40000000000000000,
+    0x4ae00d1cfdeb43cfd,
+    0x5269e12f346e2bf92,
+    0x570068e7ef5a1e7e8,
+    0x598fdbeb244c59f33,
+    0x5aeb4dd63bf61cc4e,
+    0x5b9e5a170b48a629c,
+    0x5bf942dbbc2145fe4,
+    0x5c2711b5eab1dd2b6,
+    0x5c3e0ffc29d59318f,
+    0x5c4994dd0fd1507ea,
+    0x5c4f58bde55f0c2bd,
+    0x5c523b0a86ff22384,
+    0x5c53ac47e94d8dd52,
+    0x5c5464ec5f4d74ca3,
+    0x5c54c1400b92b919c,
 ];
 
 const LOOP_MUL: u8 = 1;
@@ -258,6 +282,9 @@ impl Micro8087 {
             loop_steps: 0,
             trace: false,
             round_next: false,
+            alt_const: false,
+            log: LOG,
+            log_shift: 0,
         }
     }
 
@@ -420,6 +447,7 @@ impl Micro8087 {
         self.exc = 0;
         self.overflow = false;
         self.flag = false;
+        self.alt_const = false;
         self.stack.clear();
         let mut pc = start;
         let mut run = Run::default();
@@ -469,6 +497,8 @@ impl Micro8087 {
                     2 => self.exc |= SW_PE,
                     3 => self.exc |= SW_ZE,
                     4 => self.flag = true,
+                    // the other constant of the routine (F40A goes back)
+                    5 => self.alt_const = true,
                     _ => return Err(fault(format!("exception/flag word {}", n))),
                 },
                 Op::Misc(m) => self.misc(m).map_err(&fault)?,
@@ -507,10 +537,11 @@ impl Micro8087 {
                         self.hw_loop(ijk, op).map_err(&fault)?;
                         continue;
                     }
+                    let mut v = self.read(src).map_err(&fault)?;
                     if p {
-                        return Err(fault("adder variant".into()));
+                        // P adds the integer bit, as on a transfer (FYL2XP1: 1 + x)
+                        v.wide += 1u128 << (63 + RND);
                     }
-                    let v = self.read(src).map_err(&fault)?;
                     self.adder(v, round_bits, op).map_err(&fault)?;
                 }
             }
@@ -743,6 +774,8 @@ impl Micro8087 {
             0x6F48 => self.loop_mode = LOOP_QUOT,
             // before an addition in the CORDIC routines: the addition rounds its A side
             0x6C4A => self.round_next = true,
+            // F2XM1, before the denominator's subtraction; meaning unknown
+            0x6E44 => {}
             0x6B48 => {
                 self.loop_mode = LOOP_REM;
                 self.loop_steps = 0;
@@ -791,7 +824,10 @@ impl Micro8087 {
             // bottom (pseudo-division), and comes out there again (pseudo-multiplication)
             0xE802 => self.cordic = self.cordic << 1 | self.carry as u16,
             0xE800 => self.cordic >>= 1,
+            // the same with the inverse: the logarithm's steps count when nothing overflows
+            0xE806 => self.cordic = self.cordic << 1 | (self.sum & BIT64 != 0) as u16,
             0xF408 => self.flag = false,
+            0xF40A => self.alt_const = false,
             // seen before the last fraction word of a memory operand is read; nothing the
             // model needs (inferred)
             0xF40E => {}
@@ -850,6 +886,10 @@ impl Micro8087 {
             0x1EB => 0xC90F_DAA2_2168_C235, // pi
             0x1EC => 0x9A20_9A84_FBCF_F799, // log10(2)
             0x1ED => 0xB172_17F7_D1CF_79AC, // ln(2)
+            0x1F0 if self.alt_const => 0xEC98_1FF5_17BF_4CE5, // ln(2)/3
+            0x1F0 => 0xB8AA_3B29_5C17_F0BC,                   // log2(e)
+            0x1F1 | 0x1F9 if self.alt_const => 0x8A7F_AC5F_0511_F48D, // 3 log2(e)
+            0x1F1 | 0x1F9 => 0xB504_F333_F9DE_6484,                   // sqrt(2)
             n => return Err(format!("fraction constant for opcode {:03X}", n)),
         })
     }
@@ -897,6 +937,7 @@ impl Micro8087 {
             // the constant ROM's arctangents, picked by the loop counter: counter 15 is
             // atan(1), counter 0 atan(2^-15), each scaled to fill 64 bits plus three
             0x18 => Val::wide(self.atan[self.cordic_index() as usize]),
+            0x19 => Val::wide(self.log[self.cordic_index() as usize] << self.log_shift),
             0x1A => Val::frac(self.frac_const()?),
             0x1B => Val::frac(1),
             // the exponent adjustment; reading it puts it back to its resting value

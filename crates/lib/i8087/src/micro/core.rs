@@ -517,8 +517,8 @@ impl Micro8087 {
                 if self.arith_class() {
                     self.op() == 6 && self.reg_form()
                 }
-                else if self.op() == 7 && self.reg_form() && self.modrm() & 0x20 == 0 {
-                    true
+                else if self.op() == 7 && ((self.reg_form() && self.modrm() & 0x20 == 0) || (!self.reg_form() && reg == 6)) {
+                    true // (FBSTP too)
                 }
                 else {
                     self.modrm() & 0x08 != 0
@@ -594,7 +594,14 @@ impl Micro8087 {
             0x30 => self.carry,
             0x32 => self.sum & BIT64 != 0,
             0x33 => self.sum >> (63 + RND) & 1 != 0,
-            0x38 => self.counter != 0,
+            // the loop counter has run out; testing it counts it down otherwise
+            0x38 => {
+                let done = self.counter == 0;
+                if !done {
+                    self.counter -= 1;
+                }
+                done
+            }
             0x39 => a.sign ^ b.sign ^ (self.arith_class() && (reg == 4 || reg == 5)),
             0x3A => self.flag,
             0x3B => a.sign != b.sign,
@@ -772,6 +779,7 @@ impl Micro8087 {
                 Some((diff, _)) => diff + 1,
                 None => return Err("exponent constant 2 without a real operand".into()),
             },
+            0x4 => 0x403A, // 10^18
             0x5 => 0x3FFF,
             0x6 => 0x403E,
             0x7 => 0x3FF0,
@@ -784,6 +792,9 @@ impl Micro8087 {
     /// Fraction constants selected by the instruction (the constant ROM's first entries,
     /// 64 bits each).
     fn frac_const(&self) -> Result<u64, String> {
+        if self.const_sel == 4 {
+            return Ok(0xDE0B_6B3A_7640_0000); // 10^18 (with exponent constant 4)
+        }
         Ok(match self.opcode {
             0x1E8 => 0x8000_0000_0000_0000, // 1
             0x1E9 => 0xD49A_784B_CD1B_8AFE, // log2(10)
@@ -837,7 +848,13 @@ impl Micro8087 {
             0x17 => Val::wide(self.tmpc),
             0x1A => Val::frac(self.frac_const()?),
             0x1B => Val::frac(1),
-            0x1E => Val::exp(self.exp_adj as u16),
+            // the exponent adjustment; reading it puts it back to its resting value
+            // (inferred: FBSTP runs an add and then a divide, each with its own adjustment)
+            0x1E => {
+                let v = self.exp_adj as u16;
+                self.exp_adj = 1;
+                Val::exp(v)
+            }
             0x1F => Val::reg(Reg { sign: true, exp: 0x7FFF, frac: 0xC000_0000_0000_0000, tag: TAG_SPECIAL }),
             _ => return Err(format!("source register {:02X}", src)),
         })

@@ -148,6 +148,7 @@ pub struct Micro8087 {
     exp_conv: u16,
     counter: u8,
     cordic: u16,
+    index_up: bool,
     /// the constant ROM's arctangents (a copy, so that tests can vary them)
     pub atan: [u128; 16],
     /// quotient / multiplier / radicand register (65 bits used by the square root)
@@ -172,6 +173,7 @@ pub struct Micro8087 {
     loop_grs: u8,
     loop_steps: u32,
     pub trace: bool,
+    round_next: bool,
 }
 
 /// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
@@ -199,6 +201,7 @@ const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
 const LOOP_SQRT: u8 = 3;
 const LOOP_REM: u8 = 4;
+const LOOP_QUOT: u8 = 5;
 
 /// How the exponent converter treats the value it holds.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -236,6 +239,7 @@ impl Micro8087 {
             exp_conv: 0,
             counter: 0,
             cordic: 0,
+            index_up: false,
             atan: ATAN,
             quotient: 0,
             exp_adj: 1,
@@ -253,6 +257,7 @@ impl Micro8087 {
             loop_grs: 0,
             loop_steps: 0,
             trace: false,
+            round_next: false,
         }
     }
 
@@ -479,7 +484,10 @@ impl Micro8087 {
                     self.write(dst, v, src).map_err(&fault)?;
                 }
                 Op::Imm { imm, dst, .. } => match dst {
-                    0x15 => self.counter = imm,
+                    0x15 => {
+                        self.counter = imm;
+                        self.index_up = false;
+                    }
                     0x1C => self.const_sel = imm,
                     _ => return Err(fault(format!("immediate to register {:02X}", dst))),
                 },
@@ -707,6 +715,7 @@ impl Micro8087 {
             0x604C => self.b().tag = TAG_VALID,
             0x614C => self.b().tag = TAG_ZERO,
             0x624C => self.b().tag = TAG_SPECIAL,
+            0x634C => self.b().tag = TAG_EMPTY,
             0x6048 => self.set_cc(false, false),
             0x6148 => self.set_cc(true, false),
             0x6248 => self.set_cc(false, true),
@@ -730,6 +739,10 @@ impl Micro8087 {
             0x6C48 => self.loop_mode = LOOP_SQRT,
             // the multiply loop as SQUARE uses it
             0x6D48 => self.loop_mode = LOOP_MUL,
+            // the divide loop on the whole sum register (J14: the transcendentals' quotients)
+            0x6F48 => self.loop_mode = LOOP_QUOT,
+            // before an addition in the CORDIC routines: the addition rounds its A side
+            0x6C4A => self.round_next = true,
             0x6B48 => {
                 self.loop_mode = LOOP_REM;
                 self.loop_steps = 0;
@@ -816,6 +829,7 @@ impl Micro8087 {
             0x5 => 0x3FFF,
             0x6 => 0x403E,
             0x3 => 0x0010,
+            0xA => 0x000F,
             0x7 => 0x3FF0,
             0xB => 0x3FFE,
             0xD => 0x6000,
@@ -882,7 +896,7 @@ impl Micro8087 {
             0x17 => Val::wide(self.tmpc),
             // the constant ROM's arctangents, picked by the loop counter: counter 15 is
             // atan(1), counter 0 atan(2^-15), each scaled to fill 64 bits plus three
-            0x18 => Val::wide(self.atan[(15 - (self.counter & 15)) as usize]),
+            0x18 => Val::wide(self.atan[self.cordic_index() as usize]),
             0x1A => Val::frac(self.frac_const()?),
             0x1B => Val::frac(1),
             // the exponent adjustment; reading it puts it back to its resting value
@@ -956,7 +970,12 @@ impl Micro8087 {
             0x11 => self.sum = v.wide & (FRAC_MASK | 7),
             0x12 => self.sum = v.wide & (FRAC_MASK | BIT64),
             0x13 => self.sum = v.wide,
-            0x15 => self.counter = (v.f64() & 0x3F) as u8,
+            0x15 => {
+                self.counter = (v.f64() & 0x3F) as u8;
+                // loaded from the sum register it counts the steps left of a pseudo-division
+                // and the step number is 15 minus it (inferred, see cordic_index)
+                self.index_up = src == 0x10;
+            }
             0x16 => self.quotient = (v.wide >> RND) & 0x1_FFFF_FFFF_FFFF_FFFF,
             0x17 => self.tmpc = v.wide,
             _ => return Err(format!("destination register {:02X}", dst)),
@@ -1019,6 +1038,26 @@ impl Micro8087 {
                 self.quotient = q as u64 as u128;
                 self.sum = grs & 7;
             }
+            LOOP_QUOT => {
+                // sum register / B register, both with their rounding bits, as a fraction
+                // with the binary point after the first bit (like FDIV's quotient)
+                let den = self.breg & (FRAC_MASK | 7);
+                let num = self.sum;
+                let mut q = 0u128;
+                if den != 0 {
+                    q = num / den;
+                    let mut r = num % den;
+                    for _ in 1..steps {
+                        r <<= 1;
+                        q <<= 1;
+                        if r >= den {
+                            r -= den;
+                            q |= 1;
+                        }
+                    }
+                }
+                self.quotient = q & 0x1_FFFF_FFFF_FFFF_FFFF;
+            }
             LOOP_SQRT => {
                 // the radicand (1 <= x < 4, 63 fraction bits) is in the quotient register;
                 // the root (1 <= r < 2) builds up in the B register, one bit per step
@@ -1042,6 +1081,16 @@ impl Micro8087 {
         Ok(())
     }
 
+    /// The CORDIC step number n: it picks the constant (atan 2^-n, log2(1 + 2^-n)) and is
+    /// the amount of a "shift by the loop counter". In a pseudo-division (counter loaded from
+    /// the sum register) the steps run upward while the counter runs down, so n = 15 -
+    /// counter; in the pseudo-multiplication that follows n is the counter itself. Inferred:
+    /// FPTAN's real results fix both halves, the other routines load the counter the same way.
+    fn cordic_index(&self) -> u32 {
+        let c = (self.counter & 15) as u32;
+        if self.index_up { 15 - c } else { c }
+    }
+
     /// MNO of an adder word: M inverts the B register, N replaces it with zero, O is the
     /// carry in.
     fn adder(&mut self, a: Val, round_bits: bool, op: u8) -> Result<(), String> {
@@ -1055,7 +1104,9 @@ impl Micro8087 {
         }
         // the carry enters at the lowest bit in use
         let cin = if op & 1 != 0 { if round_bits { 1 } else { 1 << RND } } else { 0 };
-        let s = x + y + cin;
+        let half = if self.round_next && a.wide & 4 != 0 { 1 << RND } else { 0 };
+        self.round_next = false;
+        let s = x + y + cin + half;
         // "carry": a subtraction did not go negative, an addition left the 64 bits
         self.carry = if invert { s & (BIT64 << 2) != 0 } else { s & BIT64 != 0 };
         self.sum = s & WIDE_MASK;
@@ -1079,7 +1130,7 @@ impl Micro8087 {
             0x10 => 63 - c,
             0x18 => 1,
             // by the loop counter
-            0x08 => self.counter as u32,
+            0x08 => self.cordic_index(),
             _ => return Err(format!("variable shift mode {:02X}", by)),
         };
         let sticky = by & 1 != 0 && v.wide & 1 != 0;

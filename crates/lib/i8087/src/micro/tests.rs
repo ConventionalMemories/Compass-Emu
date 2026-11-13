@@ -579,3 +579,72 @@ fn fptan_constant_search() {
         eprintln!("{}", line);
     }
 }
+
+/// FPATAN on 0 < y < x against the quad precision arctangent.
+#[test]
+fn arctangent() {
+    use rustc_apfloat::ieee::{Quad, X87DoubleExtended as F80};
+    use rustc_apfloat::{Float, FloatConvert, Round};
+    let Some(rom) = MicroRom::find() else { return };
+    runs(&rom, 0xD9, 0xF3);
+    let mut r = Rng(0x1980_0F3F);
+    let mut m = Micro8087::new(rom.clone());
+    let mut worst = 0i128;
+    let mut hist = [0u32; 8];
+    let mut by_d = [0i128; 80];
+    for i in 0..20000 {
+        // y at most x, up to 80 binary places smaller
+        let ex = 0x3FFF + r.below(40) as u128 - 20;
+        let d = if i % 4 == 0 { r.below(80) } else { r.below(18) } as u128;
+        let x = ex << 64 | (r.next() | 1 << 63) as u128;
+        let mut y = (ex - d) << 64 | (r.next() | 1 << 63) as u128;
+        if y >= x {
+            y = (ex - 1) << 64 | y & 0xFFFF_FFFF_FFFF_FFFF;
+        }
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        m.st[0] = Reg::from_bits(x);
+        m.st[1] = Reg::from_bits(y);
+        let res = m.exec(1, 0xF3);
+        assert!(res.is_ok(), "{:020X} {:020X}: {:?}", y, x, res);
+        assert!(m.top == 1 && m.st[0].tag == TAG_EMPTY, "FPATAN pops");
+        let g = m.st[1].bits();
+        let (qy, qx): (Quad, Quad) = (F80::from_bits(y).convert(&mut false).value, F80::from_bits(x).convert(&mut false).value);
+        let t: F80 = crate::trans::atan2(qy, qx).convert_r(Round::NearestTiesToEven, &mut false).value;
+        let t = t.to_bits();
+        let e = (g as i128 - t as i128).abs();
+        hist[(e as usize).min(7)] += 1;
+        let dd = ((x >> 64) - (y >> 64)) as usize;
+        by_d[dd] = by_d[dd].max(e);
+        if e > worst {
+            worst = e;
+            eprintln!("atan({:020X} / {:020X}) = {:020X}, true {:020X} ({} units)", y, x, g, t, e);
+        }
+    }
+    eprintln!("worst by exponent gap: {:?}", by_d);
+    eprintln!("FPATAN error histogram in units of the last place: {:?}", hist);
+    // small ratios go through chopped fixed-point divisions and lose up to five units
+    assert!(worst <= 5 && by_d[..13].iter().all(|&e| e <= 1), "worst error {} units", worst);
+    // outside the documented 0 < y < x
+    for &(y, x) in &[(2.0f64, 1.0f64), (1.0, 1.0), (1.5, 1.0), (1.0, -2.0), (-1.0, 2.0), (3.0, 2.5)] {
+        let f = |v: f64| -> u128 {
+            let b = v.to_bits();
+            let e = ((b >> 52) & 0x7FF) as u128 + 0x3FFF - 1023;
+            (b >> 63) as u128 * (1 << 79) | e << 64 | 1 << 63 | ((b & ((1 << 52) - 1)) as u128) << 11
+        };
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        m.st[0] = Reg::from_bits(f(x));
+        m.st[1] = Reg::from_bits(f(y));
+        let res = m.exec(1, 0xF3);
+        eprintln!("atan({} / {}) = {:020X} sw {:04X} {:?}", y, x, m.st[1].bits(), m.sw, res.err());
+    }
+}

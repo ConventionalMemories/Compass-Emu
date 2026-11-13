@@ -107,6 +107,7 @@ pub struct I8087 {
     /// Clocks the current instruction takes beyond its table time (a store that underflows).
     #[serde(default, skip)]
     penalty: u32,
+    push_blocked: bool,
     /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
     /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
@@ -162,6 +163,7 @@ impl I8087 {
             stats: FpuStats::default(),
             extra_busy: 0,
             penalty: 0,
+            push_blocked: false,
             wait_min: 0,
         };
         f.finit();
@@ -274,6 +276,15 @@ impl I8087 {
                 }
             }
             None => self.push(F80::from_bits(bits)),
+        }
+    }
+
+    /// A denormal memory operand on a load: the denormal exception, and the load goes on
+    /// even when it is unmasked, unless the stack also overflows (then nothing is pushed).
+    fn denormal_load(&mut self) {
+        if self.exception(SW_DE) && self.tag((self.top() + 7) & 7) != TAG_EMPTY {
+            self.exception(SW_IE);
+            self.push_blocked = true;
         }
     }
 
@@ -541,7 +552,7 @@ impl I8087 {
         F80::from_i128(v).value
     }
 
-    fn store_int(&mut self, mem: &mut dyn FpuMem, a: u32, bytes: usize, v: F80) {
+    fn store_int(&mut self, mem: &mut dyn FpuMem, a: u32, bytes: usize, v: F80) -> bool {
         let bits = bytes * 8;
         let r = v.to_i128_r(bits, self.round(), &mut false);
         let mut out = r.value;
@@ -554,9 +565,10 @@ impl I8087 {
             flags |= SW_PE;
         }
         if flags != 0 && self.exception(flags) && flags & SW_IE != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, bytes, out as u128);
+        true
     }
 
     fn store_bcd(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
@@ -581,7 +593,14 @@ impl I8087 {
         Self::wr(mem, a, 10, out);
     }
 
-    fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
+    fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        if v.is_nan() {
+            // the 8087 stores a NaN as it is: fraction cut to size, no exception
+            let b = v.to_bits();
+            let frac = (b as u64) << 1 >> (64 - 23);
+            Self::wr(mem, a, 4, (b >> 79) << 31 | ((1u128 << 8) - 1) << 23 | frac as u128);
+            return true;
+        }
         let r: StatusAnd<Single> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
         if r.status.contains(Status::UNDERFLOW) {
@@ -589,12 +608,20 @@ impl I8087 {
             self.penalty += 49;
         }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, 4, r.value.to_bits());
+        true
     }
 
-    fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
+    fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        if v.is_nan() {
+            // the 8087 stores a NaN as it is: fraction cut to size, no exception
+            let b = v.to_bits();
+            let frac = (b as u64) << 1 >> (64 - 52);
+            Self::wr(mem, a, 8, (b >> 79) << 63 | ((1u128 << 11) - 1) << 52 | frac as u128);
+            return true;
+        }
         let r: StatusAnd<Double> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
         if r.status.contains(Status::UNDERFLOW) {
@@ -602,9 +629,10 @@ impl I8087 {
             self.penalty += 49;
         }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, 8, r.value.to_bits());
+        true
     }
 
     /// Check ST(i) is not empty; on underflow raise invalid and return None (masked: indefinite).
@@ -715,17 +743,23 @@ impl I8087 {
             1 => match reg {
                 0 => {
                     let d = Self::rd(mem, a, 4);
-                    match denormal_bits(d, 23, 0x3F81) {
+                    if d & 0x7F_FFFF != 0 && (d >> 23) & 0xFF == 0 {
+                        self.denormal_load();
+                    }
+                    match denormal_bits(d, 23, 0x3F81).or(nan_bits(d, 23, 8)) {
+                        _ if self.push_blocked => self.push_blocked = false,
                         Some(bits) => self.push_bits(bits),
                         None => self.push(Self::load_real32(mem, a)),
                     }
                     (43, 2)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_real32(mem, a, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_real32(mem, a, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 87 } else { 89 }, 2)
@@ -759,23 +793,36 @@ impl I8087 {
                     (56, 2)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 4, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_int(mem, a, 4, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 88 } else { 90 }, 2)
                 }
                 5 => {
-                    self.push_bits(Self::rd(mem, a, 10));
+                    let d = Self::rd(mem, a, 10);
+                    if d as u64 != 0 && (d >> 64) & 0x7FFF == 0 {
+                        self.denormal_load();
+                    }
+                    if self.push_blocked {
+                        self.push_blocked = false;
+                    }
+                    else {
+                        self.push_bits(d);
+                    }
                     (57, 5)
                 }
                 7 => {
-                    if self.src(0).is_some() {
-                        Self::wr(mem, a, 10, self.st_raw(0));
+                    // an empty register stores the indefinite; nothing is stored or
+                    // popped when invalid is unmasked
+                    if let Some(v) = self.src(0) {
+                        Self::wr(mem, a, 10, if self.empty(0) { v.to_bits() } else { self.st_raw(0) });
+                        self.pop();
                     }
-                    self.pop();
                     (55, 5)
                 }
                 _ => {
@@ -786,17 +833,23 @@ impl I8087 {
             5 => match reg {
                 0 => {
                     let d = Self::rd(mem, a, 8);
-                    match denormal_bits(d, 52, 0x3C01) {
+                    if d & 0xF_FFFF_FFFF_FFFF != 0 && (d >> 52) & 0x7FF == 0 {
+                        self.denormal_load();
+                    }
+                    match denormal_bits(d, 52, 0x3C01).or(nan_bits(d, 52, 11)) {
+                        _ if self.push_blocked => self.push_blocked = false,
                         Some(bits) => self.push_bits(bits),
                         None => self.push(Self::load_real64(mem, a)),
                     }
                     (39, 4)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_real64(mem, a, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_real64(mem, a, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 85 } else { 87 }, 4)
@@ -838,10 +891,11 @@ impl I8087 {
                     (42, 1)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 2, v);
-                    }
-                    if reg == 3 {
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_int(mem, a, 2, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 72 } else { 74 }, 1)
@@ -865,9 +919,10 @@ impl I8087 {
                 }
                 7 => {
                     if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 8, v);
+                        if self.store_int(mem, a, 8, v) {
+                            self.pop();
+                        }
                     }
-                    self.pop();
                     (100, 4)
                 }
                 _ => {
@@ -1473,6 +1528,15 @@ fn unnormal_value(bits: u128) -> Option<F80> {
 
 /// A denormal single (`frac` 23) or double (`frac` 52) as the 8087 loads it: an unnormal with
 /// the format's smallest exponent (`exp80`), the fraction at the top of the significand.
+/// A short or long real NaN as the 8087 loads it: the fraction as it is, no exception.
+fn nan_bits(d: u128, frac_bits: u32, exp_bits: u32) -> Option<u128> {
+    let frac = d & ((1u128 << frac_bits) - 1);
+    if (d >> frac_bits) & ((1 << exp_bits) - 1) != (1 << exp_bits) - 1 || frac == 0 {
+        return None;
+    }
+    Some((d >> (frac_bits + exp_bits)) << 79 | 0x7FFF << 64 | 1 << 63 | frac << (63 - frac_bits))
+}
+
 fn denormal_bits(d: u128, frac: u32, exp80: u128) -> Option<u128> {
     let f = d & ((1u128 << frac) - 1);
     let e = (d >> frac) & if frac == 52 { 0x7FF } else { 0xFF };

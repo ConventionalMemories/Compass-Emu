@@ -157,7 +157,24 @@ pub struct Micro8087 {
     /// the register a push is about to overwrite was not empty
     overflow: bool,
     stack: Vec<u16>,
+    /// memory operand as the bus interface delivers it: 16-bit words, lowest first
+    bus_in: [u16; 5],
+    bus_next: usize,
+    bus_out: Vec<u16>,
+    /// what the exponent converter was last given, and how it reads it
+    conv_fmt: Fmt,
     pub trace: bool,
+}
+
+/// How the exponent converter treats the value it holds.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Fmt {
+    /// a 15-bit temporary real exponent
+    X80,
+    /// an exponent field read from a short (8-bit) or long (11-bit) real
+    Load(u16, u16),
+    /// a temporary real exponent (plus one) on its way to a short or long real
+    Store(u16, u16),
 }
 
 impl Micro8087 {
@@ -190,6 +207,10 @@ impl Micro8087 {
             exc: 0,
             overflow: false,
             stack: Vec::new(),
+            bus_in: [0; 5],
+            bus_next: 0,
+            bus_out: Vec::new(),
+            conv_fmt: Fmt::X80,
             trace: false,
         }
     }
@@ -242,13 +263,107 @@ impl Micro8087 {
     fn reg_form(&self) -> bool {
         self.modrm() >= 0xC0
     }
+    /// Size of the memory operand in 16-bit words (0 for register forms).
+    fn operand_words(&self) -> u8 {
+        if self.reg_form() {
+            return 0;
+        }
+        let reg = (self.modrm() >> 3) & 7;
+        match self.op() {
+            0 | 1 | 2 => 2,
+            3 => if reg >= 4 { 5 } else { 2 },
+            4 | 5 => 4,
+            6 => 1,
+            _ => match reg {
+                4 | 6 => 5,
+                5 | 7 => 4,
+                _ => 1,
+            },
+        }
+    }
+
+    /// Short or long real memory operand: (exponent bias difference, largest field value).
+    fn real_format(&self) -> Option<(u16, u16)> {
+        if self.reg_form() {
+            return None;
+        }
+        match self.op() {
+            0 | 1 => Some((0x3FFF - 0x7F, 0xFF)),
+            4 | 5 => Some((0x3FFF - 0x3FF, 0x7FF)),
+            _ => None,
+        }
+    }
+
+    /// Exponent field a store would write, and the first field value that overflows.
+    fn conv_field(&self) -> i32 {
+        match self.conv_fmt {
+            Fmt::Store(diff, _) => self.exp_conv as i16 as i32 - diff as i32,
+            _ => self.exp_conv as i32,
+        }
+    }
+    fn conv_max(&self) -> i32 {
+        match self.conv_fmt {
+            Fmt::Store(_, max) | Fmt::Load(_, max) => max as i32,
+            Fmt::X80 => 0x7FFF,
+        }
+    }
+
+    /// The instruction stores to memory (FST/FSTP/FIST/FISTP/FBSTP).
+    fn store_class(&self) -> bool {
+        !self.reg_form() && !self.arith_class() && matches!((self.modrm() >> 3) & 7, 2 | 3 | 6 | 7)
+    }
+
+    /// Bits of precision results are rounded to: the destination's for a store, else the
+    /// control word's.
+    fn precision_bits(&self) -> u32 {
+        if self.store_class() {
+            return match self.op() {
+                1 => 24,
+                5 => 53,
+                _ => 64,
+            };
+        }
+        match (self.cw >> 8) & 3 {
+            0 => 24,
+            2 => 53,
+            _ => 64,
+        }
+    }
+
     fn arith_class(&self) -> bool {
         self.op() & 1 == 0
     }
 
-    /// Runs one instruction (`op` = low three bits of the first byte) from decode to the
-    /// end-of-instruction word. Register forms only for now.
+    /// Register form of an instruction.
     pub fn exec(&mut self, op: u8, modrm: u8) -> Result<Run, Fault> {
+        self.exec_mem(op, modrm, None)
+    }
+
+    /// Runs one instruction (`op` = low three bits of the first byte) from decode to the
+    /// end-of-instruction word. `mem` is the memory operand's address for memory forms.
+    pub fn exec_mem(&mut self, op: u8, modrm: u8, mem: Option<(&mut dyn crate::FpuMem, u32)>) -> Result<Run, Fault> {
+        let mut mem = mem;
+        self.bus_next = 0;
+        self.bus_out.clear();
+        self.conv_fmt = Fmt::X80;
+        if let Some((m, a)) = mem.as_mut() {
+            for i in 0..5 {
+                let lo = m.read_u8(*a + 2 * i as u32) as u16;
+                let hi = m.read_u8(*a + 2 * i as u32 + 1) as u16;
+                self.bus_in[i] = lo | hi << 8;
+            }
+        }
+        let r = self.run(op, modrm);
+        if let Some((m, a)) = mem.as_mut() {
+            for (i, w) in self.bus_out.iter().enumerate() {
+                m.write_u8(*a + 2 * i as u32, *w as u8);
+                m.write_u8(*a + 2 * i as u32 + 1, (*w >> 8) as u8);
+            }
+        }
+        r
+    }
+
+    fn run(&mut self, op: u8, modrm: u8) -> Result<Run, Fault> {
         let start = entry(op & 7, modrm).ok_or(Fault { addr: 0, word: 0, what: format!("no microcode entry for {:02X} {:02X}", 0xD8 | op, modrm) })?;
         self.opcode = ((op as u16 & 7) << 8) | modrm as u16;
         self.top0 = self.top;
@@ -319,7 +434,7 @@ impl Micro8087 {
                     if p {
                         v.wide |= 1u128 << (63 + RND);
                     }
-                    self.write(dst, v).map_err(&fault)?;
+                    self.write(dst, v, src).map_err(&fault)?;
                 }
                 Op::Imm { imm, dst, .. } => match dst {
                     0x15 => self.counter = imm,
@@ -390,6 +505,11 @@ impl Micro8087 {
                 }
             }
             0x03 => self.op() & 2 == 0,
+            // operand sizes: 04 two words (short real, short integer), 0E one word, 05 not
+            // five words, 07 temporary real, 08 packed decimal
+            0x04 => self.operand_words() == 2,
+            0x05 => self.operand_words() != 5,
+            0x0E => self.operand_words() == 1,
             0x07 => self.op() == 3 && !self.reg_form() && (reg == 5 || reg == 7),
             0x0A => self.modrm() & 1 != 0,
             0x0B => self.modrm() & 8 != 0,
@@ -398,13 +518,25 @@ impl Micro8087 {
             0x0F => (self.arith_class() && (reg == 2 || reg == 3)) || self.opcode == 0x1E4,
             0x08 => self.op() == 7 && !self.reg_form() && (reg == 4 || reg == 6),
             // the exponent converter's view of the last value sent to it: a normal
-            // exponent, bit 0, small enough for a shift count (bits 6-14 clear), overflow
-            0x18 => (1..=0x7FFE).contains(&self.exp_conv),
+            // exponent, bit 0, small enough for a shift count (bits 6-14 clear), all ones,
+            // overflow
+            0x18 => match self.conv_fmt {
+                Fmt::X80 => (1..=0x7FFE).contains(&self.exp_conv),
+                Fmt::Load(_, max) => (1..max).contains(&self.exp_conv),
+                Fmt::Store(..) => (1..self.conv_max()).contains(&self.conv_field()),
+            },
             0x19 => self.exp_conv & 1 != 0,
             0x1A => self.exp_conv & 0x7FC0 == 0,
-            0x1C => self.cw & 0x300 == 0x300 || self.cw & 0x300 == 0x100,
+            0x1B => match self.conv_fmt {
+                Fmt::Load(_, max) => self.exp_conv == max,
+                _ => self.exp_conv & 0x7FFF == 0x7FFF,
+            },
+            0x1C => self.precision_bits() == 64,
             0x1D => self.round_up(),
-            0x1F => (0x7FFF..0xC000).contains(&self.exp_conv),
+            0x1F => match self.conv_fmt {
+                Fmt::Store(..) => self.conv_field() >= self.conv_max() && self.exp_conv < 0xC000,
+                _ => (0x7FFF..0xC000).contains(&self.exp_conv),
+            },
             0x1E => self.sum & FRAC_MASK == 0,
             0x20 => a.tag == TAG_ZERO,
             0x21 => a.tag == TAG_SPECIAL,
@@ -541,7 +673,7 @@ impl Micro8087 {
             0x680A => self.breg = (self.breg & !7) | self.round_h as u128,
             0x6904 => self.sum = (self.sum & !7) | self.round_h as u128,
             // precision control to the shift count: 23 or 52 (one less than the bits kept)
-            0x6880 => self.shift_count = if self.cw & 0x300 == 0 { 23 } else { 52 },
+            0x6880 => self.shift_count = if self.precision_bits() == 24 { 23 } else { 52 },
             _ => return Err("control word".into()),
         }
         Ok(())
@@ -553,12 +685,15 @@ impl Micro8087 {
             0xE802 => self.counter = self.counter.wrapping_add(1) & 0x3F,
             0xE800 => self.counter = self.counter.wrapping_sub(1) & 0x3F,
             0xF408 => self.flag = false,
+            // seen before the last fraction word of a memory operand is read; nothing the
+            // model needs (inferred)
+            0xF40E => {}
             // the exponent converter's verdict becomes the overflow or underflow exception
             0xE402 => {
-                if (0x7FFF..0xC000).contains(&self.exp_conv) {
+                if self.cond(0x1F)? {
                     self.exc |= SW_OE
                 }
-                else if !(1..=0x7FFE).contains(&self.exp_conv) {
+                else if !self.cond(0x18)? {
                     self.exc |= SW_UE
                 }
             }
@@ -570,6 +705,17 @@ impl Micro8087 {
     /// Exponent constants (number selected by an immediate transfer). Inferred from use.
     fn exp_const(&self) -> Result<u16, String> {
         Ok(match self.const_sel {
+            // exponent of an integer left-aligned in the fraction, by operand size
+            0x0 => match self.operand_words() {
+                1 => 0x400E,
+                2 => 0x401E,
+                _ => 0x403E,
+            },
+            // exponent of the smallest normal short or long real
+            0x2 => match self.real_format() {
+                Some((diff, _)) => diff + 1,
+                None => return Err("exponent constant 2 without a real operand".into()),
+            },
             0x5 => 0x3FFF,
             0x6 => 0x403E,
             0x7 => 0x3FF0,
@@ -596,6 +742,18 @@ impl Micro8087 {
     fn read(&mut self, src: u8) -> Result<Val, String> {
         Ok(match src {
             0x00 => Val::exp(self.shift_count),
+            // the exponent converter's output
+            0x01 => Val::exp(match self.conv_fmt {
+                Fmt::X80 => self.exp_conv,
+                Fmt::Load(diff, _) => self.exp_conv.max(1) + diff,
+                Fmt::Store(diff, _) => self.exp_conv.wrapping_sub(diff),
+            }),
+            // the next word of the memory operand
+            0x04 => {
+                let w = *self.bus_in.get(self.bus_next).ok_or("more than five operand words read")?;
+                self.bus_next += 1;
+                Val::frac(w as u64)
+            }
             0x02 => Val::reg(self.st[self.top as usize]),
             0x03 => Val::reg(self.st[self.sti()]),
             0x05 => Val::exp(self.exp_const()?),
@@ -612,7 +770,9 @@ impl Micro8087 {
             0x11 => Val::wide(self.sum & (FRAC_MASK | 7)),
             0x12 => Val::wide(self.sum & (FRAC_MASK | BIT64)),
             0x13 => Val::wide(self.sum),
-            0x14 | 0x1C => Val::wide(self.shl),
+            0x14 => Val::wide(self.shl),
+            // the shifter's output merged with the sum register
+            0x1C => Val::wide(self.shl | (self.sum & FRAC_MASK)),
             0x15 => Val::wide(self.shr),
             0x16 => Val::frac(self.quotient),
             0x17 => Val::wide(self.tmpc),
@@ -624,10 +784,21 @@ impl Micro8087 {
         })
     }
 
-    fn write(&mut self, dst: u8, v: Val) -> Result<(), String> {
+    fn write(&mut self, dst: u8, v: Val, src: u8) -> Result<(), String> {
         match dst {
             0x00 => self.shift_count = v.exp,
-            0x01 => self.exp_conv = v.exp,
+            0x01 => {
+                self.exp_conv = v.exp;
+                // the converter knows the operand format: a field cut out of a short or
+                // long real on a load, a result exponent on its way to one on a store
+                self.conv_fmt = match self.real_format() {
+                    Some((diff, max)) if src == 0x15 => Fmt::Load(diff, max),
+                    Some((diff, max)) if src == 0x10 && self.store_class() => Fmt::Store(diff, max),
+                    _ => Fmt::X80,
+                };
+            }
+            // a word for the bus interface to write
+            0x04 => self.bus_out.push(v.exp),
             0x02 | 0x03 => {
                 if !v.whole {
                     return Err("part of a register to the stack".into());

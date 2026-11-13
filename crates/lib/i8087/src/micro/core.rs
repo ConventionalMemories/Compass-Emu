@@ -1062,6 +1062,8 @@ impl Micro8087 {
             0x0E => self.b().frac = v.f64(),
             0x10 => self.sum = (self.sum & 7) | (v.wide & FRAC_MASK),
             0x11 => self.sum = v.wide & (FRAC_MASK | 7),
+            // (the quotient register comes in above the rounding bits its loop left)
+            0x12 if src == 0x16 => self.sum = (self.sum & 7) | (v.wide & (FRAC_MASK | BIT64)),
             0x12 => self.sum = v.wide & (FRAC_MASK | BIT64),
             0x13 => self.sum = v.wide,
             0x15 => {
@@ -1120,9 +1122,13 @@ impl Micro8087 {
         match self.loop_mode {
             LOOP_MUL => {
                 let n = 2 * steps;
-                let p = (self.quotient as u64 as u128) * b;
+                // the B register enters with its three rounding bits (they matter in the
+                // transcendentals, where it holds a 67-bit intermediate)
+                let q = self.quotient as u64 as u128;
+                let low = q * (self.breg & 7);
+                let p = q * b + (low >> 3);
                 let lost = p & ((1u128 << n) - 1);
-                let grs = ((lost >> (n - 2)) << 1) | (lost & ((1u128 << (n - 2)) - 1) != 0) as u128;
+                let grs = ((lost >> (n - 2)) << 1) | (lost & ((1u128 << (n - 2)) - 1) != 0 || low & 7 != 0) as u128;
                 self.sum = ((p >> n) << RND | grs) & WIDE_MASK;
             }
             LOOP_DIV => {
@@ -1144,6 +1150,7 @@ impl Micro8087 {
                 let den = self.breg & (FRAC_MASK | 7);
                 let num = self.sum;
                 let mut q = 0u128;
+                let mut rem = 0u128;
                 if den != 0 {
                     q = num / den;
                     let mut r = num % den;
@@ -1155,8 +1162,26 @@ impl Micro8087 {
                             q |= 1;
                         }
                     }
+                    rem = r;
                 }
                 self.quotient = q & 0x1_FFFF_FFFF_FFFF_FFFF;
+                // the words after the loop: two more quotient bits and whether anything is
+                // left, as rounding bits in the sum register (as FDIV's loop does; the
+                // real 1101's FPATAN, F2XM1 and FYL2XP1 results want them)
+                let mut grs = 0;
+                if den != 0 {
+                    let mut r = rem;
+                    for _ in 0..2 {
+                        r <<= 1;
+                        grs <<= 1;
+                        if r >= den {
+                            r -= den;
+                            grs |= 1;
+                        }
+                    }
+                    grs = grs << 1 | (r != 0) as u128;
+                }
+                self.sum = grs;
             }
             LOOP_SQRT => {
                 // the radicand (1 <= x < 4, 63 fraction bits) is in the quotient register;

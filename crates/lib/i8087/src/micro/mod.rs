@@ -6,6 +6,8 @@ pub mod core;
 pub mod decode;
 pub mod rom;
 #[cfg(test)]
+mod real;
+#[cfg(test)]
 mod tests;
 
 pub use self::core::{Fault, Micro8087, Reg};

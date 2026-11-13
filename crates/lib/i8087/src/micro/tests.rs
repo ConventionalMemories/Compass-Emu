@@ -954,3 +954,48 @@ fn timing_samples() {
         }
     }
 }
+
+/// The transcendentals against a real 1101, bit for bit.
+fn real_chip(rom: &MicroRom, modrm: u8, rows: &[(&[u128], u8, f32)]) -> (usize, i128) {
+    let mut m = Micro8087::new(rom.clone());
+    let (mut exact, mut worst) = (0, 0i128);
+    for (v, status, _) in rows {
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        let (x, want) = if v.len() == 3 { (v[1], v[2]) } else { (v[0], v[1]) };
+        m.st[0] = Reg::from_bits(x);
+        if v.len() == 3 {
+            m.st[1] = Reg::from_bits(v[0]);
+        }
+        let res = m.exec(1, modrm);
+        assert!(res.is_ok(), "{:?}", res);
+        let got = m.st[m.top as usize].bits();
+        let d = (got as i128 - want as i128).abs();
+        if d == 0 && m.sw as u8 & 0x3F == *status {
+            exact += 1;
+        }
+        else {
+            eprintln!("D9 {:02X} {:020X?}: {:020X} sw {:02X}, real {:020X} sw {:02X} ({} units)", modrm, &v[..v.len() - 1], got, m.sw as u8, want, status, got as i128 - want as i128);
+        }
+        worst = worst.max(d);
+    }
+    eprintln!("D9 {:02X}: {} of {} exact, worst {} units", modrm, exact, rows.len(), worst);
+    (exact, worst)
+}
+
+#[test]
+fn transcendentals_real_chip() {
+    let Some(rom) = MicroRom::find() else { return };
+    use super::real::*;
+    let rows = |t: &'static [([u128; 3], u8, f32)]| -> Vec<(&'static [u128], u8, f32)> { t.iter().map(|(v, s, c)| (&v[..], *s, *c)).collect() };
+    let rows2 = |t: &'static [([u128; 2], u8, f32)]| -> Vec<(&'static [u128], u8, f32)> { t.iter().map(|(v, s, c)| (&v[..], *s, *c)).collect() };
+    // (exact results expected at least, of how many)
+    for (modrm, t, least) in [(0xF3u8, rows(&FPATAN), 34), (0xF0, rows2(&F2XM1), 31), (0xF1, rows(&FYL2X), 15), (0xF9, rows(&FYL2XP1), 24), (0xFA, rows2(&FSQRT), 12)] {
+        let (exact, worst) = real_chip(&rom, modrm, &t);
+        assert!(exact >= least && worst <= 1, "D9 {:02X}: {} of {} exact, worst {} units", modrm, exact, t.len(), worst);
+    }
+}

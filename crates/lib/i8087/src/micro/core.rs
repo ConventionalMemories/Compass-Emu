@@ -163,8 +163,13 @@ pub struct Micro8087 {
     bus_out: Vec<u16>,
     /// what the exponent converter was last given, and how it reads it
     conv_fmt: Fmt,
+    /// what the adder's loop hardware is armed for
+    loop_mode: u8,
     pub trace: bool,
 }
+
+const LOOP_MUL: u8 = 1;
+const LOOP_DIV: u8 = 2;
 
 /// How the exponent converter treats the value it holds.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -211,6 +216,7 @@ impl Micro8087 {
             bus_next: 0,
             bus_out: Vec::new(),
             conv_fmt: Fmt::X80,
+            loop_mode: 0,
             trace: false,
         }
     }
@@ -346,6 +352,7 @@ impl Micro8087 {
         self.bus_next = 0;
         self.bus_out.clear();
         self.conv_fmt = Fmt::X80;
+        self.loop_mode = 0;
         if let Some((m, a)) = mem.as_mut() {
             for i in 0..5 {
                 let lo = m.read_u8(*a + 2 * i as u32) as u16;
@@ -453,7 +460,11 @@ impl Micro8087 {
                     self.shift_var(v, right, by).map_err(&fault)?;
                 }
                 Op::Adder { src, ijk, round_bits, op, p } => {
-                    if ijk != 0 || p {
+                    if ijk != 0 {
+                        self.hw_loop(ijk, op).map_err(&fault)?;
+                        continue;
+                    }
+                    if p {
                         return Err(fault("adder variant".into()));
                     }
                     let v = self.read(src).map_err(&fault)?;
@@ -555,6 +566,8 @@ impl Micro8087 {
             0x28 => a.sign,
             0x29 => b.frac >> 63 != 0,
             0x2B => a.frac >> 63 != 0,
+            // the low 40 bits of tmpA's fraction are zero: a short multiplier
+            0x2A => a.frac & 0xFF_FFFF_FFFF == 0,
             0x2C => self.cw & 0x1000 != 0,
             // "round up/down": a directed rounding mode that rounds this sign toward zero
             // (down for +, up for -). Inferred: with chop left out, an exact zero difference
@@ -664,6 +677,9 @@ impl Micro8087 {
             0x6088 => self.b().sign = self.ra().sign,
             0x60C8 => self.b().sign = false,
             0x61C8 => self.b().sign = true,
+            // arm the adder's loop hardware: multiply, divide
+            0x6948 => self.loop_mode = LOOP_MUL,
+            0x6A48 => self.loop_mode = LOOP_DIV,
             0x60C0 => self.a().sign = false,
             0x61C0 => self.a().sign = true,
             0x6384 => self.sign_latch = !self.sign_latch,
@@ -696,6 +712,8 @@ impl Micro8087 {
             // seen before the last fraction word of a memory operand is read; nothing the
             // model needs (inferred)
             0xF40E => {}
+            // part of the loop words (see hw_loop)
+            0xF40C | 0xE400 if self.loop_mode != 0 => {}
             // the exponent converter's verdict becomes the overflow or underflow exception
             0xE402 => {
                 if self.cond(0x1F)? {
@@ -857,6 +875,48 @@ impl Micro8087 {
         Ok(())
     }
 
+    /// The adder's loop hardware. A control word arms it (multiply or divide), then an
+    /// adder word with I and J set runs the loop counter down; the adder words that follow
+    /// (final correction and remainder steps) are folded into the result here.
+    ///
+    /// Inferred from the microcode around the loops, not from the circuit: the multiply
+    /// takes two multiplier bits per step (counter + 1 steps) and leaves the product's top
+    /// 64 bits in the sum register with guard, round and sticky; the divide makes one
+    /// quotient bit per step and leaves the same three bits from the remainder.
+    fn hw_loop(&mut self, ijk: u8, _op: u8) -> Result<(), String> {
+        if ijk != 6 {
+            // the words after the loop
+            return if self.loop_mode != 0 { Ok(()) } else { Err("adder variant".into()) };
+        }
+        let steps = self.counter as u32 + 1;
+        self.counter = 0;
+        let b = (self.breg >> RND) as u64 as u128;
+        match self.loop_mode {
+            LOOP_MUL => {
+                let n = 2 * steps;
+                let p = self.quotient as u128 * b;
+                let lost = p & ((1u128 << n) - 1);
+                let grs = ((lost >> (n - 2)) << 1) | (lost & ((1u128 << (n - 2)) - 1) != 0) as u128;
+                self.sum = ((p >> n) << RND | grs) & WIDE_MASK;
+            }
+            LOOP_DIV => {
+                let a = (self.sum >> RND) as u64 as u128;
+                let (q, grs) = if b == 0 {
+                    (u64::MAX as u128, 7)
+                }
+                else {
+                    let num = a << (steps - 1);
+                    let rem = (num % b) << 2;
+                    (num / b, (rem / b) << 1 | (rem % b != 0) as u128)
+                };
+                self.quotient = q as u64;
+                self.sum = grs & 7;
+            }
+            _ => return Err("loop without a mode".into()),
+        }
+        Ok(())
+    }
+
     /// MNO of an adder word: M inverts the B register, N replaces it with zero, O is the
     /// carry in.
     fn adder(&mut self, a: Val, round_bits: bool, op: u8) -> Result<(), String> {
@@ -885,7 +945,7 @@ impl Micro8087 {
             0x14 => c & 0x38,
             0x12 => c & 7,
             0x10 => 63 - c,
-            0x18 if right => 1,
+            0x18 => 1,
             _ => return Err(format!("variable shift mode {:02X}", by)),
         };
         let sticky = by & 1 != 0 && v.wide & 1 != 0;

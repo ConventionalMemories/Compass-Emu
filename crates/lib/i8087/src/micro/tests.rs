@@ -357,3 +357,14 @@ fn load_store_real() {
     check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::All, &CWS);
 }
+
+#[test]
+fn load_store_integer() {
+    let mut ops = mem(0xDF, &[0, 2, 3, 5, 7]); // FILD/FIST/FISTP m16, FILD/FISTP m64
+    ops.extend(mem(0xDB, &[0, 2, 3])); // m32
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Denormal, &ROUNDING);
+    check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}

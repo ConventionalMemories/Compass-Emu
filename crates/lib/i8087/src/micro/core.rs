@@ -143,6 +143,8 @@ pub struct Micro8087 {
     shl: u128,
     shr: u128,
     shift_count: u16,
+    /// rounding bits made by the last complement shift
+    round_h: u8,
     exp_conv: u16,
     counter: u8,
     quotient: u64,
@@ -177,6 +179,7 @@ impl Micro8087 {
             shl: 0,
             shr: 0,
             shift_count: 0,
+            round_h: 0,
             exp_conv: 0,
             counter: 0,
             quotient: 0,
@@ -327,7 +330,13 @@ impl Micro8087 {
                     let v = self.read(src).map_err(&fault)?;
                     self.shift(v, right, count as u32);
                 }
-                Op::ShiftVar { .. } => return Err(fault("variable shift".into())),
+                Op::ShiftVar { src, right, by, p } => {
+                    if p {
+                        return Err(fault("variable shift with P".into()));
+                    }
+                    let v = self.read(src).map_err(&fault)?;
+                    self.shift_var(v, right, by).map_err(&fault)?;
+                }
                 Op::Adder { src, ijk, round_bits, op, p } => {
                     if ijk != 0 || p {
                         return Err(fault("adder variant".into()));
@@ -476,6 +485,18 @@ impl Micro8087 {
             0x61C0 => self.a().sign = true,
             0x6384 => self.sign_latch = !self.sign_latch,
             0x6584 => self.sign_latch = self.ra().sign != self.rb().sign,
+            // leading zero bytes of the sum register to the byte part of the shift count,
+            // then leading zero bits (0-7) to its bit part
+            0x6E80 => {
+                let f = (self.sum >> RND) as u64;
+                self.shift_count = (f.leading_zeros().min(56) & 0x38) as u16;
+            }
+            0x6D80 => {
+                let f = (self.sum >> RND) as u64;
+                self.shift_count = (self.shift_count & 0x38) | (f.leading_zeros().min(7)) as u16;
+            }
+            0x680A => self.breg = (self.breg & !7) | self.round_h as u128,
+            0x6904 => self.sum = (self.sum & !7) | self.round_h as u128,
             _ => return Err("control word".into()),
         }
         Ok(())
@@ -617,6 +638,48 @@ impl Micro8087 {
         let s = x + y + cin;
         self.carry = s & BIT64 != 0;
         self.sum = s & WIDE_MASK;
+        Ok(())
+    }
+
+    /// Shift by the shift count register. The KLMNO field picks what part of the count is
+    /// used: 1x11x whole count, 1x10x its byte part, 1x01x its bit part, 1x00x the
+    /// complement of the count (the left shift that brings back the bits a right shift
+    /// dropped, for the rounding bits); bit O keeps the sticky bit in place.
+    fn shift_var(&mut self, v: Val, right: bool, by: u8) -> Result<(), String> {
+        let n = (self.shift_count & 0x3F) as u32;
+        let sticky = by & 1 != 0;
+        match by & !1 {
+            0x16 | 0x14 | 0x12 => {
+                let n = match by & 6 {
+                    6 => n,
+                    4 => n & 0x38,
+                    _ => n & 7,
+                };
+                if right {
+                    self.shr = (v.wide >> n) & WIDE_MASK;
+                }
+                else {
+                    let mut w = (v.wide << n) & (FRAC_MASK | 7);
+                    if sticky && v.wide & 1 != 0 {
+                        w |= 1;
+                    }
+                    self.shl = w;
+                }
+            }
+            0x10 => {
+                // the tail a right shift by n drops, as guard, round and sticky
+                let f = v.f64();
+                let tail = if n == 0 { 0 } else { f << (64 - n) };
+                self.round_h = ((tail >> 61) as u8 & 6) | ((tail << 2 != 0) as u8) | (v.wide & 7 != 0) as u8;
+                if right {
+                    self.shr = (v.wide >> (63 - n)) & WIDE_MASK;
+                }
+                else {
+                    self.shl = (v.wide << (63 - n)) & (FRAC_MASK | 7);
+                }
+            }
+            _ => return Err(format!("variable shift mode {:02X}", by)),
+        }
         Ok(())
     }
 

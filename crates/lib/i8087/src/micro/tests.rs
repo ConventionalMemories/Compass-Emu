@@ -35,7 +35,9 @@ pub enum Kinds {
     Plain,
     /// also infinities and NaNs
     Special,
-    /// also denormals and unnormals
+    /// also denormals
+    Denormal,
+    /// also unnormals
     All,
 }
 
@@ -44,6 +46,7 @@ fn value(r: &mut Rng, kinds: Kinds) -> Option<u128> {
     let n = match kinds {
         Kinds::Plain => 10,
         Kinds::Special => 13,
+        Kinds::Denormal => 15,
         Kinds::All => 16,
     };
     Some(sign | match r.below(n) {
@@ -61,7 +64,7 @@ fn value(r: &mut Rng, kinds: Kinds) -> Option<u128> {
         11 => (0x7FFFu128 << 64) | (r.next() | 3 << 62) as u128,
         12 => (0x7FFFu128 << 64) | (r.next() | 1 << 63) as u128 | 1,
         13 => (r.next() >> 1) as u128 | 1,
-        14 => (r.next() >> r.below(64)) as u128 | 1,
+        14 => (r.next() >> (1 + r.below(63))) as u128 | 1,
         _ => ((1 + r.below(0x7FFE)) as u128) << 64 | (r.next() >> 1) as u128 | 1,
     })
 }
@@ -139,7 +142,7 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
         for _ in 0..rounds {
             let cw = cws[r.below(cws.len() as u64) as usize];
             let (mut old, mut new) = setup(&rom, &mut r, kinds, cw);
-            let before = describe(&old, &new);
+            let before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
             old.esc(&mut NoMem, 0, first, modrm, None, 0);
             let res = new.exec(first & 7, modrm);
             let ok = res.is_ok() && same(&old, &new);
@@ -179,6 +182,8 @@ fn range(first: u8, from: u8, n: u8) -> Vec<(u8, u8)> {
 }
 
 const MASKED: [u16; 1] = [0x03FF];
+/// all masked (projective, affine), all unmasked, invalid unmasked, denormal unmasked
+const CWS: [u16; 5] = [0x03FF, 0x13FF, 0x0300, 0x03FE, 0x03FD];
 
 #[test]
 fn rom_parses() {
@@ -196,6 +201,7 @@ fn stack_moves() {
     ops.extend(range(0xDD, 0xD0, 16)); // FST, FSTP ST(i)
     ops.extend([(0xD9, 0xD0), (0xD9, 0xF6), (0xD9, 0xF7)]); // FNOP, FDECSTP, FINCSTP
     check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Denormal, &CWS);
 }
 
 #[test]
@@ -203,6 +209,7 @@ fn constants_and_signs() {
     let mut ops = range(0xD9, 0xE8, 7); // FLD1 .. FLDZ
     ops.extend([(0xD9, 0xE0), (0xD9, 0xE1)]); // FCHS, FABS
     check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Denormal, &CWS);
 }
 
 #[test]
@@ -211,4 +218,5 @@ fn examine_and_compare() {
     ops.extend(range(0xD8, 0xD0, 16)); // FCOM, FCOMP
     ops.push((0xDE, 0xD9)); // FCOMPP
     check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Denormal, &CWS);
 }

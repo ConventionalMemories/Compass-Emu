@@ -8,11 +8,24 @@
 //! (CPU clock / count), divided by the 8274's clock mode (x1, x16, x32, x64). Each character
 //! takes start + data + parity + stop bits. Host side: bytes the Compass sends appear in
 //! `tx_out` (with their clock), bytes for the Compass go into `rx_in` and are delivered one
-//! character time apart. Synchronous modes (SDLC for GRiDLink) are not modelled.
+//! character time apart.
+//!
+//! SDLC (GRiDLink, WR4 = 20h): channel A sends and receives whole frames. A frame the
+//! Compass sends is collected byte by byte and appears in `sdlc_out` once the 8274 has
+//! appended the CRC and the closing flag (transmit underrun with the EOM latch reset by
+//! WR0 = C0h). Frames for the Compass go into `sdlc_in` (address, control, data; no CRC);
+//! they are delivered one byte time apart (x1 clock: 8 baud clocks per byte, bit stuffing
+//! not counted), with address search against WR6 (and FFh). The receive FIFO gets the frame
+//! bytes, the two CRC bytes (End of Frame in RR1 shows when the second one is at the top of
+//! the FIFO and stays until Error Reset) and one more byte after them: the GRiDLink driver's
+//! ShortRead waits for that fifth byte of a 4-byte frame before it reads RR1, so the chip
+//! must leave something there (an inference from the driver, not from a data sheet).
+//! Special receive condition interrupts are not generated.
 
 use std::collections::VecDeque;
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Channel {
     pub wr: [u8; 8],
     ptr: usize,
@@ -30,6 +43,16 @@ pub struct Channel {
     pub dcd: bool,
     pub cts: bool,
     last_ext: (bool, bool),
+    /// Receive FIFO status per byte (SDLC): 80h End of Frame.
+    rx_stat: VecDeque<u8>,
+    /// SDLC: bytes of the frame being sent.
+    tx_frame: Vec<u8>,
+    /// SDLC: Tx Underrun/EOM latch (RR0 bit 6); WR0 = C0h resets it.
+    eom_latch: bool,
+    /// SDLC: End of Frame seen (RR1 bit 7) until Error Reset.
+    eof_latch: bool,
+    /// SDLC: the receiver is taking the bytes of a frame (address matched).
+    rx_in_frame: bool,
 }
 
 impl Channel {
@@ -39,6 +62,35 @@ impl Channel {
         self.dcd = dcd;
         self.cts = cts;
         self.last_ext = (dcd, cts);
+        self.eom_latch = true;
+    }
+
+    /// SDLC mode: sync modes (WR4 bits 2-3 = 0) with the SDLC/HDLC format (bits 4-5 = 10).
+    pub fn sdlc(&self) -> bool {
+        self.wr[4] & 0x3C == 0x20
+    }
+
+    fn push_rx(&mut self, b: u8, stat: u8) {
+        if self.rx_fifo.len() >= 4 {
+            // three FIFO bytes plus the one held in the shift register
+            self.rx_overrun = true;
+            return;
+        }
+        self.rx_fifo.push_back(b);
+        self.rx_stat.push_back(stat);
+        let mode = (self.wr[1] >> 3) & 3;
+        if mode == 2 || mode == 3 || (mode == 1 && self.rx_first) {
+            self.rx_int_pending = true;
+            self.rx_first = false;
+        }
+    }
+
+    fn pop_rx(&mut self) -> u8 {
+        let v = self.rx_fifo.pop_front().unwrap_or(0);
+        if self.rx_stat.pop_front().unwrap_or(0) & 0x80 != 0 {
+            self.eof_latch = true;
+        }
+        v
     }
 
     fn data_bits(bits: u8) -> u32 {
@@ -97,6 +149,7 @@ impl Channel {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Serial8274 {
     pub ch: [Channel; 2],
     /// Bytes channel A sent: (CPU clock when the last bit left, byte).
@@ -108,6 +161,17 @@ pub struct Serial8274 {
     pub baud_count: u32,
     int_line: bool,
     pub log: bool,
+    /// SDLC frames channel A sent: (CPU clock when the closing flag ended, address +
+    /// control + data, without CRC).
+    pub sdlc_out: VecDeque<(u64, Vec<u8>)>,
+    /// SDLC frames waiting to be received on channel A (address + control + data).
+    pub sdlc_in: VecDeque<Vec<u8>>,
+    /// SDLC bytes on their way in: (clock, byte, flags 1 = first of frame, 80h = EOF,
+    /// 2 = the byte after the CRC).
+    rx_line: VecDeque<(u64, u8, u8)>,
+    rx_line_free: u64,
+    /// Cable loops channel A's RTS back to CTS (GRiDLink point-to-point cable).
+    pub cts_loop: bool,
 }
 
 impl Default for Serial8274 {
@@ -126,13 +190,19 @@ impl Serial8274 {
             baud_count: 33,
             int_line: false,
             log: false,
+            sdlc_out: VecDeque::new(),
+            sdlc_in: VecDeque::new(),
+            rx_line: VecDeque::new(),
+            rx_line_free: 0,
+            cts_loop: false,
         }
     }
 
     /// CPU clocks per character on channel `c`.
     pub fn char_clocks(&self, c: usize) -> u64 {
         let ch = &self.ch[c];
-        (self.baud_count.max(1) as u64) * ch.clock_mode() * ch.frame_bits() as u64
+        let bits = if ch.sdlc() { 8 } else { ch.frame_bits() as u64 };
+        (self.baud_count.max(1) as u64) * ch.clock_mode() * bits
     }
 
     /// Bits per second on channel A, from the baud timer and clock mode.
@@ -150,6 +220,16 @@ impl Serial8274 {
         }
         if !self.rx_in.is_empty() {
             t = t.min(self.next_rx);
+        }
+        let a = &self.ch[0];
+        if a.sdlc() && a.tx_buf.is_none() && !a.tx_frame.is_empty() {
+            t = t.min(a.tx_shift_until);
+        }
+        if let Some(&(at, _, _)) = self.rx_line.front() {
+            t = t.min(at);
+        }
+        if !self.sdlc_in.is_empty() {
+            t = 0;
         }
         t
     }
@@ -179,17 +259,32 @@ impl Serial8274 {
         for c in 0..2 {
             let cc = self.char_clocks(c);
             let ch = &mut self.ch[c];
+            let sdlc = ch.sdlc();
             // Transmit buffer -> shift register when the shifter is free.
             while ch.tx_buf.is_some() && ch.tx_shift_until.max(ch.tx_buf_time) <= now && ch.tx_enabled() {
+                if sdlc && !ch.tx_frame.is_empty() && ch.tx_buf_time > ch.tx_shift_until {
+                    // the shifter ran dry before this byte came: the frame ended there
+                    let at = ch.tx_shift_until;
+                    Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
+                    continue;
+                }
                 let start = ch.tx_shift_until.max(ch.tx_buf_time);
                 let b = ch.tx_buf.take().unwrap();
                 ch.tx_shift_until = start + cc;
-                if c == 0 {
+                if sdlc {
+                    ch.tx_frame.push(b);
+                }
+                else if c == 0 {
                     self.tx_out.push_back((ch.tx_shift_until, b & ch_mask_tx(ch)));
                 }
                 ch.tx_int_pending = true;
             }
+            if sdlc && ch.tx_buf.is_none() && !ch.tx_frame.is_empty() && ch.tx_shift_until <= now {
+                let at = ch.tx_shift_until;
+                Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
+            }
         }
+        self.advance_sdlc_rx(now);
         // Receive on channel A, one character time apart.
         let cc = self.char_clocks(0);
         while !self.rx_in.is_empty() && self.next_rx <= now {
@@ -199,9 +294,11 @@ impl Serial8274 {
                 if ch.rx_fifo.len() >= 3 {
                     ch.rx_overrun = true;
                     ch.rx_fifo.pop_back();
+                    ch.rx_stat.pop_back();
                 }
                 let m = ch.data_mask();
                 ch.rx_fifo.push_back(b & m);
+                ch.rx_stat.push_back(0);
                 let mode = (ch.wr[1] >> 3) & 3;
                 if mode == 2 || mode == 3 || (mode == 1 && ch.rx_first) {
                     ch.rx_int_pending = true;
@@ -222,7 +319,7 @@ impl Serial8274 {
         let c = reg & 1;
         let v = if reg < 2 {
             let ch = &mut self.ch[c];
-            let v = ch.rx_fifo.pop_front().unwrap_or(0);
+            let v = ch.pop_rx();
             if ch.rx_fifo.is_empty() {
                 ch.rx_int_pending = false;
             }
@@ -247,19 +344,31 @@ impl Serial8274 {
                     if ch.dcd {
                         v |= 0x08;
                     }
-                    if ch.cts {
+                    let cts = if c == 0 && self.cts_loop { ch.rts() } else { ch.cts };
+                    if cts {
                         v |= 0x20;
+                    }
+                    if ch.sdlc() {
+                        if ch.rx_enabled() && !ch.rx_in_frame {
+                            v |= 0x10; // hunt
+                        }
+                        if ch.eom_latch {
+                            v |= 0x40;
+                        }
                     }
                     v
                 }
                 1 => {
                     let ch = &self.ch[c];
                     let mut v = 0u8;
-                    if ch.tx_buf.is_none() && ch.tx_shift_until <= now {
+                    if ch.tx_buf.is_none() && ch.tx_shift_until <= now && ch.tx_frame.is_empty() {
                         v |= 0x01;
                     }
                     if ch.rx_overrun {
                         v |= 0x20;
+                    }
+                    if ch.sdlc() && (ch.eof_latch || ch.rx_stat.front().is_some_and(|s| s & 0x80 != 0)) {
+                        v |= 0x80;
                     }
                     v
                 }
@@ -340,6 +449,10 @@ impl Serial8274 {
         ch.ptr = 0;
         if p == 0 {
             ch.ptr = (v & 7) as usize;
+            if v >> 6 == 3 {
+                // reset Tx Underrun/EOM latch: the CRC goes out at the next underrun
+                ch.eom_latch = false;
+            }
             match (v >> 3) & 7 {
                 2 => {
                     ch.ext_int_pending = false;
@@ -355,6 +468,7 @@ impl Serial8274 {
                 }
                 6 => {
                     ch.rx_overrun = false;
+                    ch.eof_latch = false;
                 }
                 _ => {}
             }
@@ -365,9 +479,101 @@ impl Serial8274 {
             if p == 1 && (v >> 3) & 3 == 1 {
                 ch.rx_first = true;
             }
+            if p == 3 && v & 1 == 0 {
+                // receiver off: a frame coming in is lost from here on
+                ch.rx_in_frame = false;
+            }
         }
         self.update_int();
     }
+}
+
+impl Serial8274 {
+    /// SDLC transmit underrun at clock `at`: with the EOM latch reset and Tx CRC on, the 8274
+    /// sends the CRC and the closing flag (the frame is complete 3 byte times later);
+    /// otherwise the frame is cut off without CRC and no station takes it.
+    fn underrun(ch: &mut Channel, c: usize, at: u64, cc: u64, out: &mut VecDeque<(u64, Vec<u8>)>, log: bool) {
+        let frame = std::mem::take(&mut ch.tx_frame);
+        if !ch.eom_latch && ch.wr[5] & 1 != 0 {
+            ch.eom_latch = true;
+            ch.tx_shift_until = at + 3 * cc;
+            if log {
+                eprintln!("sdlc {} tx frame {:02X?} at {}", if c == 0 { 'A' } else { 'B' }, frame, at);
+            }
+            if c == 0 {
+                out.push_back((ch.tx_shift_until, frame));
+            }
+        }
+        else {
+            ch.eom_latch = true;
+            if log {
+                eprintln!("sdlc tx underrun without CRC: {} bytes dropped", frame.len());
+            }
+        }
+    }
+
+    /// SDLC receive on channel A: frames from `sdlc_in` go onto the line one byte time apart,
+    /// then into the FIFO when the receiver takes them.
+    fn advance_sdlc_rx(&mut self, now: u64) {
+        let cc = self.char_clocks(0);
+        if !self.ch[0].sdlc() {
+            self.sdlc_in.clear();
+            self.rx_line.clear();
+            return;
+        }
+        while let Some(f) = self.sdlc_in.pop_front() {
+            if f.is_empty() {
+                continue;
+            }
+            // opening flag, then the bytes; a gap of one flag between frames
+            let mut t = self.rx_line_free.max(now) + cc;
+            let crc = crc_sdlc(&f);
+            let n = f.len();
+            for (i, &b) in f.iter().chain(crc.to_le_bytes().iter()).enumerate() {
+                t += cc;
+                let st = if i == 0 { 1 } else if i == n + 1 { 0x80 } else { 0 };
+                self.rx_line.push_back((t, b, st));
+            }
+            // the closing flag shifts one more byte into the FIFO
+            t += cc;
+            self.rx_line.push_back((t, 0x7E, 2));
+            self.rx_line_free = t;
+        }
+        while let Some(&(at, b, st)) = self.rx_line.front() {
+            if at > now {
+                break;
+            }
+            self.rx_line.pop_front();
+            let ch = &mut self.ch[0];
+            if st & 1 != 0 {
+                let search = ch.wr[3] & 4 != 0;
+                ch.rx_in_frame = ch.rx_enabled() && (!search || b == ch.wr[6] || b == 0xFF);
+                if self.log {
+                    eprintln!("sdlc A rx frame addr {:02X} at {} {}", b, at, if ch.rx_in_frame { "taken" } else { "ignored" });
+                }
+            }
+            if !ch.rx_in_frame {
+                continue;
+            }
+            ch.push_rx(b, st & 0x80);
+            if st & 2 != 0 {
+                ch.rx_in_frame = false;
+            }
+        }
+    }
+}
+
+/// SDLC frame check sequence (CRC-CCITT, reflected, preset to ones, complemented); sent low
+/// byte first.
+pub fn crc_sdlc(data: &[u8]) -> u16 {
+    let mut crc = 0xFFFFu16;
+    for &b in data {
+        crc ^= b as u16;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x8408 } else { crc >> 1 };
+        }
+    }
+    !crc
 }
 
 fn ch_mask_tx(ch: &Channel) -> u8 {

@@ -163,3 +163,67 @@ fn bubble_seek_times_like_a_real_1101() {
     eprintln!("16 pages {a16:.1} ms, 64 pages {a64:.1} ms, a page {:.3}", (a64 - a16) / 48.0);
     assert!((a16 - 170.7).abs() < 10.0 && (a64 - 515.7).abs() < 25.0);
 }
+
+/// SDLC the way GRiDLink~Device~ drives the 8274: send a short frame by underrun with CRC,
+/// receive a frame with address search, CRC bytes, End of Frame and the extra byte.
+#[test]
+fn serial_sdlc_frames() {
+    use grid_core::serial::crc_sdlc;
+    let mut s = Serial8274::new();
+    s.baud_count = 20; // 250 kbit/s, x1
+    let cc = 20 * 8;
+    let wr = |s: &mut Serial8274, r: u8, v: u8, t: u64| {
+        s.write(2, r, t);
+        s.write(2, v, t);
+    };
+    s.write(2, 0x18, 0); // channel reset
+    wr(&mut s, 4, 0x20, 0);
+    wr(&mut s, 1, 0x0C, 0);
+    wr(&mut s, 6, 0xC0, 0);
+    wr(&mut s, 7, 0x7E, 0);
+    wr(&mut s, 3, 0xDD, 0);
+    wr(&mut s, 5, 0x6B, 0);
+    // transmit: address, reset EOM latch, control, then wait for the latch
+    s.write(0, 0xC0, 100);
+    s.write(2, 0xC0, 110);
+    assert_eq!(s.read(2, 120) & 0x40, 0);
+    s.write(0, 0x73, 200);
+    s.advance(100_000);
+    assert_ne!(s.read(2, 100_000) & 0x40, 0);
+    assert_eq!(s.sdlc_out.len(), 1);
+    assert_eq!(s.sdlc_out[0].1, vec![0xC0, 0x73]);
+    // receive: one frame for another station (ignored), one for us
+    s.sdlc_in.push_back(vec![0x81, 0x11]);
+    s.sdlc_in.push_back(vec![0xC0, 0xBF]);
+    let mut t = 200_000;
+    s.advance(t);
+    let mut got = vec![];
+    let mut eof_at = None;
+    while got.len() < 5 && t < 400_000 {
+        t += 40;
+        s.advance(t);
+        if s.read(2, t) & 1 != 0 {
+            s.write(2, 1, t);
+            if s.read(2, t) & 0x80 != 0 && eof_at.is_none() {
+                eof_at = Some(got.len());
+            }
+            got.push(s.read(0, t));
+        }
+    }
+    let crc = crc_sdlc(&[0xC0, 0xBF]).to_le_bytes();
+    assert_eq!(got, vec![0xC0, 0xBF, crc[0], crc[1], 0x7E]);
+    assert_eq!(eof_at, Some(3), "EOF shows with the second CRC byte at the top");
+    assert!(t < 200_000 + 2 * 6 * cc + 2000);
+    // still latched until Error Reset
+    s.write(2, 1, t);
+    assert_ne!(s.read(2, t) & 0x80, 0);
+    s.write(2, 0x30, t);
+    s.write(2, 1, t);
+    assert_eq!(s.read(2, t) & 0x80, 0);
+    // CTS follows RTS on a point-to-point cable
+    s.cts_loop = true;
+    wr(&mut s, 5, 0x00, t);
+    assert_eq!(s.read(2, t) & 0x20, 0);
+    wr(&mut s, 5, 0x02, t);
+    assert_ne!(s.read(2, t) & 0x20, 0);
+}

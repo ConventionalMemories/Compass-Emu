@@ -422,35 +422,24 @@ impl I8087 {
         }
         // With 24 or 53 bit precision the chip rounds once, from the exact result. Get that
         // by chopping to 64 bits and keeping "inexact" as a sticky lowest bit.
-        let narrow = self.cw & 0x100 == 0;
-        let rnd = if narrow { Round::TowardZero } else { self.round() };
-        let mut r = match op {
+        let apply = |rnd: Round| match op {
             Arith::Add => a.add_r(b, rnd),
             Arith::Sub => a.sub_r(b, rnd),
             Arith::SubR => b.sub_r(a, rnd),
             Arith::Mul => a.mul_r(b, rnd),
             Arith::Div => a.div_r(b, rnd),
-            Arith::DivR => b.div_r(a, rnd),
-            Arith::Com | Arith::Comp => return None,
+            _ => b.div_r(a, rnd),
         };
-        if narrow {
-            let bits = r.value.to_bits();
-            let e = (bits >> 64) & 0x7FFF;
-            if r.status.contains(Status::INEXACT) && e != 0 && e != 0x7FFF {
-                r.value = F80::from_bits(bits | 1);
-            }
-            else if e == 0 || e == 0x7FFF {
-                // zero, denormal, overflow: as before, in the real rounding mode
-                let rnd = self.round();
-                r = match op {
-                    Arith::Add => a.add_r(b, rnd),
-                    Arith::Sub => a.sub_r(b, rnd),
-                    Arith::SubR => b.sub_r(a, rnd),
-                    Arith::Mul => a.mul_r(b, rnd),
-                    Arith::Div => a.div_r(b, rnd),
-                    _ => b.div_r(a, rnd),
-                };
-            }
+        if matches!(op, Arith::Com | Arith::Comp) {
+            return None;
+        }
+        let mut r = apply(self.round());
+        let e = (r.value.to_bits() >> 64) & 0x7FFF;
+        if self.cw & 0x100 == 0 && e != 0 && e != 0x7FFF && !r.status.intersects(Status::OVERFLOW | Status::UNDERFLOW) {
+            let c = apply(Round::TowardZero);
+            let bits = c.value.to_bits();
+            let sticky = c.status.contains(Status::INEXACT) as u128;
+            r = StatusAnd { status: c.status, value: F80::from_bits(bits | sticky) };
         }
         self.result(r)
     }

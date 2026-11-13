@@ -167,12 +167,14 @@ pub struct Micro8087 {
     /// what the adder's loop hardware is armed for
     loop_mode: u8,
     loop_grs: u8,
+    loop_steps: u32,
     pub trace: bool,
 }
 
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
 const LOOP_SQRT: u8 = 3;
+const LOOP_REM: u8 = 4;
 
 /// How the exponent converter treats the value it holds.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -223,6 +225,7 @@ impl Micro8087 {
             conv_fmt: Fmt::X80,
             loop_mode: 0,
             loop_grs: 0,
+            loop_steps: 0,
             trace: false,
         }
     }
@@ -689,6 +692,24 @@ impl Micro8087 {
             0x6948 => self.loop_mode = LOOP_MUL,
             0x6A48 => self.loop_mode = LOOP_DIV,
             0x6C48 => self.loop_mode = LOOP_SQRT,
+            0x6B48 => {
+                self.loop_mode = LOOP_REM;
+                self.loop_steps = 0;
+                self.quotient = 0;
+            }
+            // the low three quotient bits (shifted down into the rounding bits) to C0, C3, C1
+            0x6A06 => {
+                self.sw &= !(SW_C0 | SW_C1 | SW_C3);
+                if self.sum & 4 != 0 {
+                    self.sw |= SW_C0
+                }
+                if self.sum & 2 != 0 {
+                    self.sw |= SW_C3
+                }
+                if self.sum & 1 != 0 {
+                    self.sw |= SW_C1
+                }
+            }
             0x60C0 => self.a().sign = false,
             0x61C0 => self.a().sign = true,
             0x6384 => self.sign_latch = !self.sign_latch,
@@ -776,7 +797,7 @@ impl Micro8087 {
 
     fn read(&mut self, src: u8) -> Result<Val, String> {
         Ok(match src {
-            0x00 => Val::exp(self.shift_count),
+            0x00 => Val::exp(self.shift_count & 0x3F),
             // the exponent converter's output
             0x01 => Val::exp(match self.conv_fmt {
                 // FSQRT's use: the exponent with a second bias, so that half of it is a
@@ -898,6 +919,24 @@ impl Micro8087 {
     /// 64 bits in the sum register with guard, round and sticky; the divide makes one
     /// quotient bit per step and leaves the same three bits from the remainder.
     fn hw_loop(&mut self, ijk: u8, _op: u8) -> Result<(), String> {
+        if self.loop_mode == LOOP_REM {
+            // FPREM: the loop word only sets the number of steps (it is skipped when the
+            // exponents are equal); the subtract word after it finishes the division of
+            // the sum register (shifted left once per step) by the B register
+            if ijk == 6 {
+                self.loop_steps = self.counter as u32 + 1;
+                self.counter = 0;
+            }
+            else if _op == 5 {
+                let a = (self.sum >> RND) as u64 as u128;
+                let b = (self.breg >> RND) as u64 as u128;
+                let n = a << self.loop_steps;
+                let (q, r) = if b == 0 { (0, a) } else { (n / b, n % b) };
+                self.quotient = q as u64 as u128;
+                self.sum = (r << RND) & FRAC_MASK;
+            }
+            return Ok(());
+        }
         if ijk != 6 {
             // the words after the loop
             return if self.loop_mode != 0 { Ok(()) } else { Err("adder variant".into()) };

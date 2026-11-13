@@ -1288,7 +1288,20 @@ impl I8087 {
                 }
                 4 => {
                     // FXTRACT: ST = exponent, push significand
-                    if let Some(x) = self.src(0) {
+                    // The microcode: an empty, infinite, NaN or denormal ST, or no room to
+                    // push, is invalid and pushes the indefinite; zero gives two zeros.
+                    let t = (self.top() + 7) & 7;
+                    let x = self.st(0);
+                    if self.empty(0) || self.tag(t) != TAG_EMPTY || x.is_nan() || x.is_infinite() || x.is_denormal() {
+                        if !self.exception(SW_IE) {
+                            self.set_top(t);
+                            self.set_st(0, indefinite());
+                        }
+                    }
+                    else if x.is_zero() {
+                        self.push(x);
+                    }
+                    else {
                         let e = x.ilogb();
                         let sig = x.scalbn(-e);
                         self.set_st(0, F80::from_i128(e as i128).value);
@@ -1313,35 +1326,8 @@ impl I8087 {
             _ => match i {
                 // reg 7
                 0 => {
-                    // FPREM: partial remainder (chopped quotient)
-                    if let (Some(a), Some(b)) = (self.src(0), self.src(1)) {
-                        let ea = a.ilogb();
-                        let eb = b.ilogb();
-                        self.sw &= !SW_CC;
-                        if ea - eb >= 64 {
-                            // incomplete reduction: reduce by 2^(d-63) steps like the real chip
-                            let shift = ea - eb - 63;
-                            let bs = b.scalbn(shift);
-                            let r = a.c_fmod(bs).value;
-                            self.set_st(0, r);
-                            self.sw |= SW_C2;
-                        }
-                        else {
-                            let q = a.div_r(b, Round::TowardZero).value.round_to_integral(Round::TowardZero).value;
-                            let r = a.c_fmod(b).value;
-                            let qi = q.abs().c_fmod(F80::from_u128(8).value).value.to_i128(8).value;
-                            if qi & 1 != 0 {
-                                self.sw |= SW_C1;
-                            }
-                            if qi & 2 != 0 {
-                                self.sw |= SW_C3;
-                            }
-                            if qi & 4 != 0 {
-                                self.sw |= SW_C0;
-                            }
-                            self.set_st(0, r);
-                        }
-                    }
+                    // FPREM: partial remainder (chopped quotient), as the microcode does it
+                    self.fprem();
                     125
                 }
                 1 => {
@@ -1438,6 +1424,72 @@ impl I8087 {
                 }
             },
         }
+    }
+
+    /// FPREM the microcode's way: a shift-and-subtract loop over the exponent difference
+    /// (at most 63 steps and then C2 = 1), the remainder exact, the low three quotient
+    /// bits to C0, C3, C1.
+    fn fprem(&mut self) {
+        self.sw &= !SW_C2;
+        if self.empty(0) || self.empty(1) {
+            if !self.exception(SW_IE) {
+                self.set_st(0, indefinite());
+                self.sw &= !(SW_C0 | SW_C1 | SW_C3);
+            }
+            return;
+        }
+        let (a, b) = (self.st(0), self.st(1));
+        let (ab, bb) = (a.to_bits(), b.to_bits());
+        let (ea, eb) = (((ab >> 64) & 0x7FFF) as i32, ((bb >> 64) & 0x7FFF) as i32);
+        let (fa, fb) = (ab as u64 as u128, bb as u64 as u128);
+        let mut q = 0u128;
+        let r = if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_zero() {
+            if self.exception(SW_IE) {
+                return;
+            }
+            if a.is_nan() || b.is_nan() {
+                if !b.is_nan() || (a.is_nan() && fa >= fb) { a } else { b }
+            }
+            else {
+                indefinite()
+            }
+        }
+        else if a.is_zero() || b.is_infinite() || ea < eb {
+            a
+        }
+        else {
+            let mut d = ea - eb;
+            if d >= 64 {
+                d = 63;
+                self.sw |= SW_C2;
+            }
+            let n = fa << d;
+            q = n / fb;
+            let rem = (n % fb) as u64;
+            if rem == 0 {
+                F80::from_bits(ab & (1 << 79))
+            }
+            else {
+                let lz = rem.leading_zeros() as i32;
+                let e = ea - d - lz;
+                let one = F80::from_bits((ab & (1 << 79)) | 0x3FFF << 64 | ((rem << lz) as u128));
+                if e <= 0 {
+                    self.exception(SW_UE);
+                }
+                one.scalbn(e - 0x3FFF)
+            }
+        };
+        self.sw &= !(SW_C0 | SW_C1 | SW_C3);
+        if q & 1 != 0 {
+            self.sw |= SW_C1;
+        }
+        if q & 2 != 0 {
+            self.sw |= SW_C3;
+        }
+        if q & 4 != 0 {
+            self.sw |= SW_C0;
+        }
+        self.set_st(0, r);
     }
 
     /// FSCALE with an infinity or NaN in ST or ST(1).

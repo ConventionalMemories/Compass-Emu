@@ -222,6 +222,9 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // 1 <= |ST(1)| < 2^15 (the microcode shifts by a garbage count)
             let st1 = new.st[(new.top as usize + 1) & 7];
             let undefined = (first, modrm) == (0xD9, 0xFD) && st1.tag == TAG_VALID && !(0x3FFF..=0x400D).contains(&st1.exp);
+            // FPREM by zero: the microcode has no check for it and runs the divide loop
+            // with a zero divisor; what the hardware leaves is not known
+            let undefined = undefined || ((first, modrm) == (0xD9, 0xF8) && st1.tag == TAG_ZERO);
             let mut ram = (Ram([0; 16]), Ram([0; 16]));
             let mut mem_denormal = false;
             let res = if modrm < 0xC0 {
@@ -434,6 +437,16 @@ fn square_root() {
 #[test]
 fn round_and_scale() {
     let ops = [(0xD9, 0xFC), (0xD9, 0xFD)]; // FRNDINT, FSCALE
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn extract_and_remainder() {
+    let ops = [(0xD9, 0xF4), (0xD9, 0xF8)]; // FXTRACT, FPREM
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Plain, &ROUNDING);
     check(&ops, Kinds::Special, &ROUNDING);

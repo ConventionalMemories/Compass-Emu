@@ -1374,19 +1374,61 @@ impl I8087 {
                 4 => {
                     // FRNDINT
                     if let Some(x) = self.src(0) {
+                        // (precision control does not apply: the integer keeps all its bits)
                         let r = x.round_to_integral(self.round());
-                        if let Some(v) = self.result(r) {
-                            self.set_st(0, v);
+                        if self.empty(0) {
+                            self.set_st(0, x); // the indefinite; src() raised invalid
+                        }
+                        else if x.is_nan() {
+                            self.exception(SW_IE); // the NaN stays
+                        }
+                        else {
+                            if r.status.contains(Status::INEXACT) {
+                                self.exception(SW_PE);
+                            }
+                            self.set_st(0, r.value);
                         }
                     }
                     45
                 }
                 5 => {
-                    // FSCALE: ST = ST * 2^trunc(ST1)
-                    if let (Some(x), Some(y)) = (self.src(0), self.src(1)) {
-                        let n = y.to_i128_r(32, Round::TowardZero, &mut false).value;
-                        let n = n.clamp(-70000, 70000) as i32;
-                        self.set_st(0, x.scalbn_r(n, self.round()));
+                    // FSCALE: ST = ST * 2^trunc(ST1), the way the microcode goes about it:
+                    // a zero in either register ends it at once, empties are invalid, and
+                    // the exponent is moved without rounding while it stays in range.
+                    let z0 = !self.empty(0) && self.st(0).is_zero();
+                    let z1 = !self.empty(1) && self.st(1).is_zero();
+                    if z0 || z1 {
+                    }
+                    else if self.empty(0) || self.empty(1) {
+                        if !self.exception(SW_IE) {
+                            self.set_st(0, indefinite());
+                        }
+                    }
+                    else {
+                        let (x, y) = (self.st(0), self.st(1));
+                        if x.is_nan() || y.is_nan() || x.is_infinite() || y.is_infinite() {
+                            if let Some(r) = self.scale_special(x, y) {
+                                self.set_st(0, r);
+                            }
+                        }
+                        else {
+                            let n = y.to_i128_r(32, Round::TowardZero, &mut false).value;
+                            let n = n.clamp(-70000, 70000) as i32;
+                            let r = x.scalbn_r(n, self.round());
+                            let e = ((x.to_bits() >> 64) & 0x7FFF) as i32 + n;
+                            let flags = if e >= 0x7FFF {
+                                SW_OE | SW_PE
+                            }
+                            else if e <= 0 {
+                                SW_UE | if r.is_zero() || !r.scalbn(-n).bitwise_eq(x) { SW_PE } else { 0 }
+                            }
+                            else {
+                                0
+                            };
+                            if !(flags != 0 && self.exception(flags) && flags & !SW_PE & !self.cw & 0x3F != 0) {
+                                self.set_st(0, r);
+                            }
+                        }
                     }
                     35
                 }
@@ -1396,6 +1438,22 @@ impl I8087 {
                 }
             },
         }
+    }
+
+    /// FSCALE with an infinity or NaN in ST or ST(1).
+    fn scale_special(&mut self, x: F80, y: F80) -> Option<F80> {
+        if x.is_nan() || y.is_nan() {
+            if self.exception(SW_IE) {
+                return None;
+            }
+            let fx = x.to_bits() as u64;
+            let fy = y.to_bits() as u64;
+            return Some(if !y.is_nan() || (x.is_nan() && fx >= fy) { x } else { y });
+        }
+        if y.is_infinite() {
+            return if self.exception(SW_IE) { None } else { Some(indefinite()) };
+        }
+        Some(x)
     }
 
     /// FSQRT as the microcode does it: bit by bit, correctly rounded once (rounding and

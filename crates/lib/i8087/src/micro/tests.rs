@@ -197,7 +197,7 @@ fn describe(old: &I8087, new: &Micro8087) -> String {
 fn same(old: &I8087, new: &Micro8087, first: u8, modrm: u8) -> bool {
     // rounding writes C1 in the microcode (the instruction-level core leaves it alone)
     let store = first & 1 == 1 && modrm < 0xC0 && modrm & 0x10 != 0;
-    let m = if (first & 1 == 0 && modrm & 0x30 != 0x10) || store || (first, modrm) == (0xD9, 0xFA) { 0x7D7F } else { 0x7F7F };
+    let m = if (first & 1 == 0 && modrm & 0x30 != 0x10) || store || (first == 0xD9 && modrm >= 0xF0) { 0x7D7F } else { 0x7F7F };
     if old.sw & m != new.status_word() & m || old.tw != new.tag_word() {
         return false;
     }
@@ -218,6 +218,10 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             let cw = cws[r.below(cws.len() as u64) as usize];
             let (mut old, mut new) = setup(&rom, &mut r, kinds, cw);
             let mut before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
+            // FSCALE: the 8087 leaves the result undefined unless ST(1) is zero or
+            // 1 <= |ST(1)| < 2^15 (the microcode shifts by a garbage count)
+            let st1 = new.st[(new.top as usize + 1) & 7];
+            let undefined = (first, modrm) == (0xD9, 0xFD) && st1.tag == TAG_VALID && !(0x3FFF..=0x400D).contains(&st1.exp);
             let mut ram = (Ram([0; 16]), Ram([0; 16]));
             let mut mem_denormal = false;
             let res = if modrm < 0xC0 {
@@ -253,7 +257,7 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // bits first, then again as a denormal (one unit off now and then).
             let muldiv = first & 1 == 0 && matches!((modrm >> 3) & 7, 1 | 6 | 7);
             let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && (cw & 0x0100 == 0 || muldiv)) || flags & !cw & (SW_OE | SW_UE) != 0;
-            let ok = res.is_ok() && (kinds == Kinds::All || open || mem_denormal || (same(&old, &new, first, modrm) && ram.0 == ram.1));
+            let ok = res.is_ok() && (kinds == Kinds::All || open || mem_denormal || undefined || (same(&old, &new, first, modrm) && ram.0 == ram.1));
             if !ok {
                 fails += 1;
                 if shown < 2 {
@@ -421,6 +425,16 @@ fn square_root() {
     let ops = [(0xD9, 0xFA)];
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn round_and_scale() {
+    let ops = [(0xD9, 0xFC), (0xD9, 0xFD)]; // FRNDINT, FSCALE
+    check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Plain, &ROUNDING);
     check(&ops, Kinds::Special, &ROUNDING);
     check(&ops, Kinds::Special, &CWS);

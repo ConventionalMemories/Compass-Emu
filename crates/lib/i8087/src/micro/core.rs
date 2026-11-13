@@ -183,6 +183,8 @@ enum Fmt {
     Load(u16, u16),
     /// a temporary real exponent (plus one) on its way to a short or long real
     Store(u16, u16),
+    /// a temporary's sign and exponent as one 16-bit value
+    Raw,
 }
 
 impl Micro8087 {
@@ -314,7 +316,7 @@ impl Micro8087 {
     fn conv_max(&self) -> i32 {
         match self.conv_fmt {
             Fmt::Store(_, max) | Fmt::Load(_, max) => max as i32,
-            Fmt::X80 => 0x7FFF,
+            Fmt::X80 | Fmt::Raw => 0x7FFF,
         }
     }
 
@@ -537,6 +539,7 @@ impl Micro8087 {
             // overflow
             0x18 => match self.conv_fmt {
                 Fmt::X80 => (1..=0x7FFE).contains(&self.exp_conv),
+                Fmt::Raw => (1..=0x7FFE).contains(&(self.exp_conv & 0x7FFF)),
                 Fmt::Load(_, max) => (1..max).contains(&self.exp_conv),
                 Fmt::Store(..) => (1..self.conv_max()).contains(&self.conv_field()),
             },
@@ -550,6 +553,7 @@ impl Micro8087 {
             0x1D => self.round_up(),
             0x1F => match self.conv_fmt {
                 Fmt::Store(..) => self.conv_field() >= self.conv_max() && self.exp_conv < 0xC000,
+                Fmt::Raw => self.exp_conv & 0x8000 != 0,
                 _ => (0x7FFF..0xC000).contains(&self.exp_conv),
             },
             0x1E => self.sum & FRAC_MASK == 0,
@@ -778,6 +782,7 @@ impl Micro8087 {
                 // FSQRT's use: the exponent with a second bias, so that half of it is a
                 // biased exponent again (inferred)
                 Fmt::X80 => self.exp_conv.wrapping_add(0x4000),
+                Fmt::Raw => self.exp_conv,
                 Fmt::Load(diff, _) => self.exp_conv.max(1) + diff,
                 Fmt::Store(diff, _) => self.exp_conv.wrapping_sub(diff),
             }),
@@ -827,6 +832,8 @@ impl Micro8087 {
                 self.conv_fmt = match self.real_format() {
                     Some((diff, max)) if src == 0x15 => Fmt::Load(diff, max),
                     Some((diff, max)) if src == 0x10 && self.store_class() => Fmt::Store(diff, max),
+                    // sign and exponent together: the sign is what overflow reports
+                    _ if src == 0x09 || src == 0x0D => Fmt::Raw,
                     _ => Fmt::X80,
                 };
             }

@@ -21,6 +21,7 @@ use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
 use rustc_apfloat::ieee::Quad;
 
 mod trans;
+pub mod micro;
 pub mod fptan;
 
 fn to_q(x: F80) -> Quad {
@@ -400,7 +401,8 @@ impl I8087 {
     }
 
     fn compare(&mut self, a: F80, b: F80) {
-        self.sw &= !SW_CC;
+        // C1 is left alone (the compare microcode only writes C3, C2 and C0)
+        self.sw &= !(SW_C0 | SW_C2 | SW_C3);
         if a.is_nan() || b.is_nan() {
             self.sw |= SW_C0 | SW_C2 | SW_C3;
             self.exception(SW_IE);
@@ -990,14 +992,18 @@ impl I8087 {
             }
             4 => match i {
                 0 => {
+                    // an empty ST gives the indefinite NaN as it is (the microcode stores
+                    // it without touching the sign)
+                    let e = self.empty(0);
                     if let Some(v) = self.src(0) {
-                        self.set_st(0, -v);
+                        self.set_st(0, if e { v } else { -v });
                     }
                     15
                 }
                 1 => {
+                    let e = self.empty(0);
                     if let Some(v) = self.src(0) {
-                        self.set_st(0, v.abs());
+                        self.set_st(0, if e { v } else { v.abs() });
                     }
                     14
                 }

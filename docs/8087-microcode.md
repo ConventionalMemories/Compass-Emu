@@ -44,11 +44,14 @@ stream of 16-bit words):
 | FADD/FSUB/FSUBR/FCOM/FCOMP with m32, m64, m16int, m32int | as the register forms |
 | FMUL, FDIV, FDIVR (register and memory forms) | as FADD |
 | FSQRT | same, plus denormals |
+| FRNDINT, FSCALE, FXTRACT, FPREM | zeros, normals, infinities, NaNs, empties; all rounding modes; masked and unmasked |
+| FBLD, FBSTP | 0 to 18 digit numbers; zeros, normals, denormals, empties |
 
-The multiply, divide and square-root loops are hardware inside the adder that the microcode
+The multiply, divide, square-root and remainder loops are hardware inside the adder that the microcode
 only starts (a control word arms it, an adder word runs the loop counter down). Their inner
 steps are not documented, so the model computes what the loop leaves behind (product,
-quotient or root with guard, round and sticky bits) rather than each step.
+quotient or root with guard, round and sticky bits; remainder and quotient) rather than
+each step.
 
 Unnormal operands run to the end of the microcode but have no reference to compare with.
 
@@ -73,6 +76,13 @@ Run the comparison with `I8087_MICROCODE=/path/8087mc.txt cargo test -p i8087 mi
 - A store that raises an unmasked exception writes nothing and pops nothing; FSTP m80 of an
   empty register stores the indefinite NaN.
 - FIST/FISTP of a denormal is invalid.
+- FRNDINT ignores precision control. FSCALE moves the exponent without rounding, does
+  nothing when either register is zero, and is invalid for an infinite scale.
+- FXTRACT of zero gives two zeros; of an infinity, NaN or denormal it is invalid.
+- FPREM: exact remainder from a shift-and-subtract loop of at most 63 steps (then C2 = 1),
+  quotient bits to C0, C3, C1 in every case.
+- FBSTP adds one half and chops (no rounding control, never "inexact"): an exact half goes
+  toward zero. FBLD keeps the sign of minus zero.
 - FSQRT is computed bit by bit and rounded once (rounding and precision control); a
   denormal or (in projective mode) infinite operand is invalid.
 
@@ -94,11 +104,15 @@ The microcode reading and the old core differ here, and only a real chip can say
    as a denormal (double rounding, one unit off now and then).
 7. A denormal short or long real as a memory operand of FADD/FSUB/FMUL/FDIV stays an
    unnormal, and so does the result.
-8. FPTAN: does the CORDIC path start at exponent -16 (Shirriff's reading of the constant)
+8. FSCALE with 0 < |ST(1)| < 1 or |ST(1)| >= 2^15 (Intel: undefined): the microcode shifts
+   by a truncated count.
+9. FPREM by zero: the microcode has no test for it and runs the loop with a zero divisor.
+10. FBSTP of a NaN, infinity or too large a number: which bytes are under the FFFF?
+11. FPTAN: does the CORDIC path start at exponent -16 (Shirriff's reading of the constant)
    or -15 (the earlier fit to the 1101 dumps)?
 
 ## Not there yet
 
-FPREM, FRNDINT, FSCALE, FXTRACT, the transcendentals, BCD (FBLD/FBSTP), the environment
+The transcendentals (FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1), the environment
 instructions (FLDCW, FSTENV, FSAVE...), clocks per micro-instruction, and the switch that
 lets the emulator run on this core.

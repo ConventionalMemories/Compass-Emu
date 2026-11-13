@@ -41,6 +41,15 @@ fn operand(r: &mut Rng, first: u8, modrm: u8, kinds: Kinds) -> Ram {
             };
             (10, v)
         }
+        (7, 4) | (7, 6) => {
+            // packed decimal: 18 digits and a sign byte
+            let digits = [0, 1, 3, 18, 18][r.below(5) as usize];
+            let mut v = 0u128;
+            for d in 0..digits {
+                v |= (r.below(10) as u128) << (4 * d);
+            }
+            (10, v | (r.below(2) as u128) << 79)
+        }
         (0, _) | (1, _) | (4, _) | (5, _) => {
             let (ebits, fbits) = if first & 4 == 0 { (8, 23) } else { (11, 52) };
             let emax = (1u128 << ebits) - 1;
@@ -260,6 +269,9 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // bits first, then again as a denormal (one unit off now and then).
             let muldiv = first & 1 == 0 && matches!((modrm >> 3) & 7, 1 | 6 | 7);
             let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && (cw & 0x0100 == 0 || muldiv)) || flags & !cw & (SW_OE | SW_UE) != 0;
+            // FBSTP of something that is no 18-digit number: the microcode writes whatever
+            // is left in the sum register under the FFFF of the indefinite
+            let undefined = undefined || ((first, modrm & 0xF8) == (0xDF, 0x30) && flags & SW_IE != 0);
             let ok = res.is_ok() && (kinds == Kinds::All || open || mem_denormal || undefined || (same(&old, &new, first, modrm) && ram.0 == ram.1));
             if !ok {
                 fails += 1;
@@ -451,5 +463,14 @@ fn extract_and_remainder() {
     check(&ops, Kinds::Plain, &ROUNDING);
     check(&ops, Kinds::Special, &ROUNDING);
     check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn packed_decimal() {
+    let ops = mem(0xDF, &[4, 6]); // FBLD, FBSTP
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::All, &CWS);
 }

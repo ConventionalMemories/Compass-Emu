@@ -540,10 +540,9 @@ impl I8087 {
         for d in (0..18).rev() {
             v = v * 10 + ((raw >> (d * 4)) & 0xF) as i128;
         }
-        if raw >> 79 & 1 != 0 {
-            v = -v;
-        }
-        F80::from_i128(v).value
+        let r = F80::from_i128(v).value;
+        // (minus zero keeps its sign)
+        if raw >> 79 & 1 != 0 { -r } else { r }
     }
 
     fn store_int(&mut self, mem: &mut dyn FpuMem, a: u32, bytes: usize, v: F80) -> bool {
@@ -566,26 +565,39 @@ impl I8087 {
         true
     }
 
-    fn store_bcd(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
-        let r = v.to_i128_r(64, self.round(), &mut false);
-        let n = r.value;
-        if r.status.contains(Status::INVALID_OP) || v.is_nan() || n.unsigned_abs() >= 1_000_000_000_000_000_000 {
+    /// FBSTP's conversion, step for step as the microcode does it: add one half (with
+    /// the sign), divide by 10^18 keeping 64 quotient bits (chopped), and take 18 digits
+    /// out of that fraction. Rounding control plays no part, nothing is "inexact", an exact half
+    /// goes toward zero, and a fraction just above one half can too.
+    /// Returns false when nothing was stored (unmasked invalid).
+    fn store_bcd(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        const TEN18: u128 = 0xDE0B_6B3A_7640_0000; // 10^18 * 2^4, exponent 403Ah
+        let sign = v.to_bits() & (1 << 79);
+        if v.is_zero() {
+            Self::wr(mem, a, 10, sign);
+            return true;
+        }
+        let half = F80::from_bits(sign | 0x3FFE_8000_0000_0000_0000);
+        let tb = v.add_r(half, Round::TowardZero).value.to_bits();
+        let (e, f) = (((tb >> 64) & 0x7FFF) as i32, tb as u64 as u128);
+        // the quotient's fraction (normalized) and exponent
+        let (q, qe) = if f >= TEN18 { ((f << 63) / TEN18, e - 0x403A + 0x3FFF) } else { ((f << 64) / TEN18, e - 0x403A + 0x3FFE) };
+        if v.is_nan() || v.is_infinite() || v.is_denormal() || qe >= 0x3FFF {
             if self.exception(SW_IE) {
-                return;
+                return false;
             }
             Self::wr(mem, a, 10, 0xFFFF_C000_0000_0000_0000);
-            return;
+            return true;
         }
-        let mut m = n.unsigned_abs();
+        let frac = q >> (0x3FFF - qe - 1);
+        let mut m = (frac * 1_000_000_000_000_000_000) >> 64;
         let mut out: u128 = 0;
         for d in 0..18 {
-            out |= ((m % 10) as u128) << (d * 4);
+            out |= (m % 10) << (d * 4);
             m /= 10;
         }
-        if n < 0 || v.is_negative() {
-            out |= 1 << 79;
-        }
-        Self::wr(mem, a, 10, out);
+        Self::wr(mem, a, 10, out | sign);
+        true
     }
 
     fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
@@ -919,9 +931,10 @@ impl I8087 {
                 }
                 6 => {
                     if let Some(v) = self.src(0) {
-                        self.store_bcd(mem, a, v);
+                        if self.store_bcd(mem, a, v) {
+                            self.pop();
+                        }
                     }
-                    self.pop();
                     (530, 5)
                 }
                 7 => {

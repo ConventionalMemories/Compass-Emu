@@ -81,7 +81,29 @@ impl std::fmt::Display for Fault {
 pub struct Run {
     /// micro-instructions executed
     pub steps: u32,
+    /// the same by kind (see the K_ constants), then steps of the hardware loops and words
+    /// on the bus
+    pub kinds: [u32; KINDS],
 }
+
+pub const KINDS: usize = 16;
+pub const K_MOVE: usize = 0;
+pub const K_IMM: usize = 1;
+pub const K_SHIFT: usize = 2;
+pub const K_SHIFT_VAR: usize = 3;
+pub const K_ADD: usize = 4;
+pub const K_CONTROL: usize = 5;
+pub const K_JUMP: usize = 6;
+pub const K_NO_JUMP: usize = 7;
+pub const K_CALL: usize = 8;
+pub const K_RETURN: usize = 9;
+pub const K_OTHER: usize = 10;
+pub const K_MUL_STEP: usize = 11;
+pub const K_DIV_STEP: usize = 12;
+pub const K_SQRT_STEP: usize = 13;
+pub const K_READ: usize = 14;
+pub const K_WRITE: usize = 15;
+pub const KIND_NAMES: [&str; KINDS] = ["move", "immediate", "shift", "variable shift", "add", "control", "jump taken", "jump not taken", "call", "return", "other", "multiply step", "divide step", "root step", "word read", "word written"];
 
 // Positions in the 68-bit adder / sum register value: three rounding bits (guard, round,
 // sticky) below the 64-bit fraction, and one bit above it.
@@ -158,7 +180,7 @@ pub struct Micro8087 {
     flag: bool,
     const_sel: u8,
     /// exception flip-flops (status word bit positions), copied to the status word at the end
-    exc: u16,
+    pub(crate) exc: u16,
     /// the register a push is about to overwrite was not empty
     overflow: bool,
     stack: Vec<u16>,
@@ -174,6 +196,7 @@ pub struct Micro8087 {
     loop_steps: u32,
     pub trace: bool,
     round_next: bool,
+    kinds: [u32; KINDS],
     alt_const: bool,
     pub log: [u128; 16],
     pub log_shift: u32,
@@ -282,6 +305,7 @@ impl Micro8087 {
             loop_steps: 0,
             trace: false,
             round_next: false,
+            kinds: [0; KINDS],
             alt_const: false,
             log: LOG,
             log_shift: 0,
@@ -451,6 +475,7 @@ impl Micro8087 {
         self.stack.clear();
         let mut pc = start;
         let mut run = Run::default();
+        self.kinds = [0; KINDS];
         loop {
             let w = self.rom.0[pc as usize];
             let here = pc;
@@ -464,6 +489,25 @@ impl Micro8087 {
                 eprintln!("#{:04} {:04X} {:?}", here, w, o);
             }
             let fault = |what: String| Fault { addr: here, word: w, what };
+            let before = pc;
+            let kind = match o {
+                Op::Move { .. } => K_MOVE,
+                Op::Imm { .. } => K_IMM,
+                Op::Shift { .. } => K_SHIFT,
+                Op::ShiftVar { .. } => K_SHIFT_VAR,
+                Op::Adder { .. } => K_ADD,
+                Op::Control(_) => K_CONTROL,
+                Op::Jump { .. } => K_NO_JUMP,
+                Op::FarJump { .. } | Op::Call { .. } | Op::Return { .. } => K_NO_JUMP,
+                _ => K_OTHER,
+            };
+            self.kinds[kind] += 1;
+            let taken = match o {
+                Op::Jump { .. } => K_JUMP,
+                Op::FarJump { .. } | Op::Call { .. } => K_CALL,
+                Op::Return { .. } => K_RETURN,
+                _ => KINDS,
+            };
             match o {
                 Op::End { .. } => break,
                 Op::Nop => {}
@@ -545,9 +589,14 @@ impl Micro8087 {
                     self.adder(v, round_bits, op).map_err(&fault)?;
                 }
             }
+            if taken != KINDS && pc != before {
+                self.kinds[K_NO_JUMP] -= 1;
+                self.kinds[taken] += 1;
+            }
         }
         // end of instruction: the exception flip-flops go to the status word
         self.sw |= self.exc;
+        run.kinds = self.kinds;
         Ok(run)
     }
 
@@ -910,6 +959,7 @@ impl Micro8087 {
             0x04 => {
                 let w = *self.bus_in.get(self.bus_next).ok_or("more than five operand words read")?;
                 self.bus_next += 1;
+                self.kinds[K_READ] += 1;
                 Val::frac(w as u64)
             }
             0x02 => Val::reg(self.st[self.top as usize]),
@@ -968,7 +1018,10 @@ impl Micro8087 {
                 };
             }
             // a word for the bus interface to write
-            0x04 => self.bus_out.push(v.exp),
+            0x04 => {
+                self.bus_out.push(v.exp);
+                self.kinds[K_WRITE] += 1;
+            }
             0x02 | 0x03 => {
                 if !v.whole {
                     return Err("part of a register to the stack".into());
@@ -1039,6 +1092,7 @@ impl Micro8087 {
             // the sum register (shifted left once per step) by the B register
             if ijk == 6 {
                 self.loop_steps = self.counter as u32 + 1;
+                self.kinds[K_DIV_STEP] += self.loop_steps;
                 self.counter = 0;
             }
             else if _op == 5 {
@@ -1056,6 +1110,11 @@ impl Micro8087 {
             return if self.loop_mode != 0 { Ok(()) } else { Err("adder variant".into()) };
         }
         let steps = self.counter as u32 + 1;
+        self.kinds[match self.loop_mode {
+            LOOP_MUL => K_MUL_STEP,
+            LOOP_SQRT => K_SQRT_STEP,
+            _ => K_DIV_STEP,
+        }] += steps;
         self.counter = 0;
         let b = (self.breg >> RND) as u64 as u128;
         match self.loop_mode {

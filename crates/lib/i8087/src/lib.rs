@@ -105,6 +105,30 @@ pub struct I8087 {
     /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
     /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
+    /// The microcode core, when the emulator runs on it (see `use_microcode`). It keeps no
+    /// state of its own between instructions.
+    #[serde(skip)]
+    micro: Option<Box<micro::Micro8087>>,
+    /// Instructions the microcode core ran, and those it gave up on (the instruction-level
+    /// core ran them instead).
+    #[serde(skip)]
+    pub micro_runs: u64,
+    #[serde(skip)]
+    pub micro_faults: u64,
+    /// The last instruction on the microcode core: its busy clocks by the tables, and what
+    /// the microcode did.
+    #[serde(skip)]
+    pub micro_last: Option<(u32, micro::core::Run)>,
+}
+
+/// Memory that passes reads through and drops writes: for a dry run.
+struct DryMem<'a>(&'a mut dyn FpuMem);
+
+impl FpuMem for DryMem<'_> {
+    fn read_u8(&mut self, addr: u32) -> u8 {
+        self.0.read_u8(addr)
+    }
+    fn write_u8(&mut self, _addr: u32, _v: u8) {}
 }
 
 /// Arithmetic operation selected by the ModR/M reg field of D8/DA/DC/DE.
@@ -159,6 +183,10 @@ impl I8087 {
             penalty: 0,
             push_blocked: false,
             wait_min: 0,
+            micro: None,
+            micro_runs: 0,
+            micro_faults: 0,
+            micro_last: None,
         };
         f.finit();
         f
@@ -683,6 +711,84 @@ impl I8087 {
         self.irq = self.sw & SW_IR != 0 && self.cw & 0x80 == 0;
     }
 
+    /// Run the instructions that have microcode on the microcode core from now on. The
+    /// control instructions (FLDCW, FSTENV, FINIT...) are hardwired in the chip, not in its
+    /// microcode ROM, and stay with the instruction-level core, as do FSAVE and FRSTOR.
+    pub fn use_microcode(&mut self, rom: micro::MicroRom) {
+        self.micro = Some(Box::new(micro::Micro8087::new(rom)));
+    }
+
+    pub fn microcode(&self) -> bool {
+        self.micro.is_some()
+    }
+
+    /// One instruction on the microcode core. The busy time still comes from the
+    /// instruction-level core's tables: it runs the instruction first, with its writes to
+    /// memory dropped, and its results are thrown away.
+    fn esc_micro(&mut self, mem: &mut dyn FpuMem, op: u8, modrm: u8, ea: Option<u32>) -> (u32, u32) {
+        let reg = (modrm >> 3) & 7;
+        let rm = (modrm & 7) as usize;
+        let saved = (self.st, self.raw, self.cw, self.sw, self.tw, self.irq, self.push_blocked, self.penalty, self.stats.unknown);
+        let timing = match ea {
+            Some(a) => self.esc_mem(&mut DryMem(mem), op, reg, a),
+            None => self.esc_reg(op, reg, rm),
+        };
+        let penalty = self.penalty;
+        (self.st, self.raw, self.cw, self.sw, self.tw, self.irq, self.push_blocked, self.penalty, self.stats.unknown) = saved;
+        let mut m = self.micro.take().unwrap();
+        for p in 0..8 {
+            let mut r = micro::Reg::from_bits(self.raw[p].unwrap_or_else(|| self.st[p].to_bits()));
+            if self.tag(p) == TAG_EMPTY {
+                r.tag = micro::core::TAG_EMPTY;
+            }
+            m.st[p] = r;
+        }
+        m.top = self.top() as u8;
+        m.cw = self.cw;
+        m.sw = self.sw & !(0x3800 | SW_IR | 0x8000);
+        let res = match ea {
+            Some(a) => m.exec_mem(op, modrm, Some((mem, a))),
+            None => m.exec(op, modrm),
+        };
+        self.micro_last = res.as_ref().ok().map(|r| (timing.0, *r));
+        if res.is_err() {
+            // a micro-instruction the model does not know: the instruction-level core does it
+            self.micro = Some(m);
+            self.micro_faults += 1;
+            return match ea {
+                Some(a) => self.esc_mem(mem, op, reg, a),
+                None => self.esc_reg(op, reg, rm),
+            };
+        }
+        self.micro_runs += 1;
+        for p in 0..8 {
+            let bits = m.st[p].bits();
+            match unnormal_value(bits) {
+                Some(v) => {
+                    self.st[p] = v;
+                    self.raw[p] = Some(bits);
+                }
+                None => {
+                    self.st[p] = F80::from_bits(bits);
+                    self.raw[p] = None;
+                }
+            }
+        }
+        self.tw = m.tag_word();
+        self.sw = (self.sw & (SW_IR | 0x8000)) | (m.sw & !(0x3800 | SW_IR | 0x8000));
+        self.set_top(m.top as usize);
+        if m.exc & !self.cw & 0x3F != 0 {
+            self.sw |= SW_IR;
+            if self.cw & 0x80 == 0 {
+                self.irq = true;
+            }
+        }
+        self.push_blocked = false;
+        self.penalty = penalty;
+        self.micro = Some(m);
+        timing
+    }
+
     /// Execute an ESC instruction. `opcode` is D8-DF, `modrm` the ModR/M byte, `ea` the linear
     /// address of the memory operand (None for register forms), `ip` the linear address of the
     /// instruction, `now` the CPU clock. Returns the extra CPU clocks the 8087's own memory
@@ -692,9 +798,14 @@ impl I8087 {
         let reg = (modrm >> 3) & 7;
         let rm = (modrm & 7) as usize;
         let op = opcode & 7;
-        let (clocks, words) = match ea {
-            Some(a) => self.esc_mem(mem, op, reg, a),
-            None => self.esc_reg(op, reg, rm),
+        let (clocks, words) = if self.micro.is_some() && micro::has_entry(op, modrm) {
+            self.esc_micro(mem, op, modrm, ea)
+        }
+        else {
+            match ea {
+                Some(a) => self.esc_mem(mem, op, reg, a),
+                None => self.esc_reg(op, reg, rm),
+            }
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
         if !(op == 1 && ea.is_some() && reg >= 4) && !(op == 3 && ea.is_none() && reg == 4) {

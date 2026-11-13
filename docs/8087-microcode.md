@@ -1,10 +1,28 @@
-# 8087 at microcode level (work in progress)
+# 8087 at microcode level
 
 `crates/lib/i8087/src/micro` is a second 8087 core that runs the chip's own microcode ROM
 (1648 words of 16 bits) on a model of its datapath: tmpA/tmpB/tmpC, the adder with its B
 register and sum register, the shifter, the rounding bits, the micro-stack. It is built
-beside the instruction-level core in `lib.rs` and checked against it; the emulator does not
-use it yet.
+beside the instruction-level core in `lib.rs` and checked against it. The emulator runs on
+it when asked to (see below); by default it uses the instruction-level core.
+
+## Running the emulator on the microcode
+
+Set the environment variable `FPU_CORE=micro` and supply the ROM (next section). The
+emulator prints "8087: running on the microcode ROM" when it found it. From then on every
+instruction that has a routine in the ROM runs there. Three things stay with the
+instruction-level core:
+
+- The control instructions (FINIT, FCLEX, FENI, FDISI, FLDCW, FSTCW, FSTSW, FSTENV,
+  FLDENV). The chip does these in hardwired logic; the ROM has no routines for them.
+- FSAVE and FRSTOR. The ROM holds only their loops over the eight registers (entries 675
+  and 695), the environment part is hardwired.
+- The time each instruction takes. The busy time still comes from the instruction-level
+  core's tables (see "Timing" below).
+
+If the microcode core meets a micro-instruction the model does not know, that instruction
+is done by the instruction-level core instead (`I8087::micro_faults` counts them; none are
+known).
 
 ## The ROM is not included
 
@@ -127,7 +145,32 @@ The microcode reading and the old core differ here, and only a real chip can say
     constants log2(1 + 2^-n) * 2^(n+66) are computed like the arctangents, and control word
     6E44 (F2XM1, before the denominator's subtraction) is a no-op in the model.
 
+## Timing
+
+Not modelled yet: the switch keeps the instruction-level core's clock tables. A first look
+says the microcode can carry the timing. `timing_samples` (an ignored test) prints, for
+ordinary operands of every instruction, the table's clocks next to the number of
+micro-instructions of each kind that ran; a least-squares fit of one cost per kind gives
+
+| Kind | Clocks |
+| --- | --- |
+| register transfer | 0.6 |
+| shift | 1.5 |
+| add or subtract | 1.9 |
+| jump (taken or not) | 2.1 |
+| call / return | 1.2 / 1.9 |
+| one step of the multiply loop | 1.2 |
+| one step of the divide or square root loop | 2.0 |
+| word read / written on the bus | 2.3 / 3.8 |
+| fixed, per instruction | 3.2 |
+
+and reproduces the tables within 7.5 % rms over about 100 instruction forms (FPREM left out: its time depends on the operands more than its table entry says). For
+FPTAN, FPATAN and F2XM1, whose table times were fitted to a real 1101 input by input, the
+microcode count follows the measured time with a correlation of 0.99 to 1.00. The costs
+themselves are not physical yet (a transfer cannot take 0.6 clocks): the fit wants real
+measurements per instruction, not the tables, before it replaces them.
+
 ## Not there yet
 
-The environment instructions (FLDCW, FSTENV, FSAVE...), clocks per micro-instruction, and the switch that
-lets the emulator run on this core.
+FSAVE's and FRSTOR's register loops (the rest of both is hardwired), and clocks per
+micro-instruction (see "Timing").

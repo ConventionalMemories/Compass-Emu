@@ -733,3 +733,224 @@ fn logarithm() {
     }, &|x, y| crate::trans::mul_q(y, crate::trans::log2_1p(x)));
     assert!(worst <= 5, "FYL2XP1: worst error {} units", worst);
 }
+
+/// The emulator's switch: a stream of ordinary instructions through `I8087::esc` gives the
+/// same registers, status and memory with the microcode core as without it.
+#[test]
+fn emulator_switch() {
+    let Some(rom) = MicroRom::find() else { return };
+    let mut old = crate::I8087::new();
+    let mut new = crate::I8087::new();
+    new.use_microcode(rom);
+    let (mut ram_old, mut ram_new) = (Ram([0; 16]), Ram([0; 16]));
+    let mut r = Rng(0x8087_0C0D);
+    // (opcode, modrm, memory operand): loads, arithmetic, stores, control
+    let ops: [(u8, u8, bool); 29] = [
+        (0xDF, 0x06, true),  // FILD m16
+        (0xDB, 0x06, true),  // FILD m32
+        (0xD9, 0xE8, false), // FLD1
+        (0xD9, 0xEB, false), // FLDPI
+        (0xD9, 0xC1, false), // FLD ST(1)
+        (0xD8, 0xC1, false), // FADD ST, ST(1)
+        (0xD8, 0xE2, false), // FSUB ST, ST(2)
+        (0xD8, 0xC9, false), // FMUL ST, ST(1)
+        (0xDE, 0xC1, false), // FADDP
+        (0xDE, 0xC9, false), // FMULP
+        (0xDA, 0x06, true),  // FIADD m32
+        (0xDE, 0x0E, true),  // FIMUL m16
+        (0xD9, 0xE1, false), // FABS
+        (0xD9, 0xFA, false), // FSQRT
+        (0xD9, 0xE0, false), // FCHS
+        (0xD9, 0xC9, false), // FXCH
+        (0xD9, 0xFC, false), // FRNDINT
+        (0xD8, 0xD1, false), // FCOM
+        (0xD9, 0xE4, false), // FTST
+        (0xDD, 0x16, true),  // FST m64
+        (0xD9, 0x1E, true),  // FSTP m32
+        (0xDB, 0x3E, true),  // FSTP m80
+        (0xDD, 0x06, true),  // FLD m64
+        (0xDB, 0x2E, true),  // FLD m80
+        (0xDD, 0xD8, false), // FSTP ST(0)
+        (0xDD, 0x3E, true),  // FSTSW (hardwired)
+        (0xD9, 0x3E, true),  // FSTCW (hardwired)
+        (0xD9, 0xF6, false), // FDECSTP
+        (0xDD, 0x36, true),  // FSAVE (hardwired; too long for this memory, wraps the same way)
+    ];
+    let mut resets = 0;
+    for i in 0..30000u32 {
+        // keep a few registers in use, and a few free
+        let depth = (0..8).filter(|k| new.st_bits(*k).is_some()).count();
+        let (opcode, modrm, mem) = match depth {
+            0..=2 => ops[r.below(4) as usize],
+            6..=8 => (0xDD, 0xD8, false),
+            _ => ops[r.below(ops.len() as u64 - (i % 50 != 0) as u64) as usize],
+        };
+        if mem && (modrm >> 3) & 7 == 0 && opcode != 0xDD {
+            // a small integer to load
+            let v = r.below(2000) as u16;
+            ram_old.0 = [0; 16];
+            ram_old.0[0] = v as u8;
+            ram_old.0[1] = (v >> 8) as u8;
+            ram_new.0 = ram_old.0;
+        }
+        let ea = mem.then_some(0);
+        // a real load reads what the matching store just wrote, not leftovers
+        let before = match (opcode, modrm) {
+            (0xDD, 0x06) => Some((0xDD, 0x16)),
+            (0xDB, 0x2E) => Some((0xDB, 0x3E)),
+            _ => None,
+        };
+        if let Some((o, m)) = before {
+            old.esc(&mut ram_old, 0, o, m, ea, 0);
+            new.esc(&mut ram_new, 0, o, m, ea, 0);
+        }
+        old.esc(&mut ram_old, 0, opcode, modrm, ea, 0);
+        new.esc(&mut ram_new, 0, opcode, modrm, ea, 0);
+        let what = format!("step {} {:02X} {:02X}", i, opcode, modrm);
+        // NaNs and infinities (from empty registers, mostly) are the other tests' business:
+        // start again
+        let special = |f: &crate::I8087| (0..8).any(|k| f.st_bits(k).is_some_and(|b| (b >> 64) & 0x7FFF == 0x7FFF));
+        if special(&old) || special(&new) {
+            old.esc(&mut ram_old, 0, 0xDB, 0xE3, None, 0);
+            new.esc(&mut ram_new, 0, 0xDB, 0xE3, None, 0);
+            ram_new.0 = ram_old.0;
+            resets += 1;
+            continue;
+        }
+        // C1 after rounding is the microcode's own (the old core leaves it alone)
+        old.sw = (old.sw & !0x0200) | (new.sw & 0x0200);
+        assert_eq!(old.sw, new.sw, "{} status", what);
+        assert_eq!(old.tw, new.tw, "{} tags", what);
+        assert_eq!(ram_old.0, ram_new.0, "{} memory", what);
+        for k in 0..8 {
+            assert_eq!(old.st_bits(k).map(|b| format!("{:020X}", b)), new.st_bits(k).map(|b| format!("{:020X}", b)), "{} ST({})", what, k);
+        }
+    }
+    eprintln!("{} instructions on the microcode core, {} restarts", new.micro_runs, resets);
+    assert_eq!(new.micro_faults, 0);
+    assert!(new.micro_runs > 25000 && resets < 1000);
+}
+
+/// Data for the timing fit: for ordinary operands, the busy clocks of the instruction-level
+/// core's tables (fitted to data sheets and to a real 1101) next to what the microcode did.
+/// I8087_MICROCODE=... cargo test -p i8087 timing_samples -- --ignored --nocapture
+#[test]
+#[ignore]
+fn timing_samples() {
+    let Some(rom) = MicroRom::find() else { return };
+    let mut r = Rng(0x7131_1980);
+    // (opcode, modrm, kind of ST(0)/ST(1) preparation)
+    let mut list: Vec<(u8, u8, u8)> = Vec::new();
+    for reg in 0..8u8 {
+        for op in [0xD8u8, 0xDA, 0xDC, 0xDE] {
+            list.push((op, reg << 3 | 6, 0)); // memory arithmetic
+        }
+        list.push((0xD8, 0xC1 | reg << 3, 0));
+        list.push((0xDC, 0xC1 | reg << 3, 0));
+        if reg != 2 && reg != 3 {
+            list.push((0xDE, 0xC1 | reg << 3, 0));
+        }
+    }
+    for (op, modrm) in [
+        (0xD9, 0x06), (0xDD, 0x06), (0xDB, 0x2E), (0xDF, 0x06), (0xDB, 0x06), (0xDF, 0x2E), (0xDF, 0x26), // loads
+        (0xD9, 0x16), (0xD9, 0x1E), (0xDD, 0x16), (0xDD, 0x1E), (0xDB, 0x3E), (0xDF, 0x16), (0xDF, 0x1E), (0xDB, 0x16), (0xDB, 0x1E), (0xDF, 0x3E), (0xDF, 0x36), // stores
+        (0xD9, 0xC1), (0xD9, 0xC9), (0xDD, 0xD1), (0xDD, 0xD9), (0xD9, 0xE0), (0xD9, 0xE1), (0xD9, 0xE4), (0xD9, 0xE5),
+        (0xD9, 0xE8), (0xD9, 0xE9), (0xD9, 0xEA), (0xD9, 0xEB), (0xD9, 0xEC), (0xD9, 0xED), (0xD9, 0xEE),
+        (0xD9, 0xF4), (0xD9, 0xF6), (0xD9, 0xF7), (0xD9, 0xFC), (0xDE, 0xD9), (0xDD, 0xC1),
+    ] {
+        list.push((op, modrm, 0));
+    }
+    list.push((0xD9, 0xFA, 1)); // FSQRT
+    list.push((0xD9, 0xF8, 0)); // FPREM
+    list.push((0xD9, 0xFD, 2)); // FSCALE
+    list.push((0xD9, 0xF2, 3)); // FPTAN
+    list.push((0xD9, 0xF3, 4)); // FPATAN
+    list.push((0xD9, 0xF0, 5)); // F2XM1
+    list.push((0xD9, 0xF1, 1)); // FYL2X
+    list.push((0xD9, 0xF9, 6)); // FYL2XP1
+    let real = |r: &mut Rng, lo: i32, span: u64, signed: bool| -> u128 {
+        let e = (0x3FFF + lo + r.below(span) as i32) as u128;
+        let s = if signed { r.below(2) as u128 } else { 0 };
+        s << 79 | e << 64 | (r.next() | 1 << 63) as u128
+    };
+    println!("op,modrm,clocks,steps,{}", KIND_NAMES.join(","));
+    for &(opcode, modrm, prep) in &list {
+        let n = if prep >= 3 { 60 } else { 12 };
+        for _ in 0..n {
+            let mut f = crate::I8087::new();
+            f.use_microcode(rom.clone());
+            // seven registers in use, ST(7) free for a push
+            let mut ram = Ram([0; 16]);
+            for _ in 0..7 {
+                let v = real(&mut r, -6, 12, true);
+                for i in 0..10 {
+                    ram.0[i] = (v >> (8 * i)) as u8;
+                }
+                f.esc(&mut ram, 0, 0xDB, 0x2E, Some(0), 0);
+            }
+            let st0 = match prep {
+                1 => Some(real(&mut r, -6, 12, false)),
+                3 => Some(real(&mut r, -12, 12, false)),
+                4 | 5 => Some(real(&mut r, -14, 13, false)),
+                6 => Some(real(&mut r, -14, 12, true)),
+                _ => None,
+            };
+            if prep == 2 {
+                // FSCALE: a small whole number in ST(1)
+                f.esc(&mut ram, 0, 0xDD, 0xD8, None, 0);
+                f.esc(&mut ram, 0, 0xDD, 0xD8, None, 0);
+                ram.0 = [0; 16];
+                ram.0[0] = 1 + r.below(30) as u8;
+                f.esc(&mut ram, 0, 0xDF, 0x06, Some(0), 0);
+                f.esc(&mut ram, 0, 0xD9, 0xEB, None, 0);
+            }
+            if let Some(v) = st0 {
+                f.esc(&mut ram, 0, 0xDD, 0xD8, None, 0);
+                if prep == 4 {
+                    // FPATAN: 0 < ST(1) < ST(0) = 1
+                    f.esc(&mut ram, 0, 0xDD, 0xD8, None, 0);
+                }
+                for i in 0..10 {
+                    ram.0[i] = (v >> (8 * i)) as u8;
+                }
+                f.esc(&mut ram, 0, 0xDB, 0x2E, Some(0), 0);
+                if prep == 4 {
+                    f.esc(&mut ram, 0, 0xD9, 0xE8, None, 0);
+                }
+            }
+            // an ordinary memory operand
+            let mem = modrm < 0xC0;
+            if mem {
+                let reg = (modrm >> 3) & 7;
+                ram.0 = [0; 16];
+                let v: u128 = match (opcode, reg) {
+                    (0xD8, _) | (0xD9, _) => ((r.next() as f64 / 1e17 - 90.0) as f32).to_bits() as u128,
+                    (0xDC, _) | (0xDD, _) => (r.next() as f64 / 1e17 - 90.0).to_bits() as u128,
+                    (0xDB, 5) | (0xDB, 7) => real(&mut r, -6, 12, true),
+                    (0xDF, 4) | (0xDF, 6) => {
+                        let mut d = 0u128;
+                        for i in 0..(1 + r.below(17)) {
+                            d |= (r.below(10) as u128) << (4 * i);
+                        }
+                        d | 1
+                    }
+                    (0xDF, 5) | (0xDF, 7) => (r.next() >> (1 + r.below(50))) as u128 | 1,
+                    (0xDA, _) | (0xDB, _) => (r.next() >> (33 + r.below(24))) as u128 | 1,
+                    _ => (r.next() >> (49 + r.below(10))) as u128 | 1,
+                };
+                for i in 0..10 {
+                    ram.0[i] = (v >> (8 * i)) as u8;
+                }
+            }
+            f.sw &= !0x3F;
+            f.micro_last = None;
+            f.esc(&mut ram, 0, opcode, modrm, mem.then_some(0), 0);
+            if f.sw & 0x1D != 0 {
+                continue; // an exception: not an ordinary case
+            }
+            if let Some((clocks, run)) = f.micro_last {
+                println!("{:02X},{:02X},{},{},{}", opcode, modrm, clocks, run.steps, run.kinds.map(|k| k.to_string()).join(","));
+            }
+        }
+    }
+}

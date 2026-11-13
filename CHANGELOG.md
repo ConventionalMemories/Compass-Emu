@@ -2,6 +2,17 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## Unreleased
+
+- 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
+  you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
+  arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals
+  run from the chip's microcode ROM instead of the instruction-level model. FPTAN from
+  the ROM matches 18 of 19 results of a real 1101 bit for bit. Timing is unchanged.
+- The instruction-level 8087 was corrected wherever the microcode showed it wrong (FSQRT
+  exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
+  loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
+
 ## 0.8.1
 
 Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):

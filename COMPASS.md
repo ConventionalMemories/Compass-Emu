@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.8.0)
+## Status (0.8.1)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -114,7 +114,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   disassembly with MartyPC's decoder). Window: F10 overlay, F9 clear, F8 pause, console
   commands on stdin. MCP: `grid_debug`. The per-instruction checks run only while a
   breakpoint, watch or profile is set (`GridMachine::run_debug`).
-- MM58174 real-time clock.
+- MM58174 real-time clock (digits read 0Fh for ~30 us after each tenth while it updates).
 - 8741 keyboard microcontroller running the real firmware (300067-01 or 300001-02). Its
   P2.4 (kbdDma) is wired to the GPIB wait: a DMA window access holds the CPU until the
   9914 is ready, its interrupt is up, or the firmware's watchdog drops kbdDma (about 4 s
@@ -130,7 +130,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   argument-dependent time. Also as on the real chip: FPATAN with 0 < x < y returns y,
   F2XM1 of a negative x gives -(2^|x| - 1), FYL2X of a power of two is exact and fast, and
   the precision flag follows the real one (FSQRT, FYL2X, F2XM1 0). Busy time per instruction is the data-sheet
-  time (a few adjusted to a real 1101). 8087 code is slow on a real Compass because GRiD-OS's
+  time (a few adjusted to a real 1101); FPATAN and F2XM1 time follows the chip's digit loop
+  (16 steps from the first non-zero digit, plus each digit), fitted to GRiDBench 2.2 within
+  ~6 clocks. Like the chip, FLD of a denormal single or double gives an unnormal (exponent
+  3F81h / 3C01h, integer bit 0), and FLD m80 keeps an unnormal; FSTP m80, FSAVE and FXAM see
+  that pattern, arithmetic uses its value (the chip's unnormal arithmetic is not modelled). 8087 code is slow on a real Compass because GRiD-OS's
   loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
   95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
   within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
@@ -140,8 +144,10 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   292 of 297) (GRiDBench on a real 1101: beam finder for the lines, 2.2 d11 and GRiDProbe
   d15/d16 for the frame and the IR3 level in CPU clocks), and display RAM contention:
   the display takes one RAM slot (5 states) every 32 states (10.7 clocks, 20 a line; 113x:
-  every 16 states, 32 a line) on every line, blank ones too (GRiDProbe's contention map is
-  flat across the frame), and a CPU access that starts inside a slot waits for its end; plus a 4-clock bus steal every 48 clocks.
+  every 16 states, 32 a line, 3 states each, and a CPU access needs the RAM for 4 states, so
+  data accesses are ~1 clock slower than on the 1101 as on a real 1137) on every line, blank
+  ones too (GRiDProbe's contention map is flat across the frame), and a CPU access that
+  starts inside a slot waits for its end; plus a 4-clock bus steal every 48 clocks (113x: 2).
   Fitted with the JMP SHORT quirk to GRiDBench 2.2's gap rows (c50-c61, j01-j30, REP per
   word: 1.05% rms, 3% at most) and the whole 1101 report.
   The window shows each screen word as the beam fetched it, so racing the beam (and
@@ -152,9 +158,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   1101: each MBM's loops turn only during a command (2048 slots of 199 clocks, 81.5 ms a
   turn) and stop where it ends; address `a` passes at slot `a * 181`, so consecutive pages
   stream 7.2 ms apart and a 1-page read costs 5.3 ms start + the wait for its slot + 3.3 ms
-  (next page 12.5 ms, same page 87 ms, half a turn away 46 ms). Bytes move one every 200
-  clocks while a page passes. Initialize turns to the next of 5 stop positions; the short
-  commands take their measured 0.08-0.43 ms. `tests/devices.rs` replays GRiDProbe's seek
+  (next page 12.5 ms, same page 87 ms, half a turn away 46 ms). Bytes move one every 400
+  clocks while a page passes (two FIFO interrupts a page, 35 + 29 bytes, as on the real 1101);
+  a write's FIFO takes data from 1.2 ms before the first page. Initialize takes ~6 ms and
+  turns to the next of 40 stop positions (0.5 ms after an MBM Purge, until the next
+  transfer); the short commands take their measured 0.08-0.43 ms. `tests/devices.rs` replays GRiDProbe's seek
   patterns against the real numbers.
 - The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5).
 - Bus details measured on a real 1101: empty memory and ports read the address still on
@@ -176,11 +184,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
   | Model | Board | RAM | Screen | Boot PROM used |
   |-------|-------|-----|--------|----------------|
-  | 1101 | original | 256K | 320 x 240 | 1101 rev 3 |
-  | 1109 | original | 512K | 320 x 240 | its own if present, else 1101 rev 3 |
-  | 1121 | split | 256K | 320 x 240 | its own if present (never dumped), else 1129, else 1101 rev 3 |
-  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101 rev 3) |
-  | 1131 | split | 256K | 512 x 256 | its own if present (never dumped), else 1139 |
+  | 1101 | original | 256K | 320 x 240 | 1101 rev 4 (rev 3 if rev 4 is missing) |
+  | 1109 | original | 512K | 320 x 240 | 1101 (same PROM) |
+  | 1121 | split | 256K | 320 x 240 | 1129 (same PROM; if missing, 1101) |
+  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101) |
+  | 1131 | split | 256K | 512 x 256 | 1139 (same PROM) |
   | 1139 | split | 512K | 512 x 256 | 1139 |
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
@@ -195,15 +203,15 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   without a disk) and the programs show on "Read Only Memory". The 113x build of GRiD-OS turns on the 512 x 256 screen; until then a
   113x shows the 320 x 240 picture centred. Large-screen timing is from GRiDBench 2.2 on a
   real 1137: 281 clocks a line, 297 lines (59.9 Hz; AAM loop in refreshes, the 1137's RTC
-  was dead), IR3 at the top, 32 display fetches on every line, one every 16 states (gap rows 2.0%
+  was dead), IR3 at the top, 32 display fetches on every line, one every 16 states (gap rows 1.2%
   rms). The split board's bus also follows the 1137: empty memory reads the address, the
   PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
   DFE8F.
   All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
-  build). The 1139 PROM can't stand in for the missing 1121/1129 PROMs: it keeps its data
+  build). The 1139 PROM can't stand in for the 1121/1129 PROM: it keeps its data
   at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
   error in CCOS". The 1129 PROM (data at 0298:0, like the 1101's) boots the 11xx build on
-  the plain split-board map, and also serves the 1121. Without it the 1101 rev 3 PROM
+  the plain split-board map, and is also the 1121's. Without it the 1101 PROM
   stands in, with the split board also answering the 1101's DMA window at E0000h
   (`GridBoard::e0000_dma`). ROM choice: grid_core/src/roms.rs.
 

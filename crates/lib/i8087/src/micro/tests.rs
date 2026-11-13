@@ -122,8 +122,10 @@ fn describe(old: &I8087, new: &Micro8087) -> String {
     s
 }
 
-fn same(old: &I8087, new: &Micro8087) -> bool {
-    if old.sw & 0x7F7F != new.status_word() & 0x7F7F || old.tw != new.tag_word() {
+fn same(old: &I8087, new: &Micro8087, first: u8, modrm: u8) -> bool {
+    // rounding writes C1 in the microcode (the instruction-level core leaves it alone)
+    let m = if first & 1 == 0 && modrm & 0x30 != 0x10 { 0x7D7F } else { 0x7F7F };
+    if old.sw & m != new.status_word() & m || old.tw != new.tag_word() {
         return false;
     }
     (0..8).all(|i| (old.tw >> (2 * i)) & 3 == 3 || old.raw[i].unwrap_or(old.st[i].to_bits()) == new.st[i].bits())
@@ -147,7 +149,7 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             let res = new.exec(first & 7, modrm);
             // unnormals: the instruction-level core is no reference for them, so only
             // check that the microcode runs to its end
-            let ok = res.is_ok() && (kinds == Kinds::All || same(&old, &new));
+            let ok = res.is_ok() && (kinds == Kinds::All || same(&old, &new, first, modrm));
             if !ok {
                 fails += 1;
                 if shown < 2 {
@@ -184,6 +186,8 @@ fn range(first: u8, from: u8, n: u8) -> Vec<(u8, u8)> {
 }
 
 const MASKED: [u16; 1] = [0x03FF];
+/// the four rounding modes at 64, 53 and 24 bits, all masked
+const ROUNDING: [u16; 12] = [0x033F, 0x073F, 0x0B3F, 0x0F3F, 0x023F, 0x063F, 0x0A3F, 0x0E3F, 0x003F, 0x043F, 0x083F, 0x0C3F];
 /// all masked (projective, affine), all unmasked, invalid unmasked, denormal unmasked
 const CWS: [u16; 5] = [0x03FF, 0x13FF, 0x0300, 0x03FE, 0x03FD];
 
@@ -223,5 +227,20 @@ fn examine_and_compare() {
     ops.push((0xDE, 0xD9)); // FCOMPP
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn add_subtract() {
+    let mut ops = range(0xD8, 0xC0, 8); // FADD ST,ST(i)
+    ops.extend(range(0xD8, 0xE0, 16)); // FSUB, FSUBR
+    ops.extend(range(0xDC, 0xC0, 8));
+    ops.extend(range(0xDC, 0xE0, 16));
+    ops.extend(range(0xDE, 0xC0, 8)); // FADDP
+    ops.extend(range(0xDE, 0xE0, 16));
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Special, &CWS);
     check(&ops, Kinds::All, &CWS);
 }

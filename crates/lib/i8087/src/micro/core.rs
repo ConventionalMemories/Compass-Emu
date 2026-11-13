@@ -396,7 +396,15 @@ impl Micro8087 {
             0x0C => self.arith_class() && reg == 1,
             0x0D => self.arith_class() && reg >= 6,
             0x0F => (self.arith_class() && (reg == 2 || reg == 3)) || self.opcode == 0x1E4,
+            0x08 => self.op() == 7 && !self.reg_form() && (reg == 4 || reg == 6),
+            // the exponent converter's view of the last value sent to it: a normal
+            // exponent, bit 0, small enough for a shift count (bits 6-14 clear), overflow
+            0x18 => (1..=0x7FFE).contains(&self.exp_conv),
             0x19 => self.exp_conv & 1 != 0,
+            0x1A => self.exp_conv & 0x7FC0 == 0,
+            0x1C => self.cw & 0x300 == 0x300 || self.cw & 0x300 == 0x100,
+            0x1D => self.round_up(),
+            0x1F => (0x7FFF..0xC000).contains(&self.exp_conv),
             0x1E => self.sum & FRAC_MASK == 0,
             0x20 => a.tag == TAG_ZERO,
             0x21 => a.tag == TAG_SPECIAL,
@@ -416,6 +424,15 @@ impl Micro8087 {
             0x29 => b.frac >> 63 != 0,
             0x2B => a.frac >> 63 != 0,
             0x2C => self.cw & 0x1000 != 0,
+            // "round up/down": a directed rounding mode that rounds this sign toward zero
+            // (down for +, up for -). Inferred: with chop left out, an exact zero difference
+            // is -0 only when rounding down, as Intel documents; it also means a masked
+            // overflow gives infinity when chopping. To be checked on a real chip.
+            0x2D => match (self.cw >> 10) & 3 {
+                1 => !a.sign,
+                2 => a.sign,
+                _ => false,
+            },
             0x2E => self.unmasked(),
             0x2F => self.exc & !self.cw & SW_DE != 0,
             0x30 => self.carry,
@@ -428,6 +445,32 @@ impl Micro8087 {
             0x3E => true,
             _ => return Err(format!("condition {:02X}", c)),
         })
+    }
+
+    /// Condition 1D: the rounding logic says "add one". It looks at the sum register's
+    /// rounding bits and lowest fraction bit, the rounding mode and tmpA's sign; as side
+    /// effects C1 gets the answer and nonzero rounding bits set the precision exception
+    /// (the second is inferred).
+    fn round_up(&mut self) -> bool {
+        let grs = (self.sum & 7) as u8;
+        let lsb = self.sum >> RND & 1 != 0;
+        let sign = self.ra().sign;
+        let up = match (self.cw >> 10) & 3 {
+            0 => grs > 4 || (grs == 4 && lsb),
+            1 => sign && grs != 0,
+            2 => !sign && grs != 0,
+            _ => false,
+        };
+        if grs != 0 {
+            self.exc |= SW_PE;
+        }
+        if up {
+            self.sw |= SW_C1
+        }
+        else {
+            self.sw &= !SW_C1
+        }
+        up
     }
 
     fn set_cc(&mut self, c3: bool, c0: bool) {
@@ -497,6 +540,8 @@ impl Micro8087 {
             }
             0x680A => self.breg = (self.breg & !7) | self.round_h as u128,
             0x6904 => self.sum = (self.sum & !7) | self.round_h as u128,
+            // precision control to the shift count: 23 or 52 (one less than the bits kept)
+            0x6880 => self.shift_count = if self.cw & 0x300 == 0 { 23 } else { 52 },
             _ => return Err("control word".into()),
         }
         Ok(())
@@ -508,6 +553,15 @@ impl Micro8087 {
             0xE802 => self.counter = self.counter.wrapping_add(1) & 0x3F,
             0xE800 => self.counter = self.counter.wrapping_sub(1) & 0x3F,
             0xF408 => self.flag = false,
+            // the exponent converter's verdict becomes the overflow or underflow exception
+            0xE402 => {
+                if (0x7FFF..0xC000).contains(&self.exp_conv) {
+                    self.exc |= SW_OE
+                }
+                else if !(1..=0x7FFE).contains(&self.exp_conv) {
+                    self.exc |= SW_UE
+                }
+            }
             _ => return Err("misc word".into()),
         }
         Ok(())
@@ -612,7 +666,7 @@ impl Micro8087 {
                 self.b().exp = v.exp & 0x7FFF;
             }
             0x0E => self.b().frac = v.f64(),
-            0x10 => self.sum = v.wide & FRAC_MASK,
+            0x10 => self.sum = (self.sum & 7) | (v.wide & FRAC_MASK),
             0x11 => self.sum = v.wide & (FRAC_MASK | 7),
             0x12 => self.sum = v.wide & (FRAC_MASK | BIT64),
             0x13 => self.sum = v.wide,
@@ -643,44 +697,43 @@ impl Micro8087 {
 
     /// Shift by the shift count register. The KLMNO field picks what part of the count is
     /// used: 1x11x whole count, 1x10x its byte part, 1x01x its bit part, 1x00x the
-    /// complement of the count (the left shift that brings back the bits a right shift
-    /// dropped, for the rounding bits); bit O keeps the sticky bit in place.
+    /// complement of the count (63 - count); bit O keeps the sticky bit in place. 11001 is
+    /// a right shift by one that keeps the sticky bit.
     fn shift_var(&mut self, v: Val, right: bool, by: u8) -> Result<(), String> {
-        let n = (self.shift_count & 0x3F) as u32;
-        let sticky = by & 1 != 0;
-        match by & !1 {
-            0x16 | 0x14 | 0x12 => {
-                let n = match by & 6 {
-                    6 => n,
-                    4 => n & 0x38,
-                    _ => n & 7,
-                };
-                if right {
-                    self.shr = (v.wide >> n) & WIDE_MASK;
-                }
-                else {
-                    let mut w = (v.wide << n) & (FRAC_MASK | 7);
-                    if sticky && v.wide & 1 != 0 {
-                        w |= 1;
-                    }
-                    self.shl = w;
-                }
-            }
-            0x10 => {
-                // the tail a right shift by n drops, as guard, round and sticky
-                let f = v.f64();
-                let tail = if n == 0 { 0 } else { f << (64 - n) };
-                self.round_h = ((tail >> 61) as u8 & 6) | ((tail << 2 != 0) as u8) | (v.wide & 7 != 0) as u8;
-                if right {
-                    self.shr = (v.wide >> (63 - n)) & WIDE_MASK;
-                }
-                else {
-                    self.shl = (v.wide << (63 - n)) & (FRAC_MASK | 7);
-                }
-            }
+        let c = (self.shift_count & 0x3F) as u32;
+        let n = match by & !1 {
+            0x16 => c,
+            0x14 => c & 0x38,
+            0x12 => c & 7,
+            0x10 => 63 - c,
+            0x18 if right => 1,
             _ => return Err(format!("variable shift mode {:02X}", by)),
+        };
+        let sticky = by & 1 != 0 && v.wide & 1 != 0;
+        if right {
+            let lost = v.wide & ((1u128 << n) - 1) != 0;
+            self.shr = (v.wide >> n) & WIDE_MASK;
+            if by & 1 != 0 && lost {
+                self.shr |= 1;
+            }
+        }
+        else {
+            self.shl_out(v.wide << n, sticky);
         }
         Ok(())
+    }
+
+    /// A left shift's output. The rounding bits a later "rounding -> ..." word takes come
+    /// from it: the fraction's top bit is the last bit kept, the two below are guard and
+    /// round, everything under them (and what was shifted out below) is sticky.
+    fn shl_out(&mut self, w: u128, sticky: bool) {
+        self.shl = (w & WIDE_MASK) | sticky as u128;
+        let f = (w >> RND) as u64;
+        self.round_h = ((f >> 60) as u8 & 6) | ((f << 3 != 0) || w & 7 != 0 || sticky) as u8;
+    }
+
+    fn cond_small_shift(&self) -> bool {
+        self.exp_conv & 0x7FC0 == 0
     }
 
     fn shift(&mut self, v: Val, right: bool, count: u32) {
@@ -688,7 +741,18 @@ impl Micro8087 {
             self.shr = (v.wide >> count) & WIDE_MASK;
         }
         else {
-            self.shl = (v.wide << count) & (FRAC_MASK | 7);
+            self.shl_out(v.wide << count, false);
+            if count == 0 && !self.cond_small_shift() {
+                // CREATE_DENORM's path for a shift of 64 or more: everything is tail.
+                // Assumed to give the true rounding bits (to be checked on a real chip).
+                let n = self.exp_conv as u32;
+                let f = v.f64();
+                self.round_h = match n {
+                    64 => ((f >> 61) as u8 & 6) | (f << 2 != 0) as u8,
+                    65 => ((f >> 62) as u8 & 2) | (f << 1 != 0) as u8,
+                    _ => (f != 0) as u8,
+                };
+            }
         }
     }
 }

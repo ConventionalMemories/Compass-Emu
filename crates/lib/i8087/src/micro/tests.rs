@@ -474,3 +474,97 @@ fn packed_decimal() {
     check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::All, &CWS);
 }
+
+/// FPTAN against what a real 8087 (in a Compass 1101) left on the stack: X in ST, Y in ST(1).
+/// Returns the worst difference in units of the last place.
+#[test]
+fn fptan_real_chip() {
+    let Some(rom) = MicroRom::find() else { return };
+    let mut worst = 0;
+    let mut exact = 0;
+    for &(x, rx, ry) in crate::fptan::REAL.iter() {
+        let mut m = Micro8087::new(rom.clone());
+        m.cw = 0x03FF;
+        for r in m.st.iter_mut() {
+            r.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        m.st[0] = Reg::from_bits(x);
+        let res = m.exec(1, 0xF2);
+        let (gx, gy) = (m.st[7].bits(), m.st[0].bits());
+        let (dx, dy) = (gx as i128 - rx as i128, gy as i128 - ry as i128);
+        eprintln!("{:020X}: X {:020X} ({:+}) Y {:020X} ({:+}) {:?}", x, gx, dx, gy, dy, res.as_ref().err().map(|f| f.to_string()));
+        assert!(res.is_ok());
+        worst = worst.max(dx.abs()).max(dy.abs());
+        if dx == 0 && dy == 0 {
+            exact += 1;
+        }
+    }
+    // One X is one unit off: the arctangent constants are computed, not the chip's own
+    // (the constant ROM's bits are not published), and their last bits decide such cases.
+    assert!(worst <= 1 && exact >= 18, "worst {} units, {} of 19 exact", worst, exact);
+}
+
+/// FPTAN over the whole argument range against the instruction-level core's model (which
+/// was fitted to the same real results and is good to a few units).
+#[test]
+fn fptan_range() {
+    let Some(rom) = MicroRom::find() else { return };
+    // every kind of operand runs to the end of the microcode
+    check(&[(0xD9, 0xF2)], Kinds::All, &CWS);
+    let mut r = Rng(0x8087_1980);
+    let mut m = Micro8087::new(rom);
+    for _ in 0..20000 {
+        let e = 0x3FFF - r.below(70) as u128;
+        let x = (r.below(2) as u128) << 79 | e << 64 | (r.next() | 1 << 63) as u128;
+        let Some((y, xx, _)) = crate::fptan::fptan(x) else { continue };
+        m.cw = 0x03FF;
+        m.sw = 0;
+        for reg in m.st.iter_mut() {
+            reg.tag = TAG_EMPTY;
+        }
+        m.top = 0;
+        m.st[0] = Reg::from_bits(x);
+        let res = m.exec(1, 0xF2);
+        assert!(res.is_ok(), "{:020X}: {:?}", x, res);
+        let (gx, gy) = (m.st[7].bits(), m.st[0].bits());
+        let (dx, dy) = ((gx as i128 - xx as i128).abs(), (gy as i128 - y as i128).abs());
+        assert!(dx <= 32 && dy <= 32, "{:020X}: X {:020X} / {:020X}, Y {:020X} / {:020X}", x, gx, xx, gy, y);
+    }
+}
+
+/// Search aid: which last-bit variations of the arctangent constants agree with the real chip.
+#[test]
+#[ignore]
+fn fptan_constant_search() {
+    let Some(rom) = MicroRom::find() else { return };
+    let mut m = Micro8087::new(rom.clone());
+    let base = m.atan;
+    let run = |m: &mut Micro8087| -> u32 {
+        let mut bad = 0;
+        for &(x, rx, ry) in crate::fptan::REAL.iter() {
+            m.cw = 0x03FF;
+            for r in m.st.iter_mut() {
+                r.tag = TAG_EMPTY;
+            }
+            m.top = 0;
+            m.sw = 0;
+            m.st[0] = Reg::from_bits(x);
+            let _ = m.exec(1, 0xF2);
+            if m.st[7].bits() != rx || m.st[0].bits() != ry {
+                bad += 1;
+            }
+        }
+        bad
+    };
+    // one constant at a time, -8..+8
+    for n in 0..16 {
+        let mut line = format!("n={:2}:", n);
+        for d in -8i128..=8 {
+            m.atan = base;
+            m.atan[n] = (base[n] as i128 + d) as u128;
+            line += &format!(" {}", run(&mut m));
+        }
+        eprintln!("{}", line);
+    }
+}

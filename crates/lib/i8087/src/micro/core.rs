@@ -147,6 +147,9 @@ pub struct Micro8087 {
     round_h: u8,
     exp_conv: u16,
     counter: u8,
+    cordic: u16,
+    /// the constant ROM's arctangents (a copy, so that tests can vary them)
+    pub atan: [u128; 16],
     /// quotient / multiplier / radicand register (65 bits used by the square root)
     quotient: u128,
     exp_adj: u8,
@@ -170,6 +173,27 @@ pub struct Micro8087 {
     loop_steps: u32,
     pub trace: bool,
 }
+
+/// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
+/// chip: the constant ROM's bits are not published; rounded to nearest).
+const ATAN: [u128; 16] = [
+    0x6487ed5110b4611a6,
+    0x76b19c1586ed3da2b,
+    0x7d6dd7e4b203758ab,
+    0x7f56ea6ab0bdb7196,
+    0x7fd56edcb3f7a71b6,
+    0x7ff556eea5d892a14,
+    0x7ffd556eedca6addf,
+    0x7fff5556eeea5cb40,
+    0x7fffd5556eeedca5e,
+    0x7ffff55556eeeea5d,
+    0x7ffffd55556eeeedd,
+    0x7fffff555556eeeef,
+    0x7fffffd555556eeef,
+    0x7ffffff5555556eef,
+    0x7ffffffd5555556ef,
+    0x7fffffff55555556f,
+];
 
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
@@ -211,6 +235,8 @@ impl Micro8087 {
             round_h: 0,
             exp_conv: 0,
             counter: 0,
+            cordic: 0,
+            atan: ATAN,
             quotient: 0,
             exp_adj: 1,
             sign_latch: false,
@@ -603,6 +629,9 @@ impl Micro8087 {
                 done
             }
             0x39 => a.sign ^ b.sign ^ (self.arith_class() && (reg == 4 || reg == 5)),
+            // the CORDIC shift register: empty, lowest bit
+            0x34 => self.cordic == 0,
+            0x35 => self.cordic & 1 != 0,
             0x3A => self.flag,
             0x3B => a.sign != b.sign,
             0x3E => true,
@@ -699,6 +728,8 @@ impl Micro8087 {
             0x6948 => self.loop_mode = LOOP_MUL,
             0x6A48 => self.loop_mode = LOOP_DIV,
             0x6C48 => self.loop_mode = LOOP_SQRT,
+            // the multiply loop as SQUARE uses it
+            0x6D48 => self.loop_mode = LOOP_MUL,
             0x6B48 => {
                 self.loop_mode = LOOP_REM;
                 self.loop_steps = 0;
@@ -743,8 +774,10 @@ impl Micro8087 {
     fn misc(&mut self, w: u16) -> Result<(), String> {
         match w {
             0xEC00 => self.swap = !self.swap,
-            0xE802 => self.counter = self.counter.wrapping_add(1) & 0x3F,
-            0xE800 => self.counter = self.counter.wrapping_sub(1) & 0x3F,
+            // the 16-bit CORDIC shift register: the adder's "not negative" goes in at the
+            // bottom (pseudo-division), and comes out there again (pseudo-multiplication)
+            0xE802 => self.cordic = self.cordic << 1 | self.carry as u16,
+            0xE800 => self.cordic >>= 1,
             0xF408 => self.flag = false,
             // seen before the last fraction word of a memory operand is read; nothing the
             // model needs (inferred)
@@ -782,6 +815,7 @@ impl Micro8087 {
             0x4 => 0x403A, // 10^18
             0x5 => 0x3FFF,
             0x6 => 0x403E,
+            0x3 => 0x0010,
             0x7 => 0x3FF0,
             0xB => 0x3FFE,
             0xD => 0x6000,
@@ -846,6 +880,9 @@ impl Micro8087 {
             0x15 => Val::wide(self.shr),
             0x16 => Val::frac(self.quotient as u64),
             0x17 => Val::wide(self.tmpc),
+            // the constant ROM's arctangents, picked by the loop counter: counter 15 is
+            // atan(1), counter 0 atan(2^-15), each scaled to fill 64 bits plus three
+            0x18 => Val::wide(self.atan[(15 - (self.counter & 15)) as usize]),
             0x1A => Val::frac(self.frac_const()?),
             0x1B => Val::frac(1),
             // the exponent adjustment; reading it puts it back to its resting value
@@ -1009,15 +1046,18 @@ impl Micro8087 {
     /// carry in.
     fn adder(&mut self, a: Val, round_bits: bool, op: u8) -> Result<(), String> {
         let keep = if round_bits { FRAC_MASK | 7 } else { FRAC_MASK };
-        let x = a.wide & keep;
+        // the A side can be 65 bits wide (tmpC); the adder has one more bit above that
+        let x = a.wide & (keep | BIT64);
         let mut y = if op & 2 != 0 { 0 } else { self.breg & keep };
-        if op & 4 != 0 {
-            y = !y & keep;
+        let invert = op & 4 != 0;
+        if invert {
+            y = !y & (keep | BIT64 | BIT64 << 1);
         }
         // the carry enters at the lowest bit in use
         let cin = if op & 1 != 0 { if round_bits { 1 } else { 1 << RND } } else { 0 };
         let s = x + y + cin;
-        self.carry = s & BIT64 != 0;
+        // "carry": a subtraction did not go negative, an addition left the 64 bits
+        self.carry = if invert { s & (BIT64 << 2) != 0 } else { s & BIT64 != 0 };
         self.sum = s & WIDE_MASK;
         if self.loop_mode == LOOP_SQRT && !round_bits {
             // the root leaves the loop with its guard, round and sticky bits (inferred)
@@ -1038,6 +1078,8 @@ impl Micro8087 {
             0x12 => c & 7,
             0x10 => 63 - c,
             0x18 => 1,
+            // by the loop counter
+            0x08 => self.counter as u32,
             _ => return Err(format!("variable shift mode {:02X}", by)),
         };
         let sticky = by & 1 != 0 && v.wide & 1 != 0;

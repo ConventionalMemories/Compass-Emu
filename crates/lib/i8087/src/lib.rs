@@ -392,27 +392,59 @@ impl I8087 {
             Arith::Mul => a.mul_r(b, rnd),
             Arith::Div => a.div_r(b, rnd),
             Arith::DivR => b.div_r(a, rnd),
-            Arith::Com | Arith::Comp => {
-                self.compare(a, b);
-                return None;
-            }
+            Arith::Com | Arith::Comp => return None,
         };
         self.result(r)
     }
 
-    fn compare(&mut self, a: F80, b: F80) {
-        // C1 is left alone (the compare microcode only writes C3, C2 and C0)
+    /// Sets C3/C2/C0 for a compare b. Returns true if it raised an unmasked exception.
+    /// C1 is left alone (the compare microcode only writes C3, C2 and C0).
+    fn compare(&mut self, a: F80, b: F80) -> bool {
         self.sw &= !(SW_C0 | SW_C2 | SW_C3);
         if a.is_nan() || b.is_nan() {
             self.sw |= SW_C0 | SW_C2 | SW_C3;
-            self.exception(SW_IE);
-            return;
+            return self.exception(SW_IE);
+        }
+        if self.cw & 0x1000 == 0 && (a.is_infinite() || b.is_infinite()) {
+            // projective closure (the 8087's default): one unsigned infinity, equal to
+            // itself and not ordered against anything else
+            if a.is_infinite() && b.is_infinite() {
+                self.sw |= SW_C3;
+                return false;
+            }
+            self.sw |= SW_C0 | SW_C2 | SW_C3;
+            return self.exception(SW_IE);
         }
         match a.partial_cmp(&b) {
             Some(std::cmp::Ordering::Less) => self.sw |= SW_C0,
             Some(std::cmp::Ordering::Equal) => self.sw |= SW_C3,
             Some(std::cmp::Ordering::Greater) => {}
             None => self.sw |= SW_C0 | SW_C2 | SW_C3,
+        }
+        false
+    }
+
+    /// ST(i), or None if it is empty.
+    fn opt(&self, i: usize) -> Option<F80> {
+        if self.empty(i) { None } else { Some(self.st(i)) }
+    }
+
+    /// FCOM and its relatives as the microcode does them: an empty operand is invalid and
+    /// unordered, and an unmasked exception leaves the stack alone.
+    fn fcom(&mut self, a: Option<F80>, b: Option<F80>, pops: u32) {
+        // a denormal operand raises D; the compare still happens
+        let d = (a.is_some_and(|v| v.is_denormal()) || b.is_some_and(|v| v.is_denormal())) && self.exception(SW_DE);
+        let unmasked = d | match (a, b) {
+            (Some(a), Some(b)) => self.compare(a, b),
+            _ => {
+                self.sw |= SW_C0 | SW_C2 | SW_C3;
+                self.exception(SW_IE)
+            }
+        };
+        if !unmasked {
+            for _ in 0..pops {
+                self.pop();
+            }
         }
     }
 
@@ -615,17 +647,14 @@ impl I8087 {
                     _ => (Self::load_int(mem, a, 2), [120, 130, 80, 82, 120, 120, 230, 231], 1),
                 };
                 let ar = Arith::from(reg);
-                if let Some(st0) = self.src(0) {
-                    match ar {
-                        Arith::Com => self.compare(st0, v),
-                        Arith::Comp => {
-                            self.compare(st0, v);
-                            self.pop();
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, st0, v) {
-                                self.set_st(0, r);
-                            }
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    let a = self.opt(0);
+                    self.fcom(a, Some(v), (reg == 3) as u32);
+                }
+                else if let Some(st0) = self.src(0) {
+                    {
+                        if let Some(r) = self.arith(ar, st0, v) {
+                            self.set_st(0, r);
                         }
                     }
                 }
@@ -808,18 +837,13 @@ impl I8087 {
                 // clocks faster on a real 1101 (GRiDBench h12 vs h13/h15)
                 let m = |v: F80| (v.to_bits() as u64) as u128;
                 let big = m(self.st(0)) * m(self.st(i)) >= 1 << 127;
-                if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
-                    match ar {
-                        Arith::Com => self.compare(a, b),
-                        Arith::Comp => {
-                            self.compare(a, b);
-                            self.pop();
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, a, b) {
-                                self.set_st(0, r);
-                            }
-                        }
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    let (a, b) = (self.opt(0), self.opt(i));
+                    self.fcom(a, b, (reg == 3) as u32);
+                }
+                else if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
+                    if let Some(r) = self.arith(ar, a, b) {
+                        self.set_st(0, r);
                     }
                 }
                 if reg == 1 && !short {
@@ -838,28 +862,16 @@ impl I8087 {
                     7 => Arith::Div,
                     r => Arith::from(r),
                 };
-                if op == 6 && reg == 3 && i == 1 {
-                    // FCOMPP
-                    if let (Some(a), Some(b)) = (self.src(0), self.src(1)) {
-                        self.compare(a, b);
-                    }
-                    self.pop();
-                    self.pop();
-                    return (50, 0);
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    // DC/DE forms of FCOM/FCOMP: DE pops once more (DE D9 is FCOMPP; the
+                    // microcode does the same for every ST(i))
+                    let (a, b) = (self.opt(0), self.opt(i));
+                    self.fcom(a, b, (op == 6) as u32 + (reg == 3) as u32);
+                    return (if op == 6 && reg == 3 { 50 } else { [45, 47][(reg & 1) as usize] }, 0);
                 }
                 if let (Some(a), Some(b)) = (self.src(i), self.src(0)) {
-                    match ar {
-                        Arith::Com | Arith::Comp => {
-                            self.compare(b, a);
-                            if matches!(ar, Arith::Comp) {
-                                self.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, a, b) {
-                                self.set_st(i, r);
-                            }
-                        }
+                    if let Some(r) = self.arith(ar, a, b) {
+                        self.set_st(i, r);
                     }
                 }
                 if op == 6 && !matches!(ar, Arith::Com | Arith::Comp) {
@@ -913,11 +925,12 @@ impl I8087 {
                     12
                 }
                 2 | 3 => {
+                    // an unmasked invalid (empty ST) leaves the stack alone
                     if let Some(v) = self.src(0) {
                         self.set_st(i, v);
-                    }
-                    if reg == 3 {
-                        self.pop();
+                        if reg == 3 {
+                            self.pop();
+                        }
                     }
                     if reg == 2 { 18 } else { 20 }
                 }
@@ -1008,9 +1021,8 @@ impl I8087 {
                     14
                 }
                 4 => {
-                    if let Some(v) = self.src(0) {
-                        self.compare(v, F80::ZERO);
-                    }
+                    let a = self.opt(0);
+                    self.fcom(a, Some(F80::ZERO), 0);
                     42
                 }
                 5 => {

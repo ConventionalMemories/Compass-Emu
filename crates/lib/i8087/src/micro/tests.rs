@@ -219,8 +219,17 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             let (mut old, mut new) = setup(&rom, &mut r, kinds, cw);
             let mut before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
             let mut ram = (Ram([0; 16]), Ram([0; 16]));
+            let mut mem_denormal = false;
             let res = if modrm < 0xC0 {
                 ram.0 = operand(&mut r, first, modrm, kinds);
+                // a denormal short or long real in arithmetic stays unnormal in the
+                // microcode and so does the result: the old core is no reference
+                let d = u64::from_le_bytes(ram.0 .0[..8].try_into().unwrap());
+                mem_denormal = modrm & 0x30 != 0x10 && match first {
+                    0xD8 => d & 0x7F_FFFF != 0 && (d >> 23) & 0xFF == 0,
+                    0xDC => d & 0xF_FFFF_FFFF_FFFF != 0 && (d >> 52) & 0x7FF == 0,
+                    _ => false,
+                };
                 ram.1 = ram.0.clone();
                 before += &format!("  mem {:02X?}\n", &ram.0 .0[..10]);
                 old.esc(&mut ram.0, 0, first, modrm, Some(0), 0);
@@ -241,7 +250,7 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // Also: with overflow or underflow unmasked the microcode stores the result with
             // its exponent moved by 6000h (the old core stores nothing).
             let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && cw & 0x0100 == 0) || flags & !cw & (SW_OE | SW_UE) != 0;
-            let ok = res.is_ok() && (kinds == Kinds::All || open || (same(&old, &new, first, modrm) && ram.0 == ram.1));
+            let ok = res.is_ok() && (kinds == Kinds::All || open || mem_denormal || (same(&old, &new, first, modrm) && ram.0 == ram.1));
             if !ok {
                 fails += 1;
                 if shown < 2 {
@@ -367,4 +376,22 @@ fn load_store_integer() {
     check(&ops, Kinds::Denormal, &ROUNDING);
     check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn add_subtract_compare_memory() {
+    let mut arith = Vec::new();
+    let mut com = Vec::new();
+    for first in [0xD8, 0xDC, 0xDA, 0xDE] {
+        arith.extend(mem(first, &[0, 4, 5])); // FADD, FSUB, FSUBR
+        com.extend(mem(first, &[2, 3])); // FCOM, FCOMP
+    }
+    check(&arith, Kinds::Plain, &MASKED);
+    check(&arith, Kinds::Plain, &ROUNDING);
+    check(&arith, Kinds::Special, &ROUNDING);
+    check(&arith, Kinds::Special, &CWS);
+    check(&arith, Kinds::All, &CWS);
+    check(&com, Kinds::Special, &MASKED);
+    check(&com, Kinds::Denormal, &CWS);
+    check(&com, Kinds::All, &CWS);
 }

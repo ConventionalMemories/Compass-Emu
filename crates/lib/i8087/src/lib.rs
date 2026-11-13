@@ -717,15 +717,27 @@ impl I8087 {
             0 | 2 | 4 | 6 => {
                 // arithmetic with m32real / m32int / m64real / m16int
                 let (v, base, words) = match op {
-                    0 => (Self::load_real32(mem, a), [105, 118, 65, 68, 105, 105, 220, 221], 2),
+                    0 => (nan_bits(Self::rd(mem, a, 4), 23, 8).map_or_else(|| Self::load_real32(mem, a), F80::from_bits), [105, 118, 65, 68, 105, 105, 220, 221], 2),
                     2 => (Self::load_int(mem, a, 4), [125, 136, 85, 87, 125, 125, 236, 237], 2),
-                    4 => (Self::load_real64(mem, a), [110, 161, 70, 72, 110, 110, 225, 226], 4),
+                    4 => (nan_bits(Self::rd(mem, a, 8), 52, 11).map_or_else(|| Self::load_real64(mem, a), F80::from_bits), [110, 161, 70, 72, 110, 110, 225, 226], 4),
                     _ => (Self::load_int(mem, a, 2), [120, 130, 80, 82, 120, 120, 230, 231], 1),
                 };
+                // a denormal short or long real operand: the denormal exception; the
+                // instruction goes on unless it is unmasked
+                let d = Self::rd(mem, a, 8);
+                let denormal = match op {
+                    0 => d & 0x7F_FFFF != 0 && (d >> 23) & 0xFF == 0,
+                    4 => d & 0xF_FFFF_FFFF_FFFF != 0 && (d >> 52) & 0x7FF == 0,
+                    _ => false,
+                };
                 let ar = Arith::from(reg);
+                let unmasked = denormal && self.exception(SW_DE);
                 if matches!(ar, Arith::Com | Arith::Comp) {
+                    // the compare still happens; only the pop is held back
                     let a = self.opt(0);
-                    self.fcom(a, Some(v), (reg == 3) as u32);
+                    self.fcom(a, Some(v), if unmasked { 0 } else { (reg == 3) as u32 });
+                }
+                else if unmasked {
                 }
                 else if self.empty(0) {
                     if !self.exception(SW_IE) {

@@ -1,6 +1,8 @@
 //! National MM58174 real-time clock (DFF41-DFF5F, odd bytes, low nibble), after MAME mm58174.cpp.
 //! The chip keeps tenths, seconds, minutes, hours, day, weekday and month; no year.
 //! Emulated time runs from the host clock at power-on and advances with CPU clocks.
+//! While the counters ripple after each tenth, a digit read returns 0Fh like the chip; the
+//! PROM's CpRealTimeClock retries such reads (up to 5000 times).
 
 use crate::screen::CPU_HZ;
 
@@ -19,6 +21,18 @@ pub struct Rtc {
     int_ctl: u8,
     /// CPU clock of the last tenth.
     last: u64,
+}
+
+/// CPU clocks after each tenth during which digit reads return 0Fh: one period of the
+/// 32.768 kHz crystal (~30.5 us). The real length is not measured; RTC_UPDATE_CLK overrides it.
+fn update_clocks() -> u64 {
+    static C: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        std::env::var("RTC_UPDATE_CLK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((CPU_HZ / 32768.0).round() as u64)
+    })
 }
 
 fn days_in_month(m: u8, leap: bool) -> u8 {
@@ -105,7 +119,12 @@ impl Rtc {
         }
     }
 
-    pub fn read(&self, reg: usize) -> u8 {
+    /// Read a register at CPU clock `now` (after `tick(now)`).
+    pub fn read(&self, reg: usize, now: u64) -> u8 {
+        let digit = (0x1..=0xC).contains(&(reg & 0xF));
+        if digit && self.running && self.last != 0 && now - self.last < update_clocks() {
+            return 0x0F;
+        }
         match reg & 0xF {
             0x1 => self.tenths,
             0x2 => self.sec % 10,
@@ -152,5 +171,24 @@ impl Rtc {
             0xF => self.int_ctl = d,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digits_read_0f_while_updating() {
+        let mut r = Rtc::new();
+        let tenth = (CPU_HZ / 10.0) as u64;
+        let t = 3 * tenth;
+        r.tick(t);
+        assert_eq!(r.read(0x1, t), 0x0F);
+        assert_eq!(r.read(0x1, t + update_clocks() - 1), 0x0F);
+        assert_eq!(r.read(0xF, t), 0); // control register is not a counter
+        let n = t + update_clocks();
+        r.tick(n);
+        assert_eq!(r.read(0x1, n), 3);
     }
 }

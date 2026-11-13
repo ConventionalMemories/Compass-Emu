@@ -81,6 +81,13 @@ pub struct FpuStats {
 pub struct I8087 {
     #[serde(with = "f80_regs")]
     st: [F80; 8],
+    /// Raw 80-bit patterns of registers that hold an unnormal (exponent not 0, integer bit 0),
+    /// by physical register. The real 8087 loads a denormal single or double that way (FLD
+    /// m64 of a double denormal gives exponent 3C01h, not a normalized number) and keeps an
+    /// unnormal loaded with FLD m80; `st` then holds the same value normalized, for
+    /// arithmetic, and FSTP m80 / FSAVE / FXAM see the raw pattern.
+    #[serde(default)]
+    raw: [Option<u128>; 8],
     pub cw: u16,
     pub sw: u16,
     pub tw: u16,
@@ -96,6 +103,9 @@ pub struct I8087 {
     /// Clocks added to every instruction's busy time (0 = pure data sheet, the default; for
     /// experiments).
     pub extra_busy: u32,
+    /// Clocks the current instruction takes beyond its table time (a store that underflows).
+    #[serde(default, skip)]
+    penalty: u32,
     /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
     /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
@@ -139,6 +149,7 @@ impl I8087 {
     pub fn new() -> I8087 {
         let mut f = I8087 {
             st: [F80::ZERO; 8],
+            raw: [None; 8],
             cw: 0x03FF,
             sw: 0,
             tw: 0xFFFF,
@@ -149,6 +160,7 @@ impl I8087 {
             irq: false,
             stats: FpuStats::default(),
             extra_busy: 0,
+            penalty: 0,
             wait_min: 0,
         };
         f.finit();
@@ -233,14 +245,35 @@ impl I8087 {
             None
         }
         else {
-            Some(self.st(i).to_bits())
+            Some(self.st_raw(i))
         }
     }
 
     fn set_st(&mut self, i: usize, v: F80) {
         let p = self.phys(i);
         self.st[p] = v;
+        self.raw[p] = None;
         self.set_tag(p, Self::tag_for(v));
+    }
+
+    /// ST(i) as the chip holds it: the raw unnormal pattern if there is one.
+    fn st_raw(&self, i: usize) -> u128 {
+        let p = self.phys(i);
+        self.raw[p].unwrap_or_else(|| self.st[p].to_bits())
+    }
+
+    /// Push a value given as raw 80-bit bits, keeping an unnormal pattern.
+    fn push_bits(&mut self, bits: u128) {
+        match unnormal_value(bits) {
+            Some(v) => {
+                self.push(v);
+                let p = self.phys(0);
+                if self.st[p] == v {
+                    self.raw[p] = Some(bits);
+                }
+            }
+            None => self.push(F80::from_bits(bits)),
+        }
     }
 
     fn push(&mut self, v: F80) {
@@ -470,6 +503,10 @@ impl I8087 {
     fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
         let r: StatusAnd<Single> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
+        if r.status.contains(Status::UNDERFLOW) {
+            // denormalizing the result: ~49 more clocks on a real 1101 (GRiDBench h33)
+            self.penalty += 49;
+        }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
             return;
         }
@@ -479,6 +516,10 @@ impl I8087 {
     fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
         let r: StatusAnd<Double> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
+        if r.status.contains(Status::UNDERFLOW) {
+            // denormalizing the result: ~49 more clocks on a real 1101 (GRiDBench h33)
+            self.penalty += 49;
+        }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
             return;
         }
@@ -547,6 +588,7 @@ impl I8087 {
                 self.dp = a;
             }
         }
+        let clocks = clocks + std::mem::take(&mut self.penalty);
         self.busy_until = start + clocks as u64 + self.extra_busy as u64;
         self.stats.instructions += 1;
         self.stats.busy_clocks += clocks as u64;
@@ -589,8 +631,11 @@ impl I8087 {
             }
             1 => match reg {
                 0 => {
-                    let v = Self::load_real32(mem, a);
-                    self.push(v);
+                    let d = Self::rd(mem, a, 4);
+                    match denormal_bits(d, 23, 0x3F81) {
+                        Some(bits) => self.push_bits(bits),
+                        None => self.push(Self::load_real32(mem, a)),
+                    }
                     (43, 2)
                 }
                 2 | 3 => {
@@ -640,13 +685,12 @@ impl I8087 {
                     (if reg == 2 { 88 } else { 90 }, 2)
                 }
                 5 => {
-                    let v = F80::from_bits(Self::rd(mem, a, 10));
-                    self.push(v);
+                    self.push_bits(Self::rd(mem, a, 10));
                     (57, 5)
                 }
                 7 => {
-                    if let Some(v) = self.src(0) {
-                        Self::wr(mem, a, 10, v.to_bits());
+                    if self.src(0).is_some() {
+                        Self::wr(mem, a, 10, self.st_raw(0));
                     }
                     self.pop();
                     (55, 5)
@@ -658,8 +702,11 @@ impl I8087 {
             },
             5 => match reg {
                 0 => {
-                    let v = Self::load_real64(mem, a);
-                    self.push(v);
+                    let d = Self::rd(mem, a, 8);
+                    match denormal_bits(d, 52, 0x3C01) {
+                        Some(bits) => self.push_bits(bits),
+                        None => self.push(Self::load_real64(mem, a)),
+                    }
                     (39, 4)
                 }
                 2 | 3 => {
@@ -675,16 +722,18 @@ impl I8087 {
                     // FRSTOR: environment + 8 registers in stack order
                     self.load_env(mem, a);
                     for i in 0..8 {
-                        let v = F80::from_bits(Self::rd(mem, a + 14 + i * 10, 10));
+                        let bits = Self::rd(mem, a + 14 + i * 10, 10);
                         let p = self.phys(i as usize);
-                        self.st[p] = v;
+                        let u = unnormal_value(bits);
+                        self.st[p] = u.unwrap_or_else(|| F80::from_bits(bits));
+                        self.raw[p] = u.map(|_| bits);
                     }
                     (205, 47)
                 }
                 6 => {
                     self.store_env(mem, a);
                     for i in 0..8 {
-                        Self::wr(mem, a + 14 + i * 10, 10, self.st(i as usize).to_bits());
+                        Self::wr(mem, a + 14 + i * 10, 10, self.st_raw(i as usize));
                     }
                     self.finit();
                     (205, 47)
@@ -753,6 +802,10 @@ impl I8087 {
                 // D8: ST = ST op ST(i)
                 let ar = Arith::from(reg);
                 let short = Self::short_mul(self.st(0), self.st(i));
+                // a product of significands of 2 or more (no normalizing shift left) was ~11
+                // clocks faster on a real 1101 (GRiDBench h12 vs h13/h15)
+                let m = |v: F80| (v.to_bits() as u64) as u128;
+                let big = m(self.st(0)) * m(self.st(i)) >= 1 << 127;
                 if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
                     match ar {
                         Arith::Com => self.compare(a, b),
@@ -768,7 +821,7 @@ impl I8087 {
                     }
                 }
                 if reg == 1 && !short {
-                    138
+                    if big { 127 } else { 138 }
                 }
                 else {
                     [77, 97, 45, 47, 77, 77, 198, 199][reg as usize]
@@ -899,8 +952,12 @@ impl I8087 {
     fn fxch(&mut self, i: usize) {
         let (a, b) = (self.src(0), self.src(i));
         if let (Some(a), Some(b)) = (a, b) {
+            let (ra, rb) = (self.raw[self.phys(0)], self.raw[self.phys(i)]);
             self.set_st(0, b);
             self.set_st(i, a);
+            let (p0, pi) = (self.phys(0), self.phys(i));
+            self.raw[p0] = rb;
+            self.raw[pi] = ra;
         }
     }
 
@@ -909,7 +966,12 @@ impl I8087 {
             0 => {
                 // FLD ST(i)
                 if let Some(v) = self.src(i) {
+                    let r = self.raw[self.phys(i)];
                     self.push(v);
+                    if self.st[self.phys(0)] == v {
+                        let p = self.phys(0);
+                        self.raw[p] = r;
+                    }
                 }
                 20
             }
@@ -990,7 +1052,7 @@ impl I8087 {
                         }
                         else {
                             self.sw |= SW_PE;
-                            c = busy_from_c(interp(ax.ilogb(), &F2XM1_C), 618, 707.9);
+                            c = f2xm1_busy(f80_to_f64(ax));
                         }
                     }
                     c
@@ -1044,7 +1106,7 @@ impl I8087 {
                         }
                         else if let Some((y, xr, c)) = fptan::fptan(x.to_bits()) {
                             self.set_st(0, F80::from_bits(y));
-                            self.push(F80::from_bits(xr));
+                            self.push_bits(xr);
                             self.sw |= SW_PE;
                             clocks = c;
                         }
@@ -1069,8 +1131,7 @@ impl I8087 {
                             let r = self.from_q(trans::atan2(to_q(y), to_q(x)));
                             self.set_st(1, r);
                             if xf != 0.0 && yf != 0.0 && xf.is_finite() && yf.is_finite() {
-                                let e = (yf / xf).abs().log2().floor() as i32;
-                                c = busy_from_c(interp(e, &FPATAN_C), 715, 713.0);
+                                c = fpatan_busy(yf, xf);
                             }
                         }
                         self.sw |= SW_PE;
@@ -1230,7 +1291,7 @@ impl I8087 {
             self.sw |= SW_C3 | SW_C0;
             return;
         }
-        let bits = v.to_bits();
+        let bits = self.raw[p].unwrap_or_else(|| v.to_bits());
         let exp = (bits >> 64) & 0x7FFF;
         let int_bit = (bits >> 63) & 1;
         if v.is_nan() {
@@ -1256,13 +1317,86 @@ impl I8087 {
 
 /// Times GRiDBench 2.0 measured on a real 1101 ("c": clocks scaled by AAM = 83, the way its
 /// report prints them), by the exponent of the argument (F2XM1) or of y/x (FPATAN).
-const F2XM1_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 461.0), (-10, 505.0), (-7, 575.0), (-4, 650.0), (-2, 704.0), (-1, 705.0)];
 /// FYL2X by the exponent of |m - 1| (m = mantissa folded to 0.707 .. 1.414), above and
 /// below 1; FYL2XP1 by the exponent of x (x < 0 about 155 less).
-const FYL2X_ABOVE_C: [(i32, f64); 3] = [(-24, 706.0), (-3, 1079.0), (-2, 1105.0)];
-const FYL2X_BELOW_C: [(i32, f64); 4] = [(-24, 549.0), (-6, 864.0), (-4, 923.0), (-2, 947.0)];
+const FYL2X_ABOVE_C: [(i32, f64); 3] = [(-24, 752.0), (-3, 1079.0), (-2, 1108.0)];
+const FYL2X_BELOW_C: [(i32, f64); 4] = [(-24, 595.0), (-6, 891.0), (-4, 923.0), (-2, 963.0)];
 const FYL2XP1_C: [(i32, f64); 7] = [(-60, 665.0), (-16, 675.0), (-12, 764.0), (-10, 812.0), (-7, 905.0), (-4, 969.0), (-2, 1023.0)];
-const FPATAN_C: [(i32, f64); 7] = [(-16, 380.0), (-12, 466.0), (-10, 510.0), (-4, 695.0), (-2, 760.0), (-1, 713.0), (0, 713.0)];
+
+/// FPATAN and F2XM1 run a pseudo-divide (pseudo-multiply) loop on the chip: each of the first
+/// 16 steps from the first non-zero digit costs time, and so does each digit. Fitted to
+/// GRiDBench 2.2 on a real 1101 (36 FPATAN inputs, rms 6 clocks; 34 F2XM1 inputs, rms 6).
+/// `steps` counts the digits of y/x in the base atan(2^-i) (FPATAN), of x in ln(1 + 2^-i)
+/// (F2XM1), for i = 0 .. 15.
+fn pseudo_digits(v: f64, w: f64, atan: bool) -> (u32, u32) {
+    let (mut y, mut x, mut r) = (v, w, v);
+    let mut first = None;
+    let mut digits = 0;
+    for i in 0..16 {
+        let t = 2f64.powi(-i);
+        let c = (1.0 + t).ln();
+        let mut n = 0;
+        if atan {
+            while y >= x * t && n < 3 {
+                (y, x) = (y - x * t, x + y * t);
+                n += 1;
+            }
+        }
+        else {
+            while r >= c && n < 3 {
+                r -= c;
+                n += 1;
+            }
+        }
+        if n > 0 && first.is_none() {
+            first = Some(i);
+        }
+        digits += n;
+    }
+    (16 - first.unwrap_or(16) as u32, digits)
+}
+
+/// Busy clocks for FPATAN with |y| <= |x| (both finite, non-zero). GRiDBench prints
+/// 352.1 + 1.0796 (busy - 382) in the emulator; the real chip printed 377.05 + 19.59 steps +
+/// 17.55 digits.
+fn fpatan_busy(y: f64, x: f64) -> u32 {
+    let (y, x) = (y.abs(), x.abs());
+    let (steps, digits) = if y <= x { pseudo_digits(y, x, true) } else { pseudo_digits(x, y, true) };
+    let p = 377.05 + 19.59 * steps as f64 + 17.55 * digits as f64;
+    (382.0 + (p - 352.1) / 1.0796).round() as u32
+}
+
+/// Busy clocks for F2XM1 of |x| (0 < |x| <= 1). GRiDBench prints 354.8 + 1.0806 (busy - 290)
+/// in the emulator; the real chip printed 379.72 + 19.52 steps + 5.55 digits.
+fn f2xm1_busy(ax: f64) -> u32 {
+    let (steps, digits) = pseudo_digits(ax.abs().min(1.0), 1.0, false);
+    let p = 379.72 + 19.52 * steps as f64 + 5.55 * digits as f64;
+    (290.0 + (p - 354.8) / 1.0806).round() as u32
+}
+
+/// The value of an 80-bit unnormal (exponent 1..7FFE, integer bit 0, significand not 0), or
+/// None for any other pattern.
+fn unnormal_value(bits: u128) -> Option<F80> {
+    let exp = ((bits >> 64) & 0x7FFF) as i32;
+    let m = bits as u64;
+    if exp == 0 || exp == 0x7FFF || m >> 63 != 0 || m == 0 {
+        return None;
+    }
+    let v = F80::from_u128(m as u128).value.scalbn(exp - 16383 - 63);
+    Some(if bits >> 79 != 0 { -v } else { v })
+}
+
+/// A denormal single (`frac` 23) or double (`frac` 52) as the 8087 loads it: an unnormal with
+/// the format's smallest exponent (`exp80`), the fraction at the top of the significand.
+fn denormal_bits(d: u128, frac: u32, exp80: u128) -> Option<u128> {
+    let f = d & ((1u128 << frac) - 1);
+    let e = (d >> frac) & if frac == 52 { 0x7FF } else { 0xFF };
+    if e != 0 || f == 0 {
+        return None;
+    }
+    let sign = (d >> (frac + if frac == 52 { 11 } else { 8 })) & 1;
+    Some(sign << 79 | exp80 << 64 | f << (63 - frac))
+}
 
 /// Piecewise linear in e, flat outside the table.
 fn interp(e: i32, t: &[(i32, f64)]) -> f64 {
@@ -1340,6 +1474,31 @@ mod tests {
         let sw = u16::from_le_bytes([m.0[0x300], m.0[0x301]]);
         assert_eq!(sw & 0x4500, 0x0100);
         assert_eq!(f.tw, 0xFFFF);
+    }
+
+    #[test]
+    fn denormal_double_loads_as_unnormal() {
+        // GRiDBench h33 on a real 1101: FST QWORD of 3BF993445B8731587EA3, read back with
+        // FLD QWORD + FSTP TBYTE, gives 3C010093445B87315800.
+        let mut m = Ram(vec![0; 0x400]);
+        let mut f = I8087::new();
+        let x: u128 = 0x3BF993445B8731587EA3;
+        for (i, b) in x.to_le_bytes()[..10].iter().enumerate() {
+            m.0[0x100 + i] = *b;
+        }
+        f.esc(&mut m, 0, 0xDB, 0x2E, Some(0x100), 0); // FLD TBYTE [100]
+        f.esc(&mut m, 0, 0xDD, 0x1E, Some(0x200), 0); // FSTP QWORD [200]
+        f.esc(&mut m, 0, 0xDD, 0x06, Some(0x200), 0); // FLD QWORD [200]
+        assert_eq!(f.st_bits(0), Some(0x3C010093445B87315800));
+        f.esc(&mut m, 0, 0xD9, 0xE5, None, 0); // FXAM: unnormal = C3 C2 C0 clear
+        assert_eq!(f.sw & 0x4500, 0);
+        f.esc(&mut m, 0, 0xDB, 0x3E, Some(0x300), 0); // FSTP TBYTE [300]
+        let mut out = [0u8; 16];
+        out[..10].copy_from_slice(&m.0[0x300..0x30A]);
+        assert_eq!(u128::from_le_bytes(out), 0x3C010093445B87315800);
+        // its value is the double's: times 2^1000 it is a normal number again
+        f.esc(&mut m, 0, 0xDD, 0x06, Some(0x200), 0);
+        assert_eq!(f80_to_f64(f.st(0)), f64::from_bits(u64::from_le_bytes(m.0[0x200..0x208].try_into().unwrap())));
     }
 
     #[test]

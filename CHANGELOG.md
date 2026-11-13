@@ -2,6 +2,43 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.8.1
+
+Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
+- 8087 FPATAN and F2XM1 take as long as the real chip for each input: their
+  time follows the chip's digit loop (steps from the first non-zero digit, and
+  the digits themselves), within about 6 clocks on 36 and 34 inputs (FPATAN
+  was a flat 712 clocks for most inputs, the real chip 380 to 843). FYL2X near
+  1 is about 50 clocks longer, a long FMUL whose significands multiply to 2 or
+  more about 11 shorter, and a store that has to denormalize its result (FST
+  of a number too small for a double) 49 longer, as on the real chip.
+- 8087 loads like the real chip: FLD of a denormal double or single gives an
+  unnormal (GRiDBench h33 reads back 3C010093445B87315800 as on the real 1101,
+  not the normalized 3BF9...), and FLD m80 of an unnormal keeps it (it used to
+  turn into a NaN). FSTP m80, FSAVE and FXAM see the chip's bit pattern.
+- The 113x models (1131, 1139) use the real 1137's memory timing: a RAM read or
+  write takes about one clock more than on the 1101, the display slots are
+  shorter and the refresh steal is 2 clocks. Gap rows against the real 1137:
+  1.2 % rms (was 2.0 %).
+- Bubble: a page's 64 bytes come into the FIFO over about 5 ms (400 clocks a
+  byte), so a read gives two FIFO interrupts a page (35 + 29 bytes) as on the
+  real 1101. Read FSA Status, Reset FIFO, Software Reset, Abort and MBM Purge
+  are shorter; Initialize takes 6 to 9 ms (the real 6.0 to 8.6), but stays
+  short (0.5 ms) after an MBM Purge until the next transfer. On a write the
+  FIFO takes data only from 1.2 ms before the first page passes, as the real
+  7220 (no bytes before the first interrupt).
+- Real-time clock: for a moment after each tenth (one 32.768 kHz period, about
+  30 us; the real length isn't measured, RTC_UPDATE_CLK sets it in CPU clocks)
+  the MM58174 is updating and its digits read 0Fh, as on the chip, so the
+  PROM's retry on 0Fh runs as on hardware.
+- ROMs: the 1109 boots the 1101's PROM, the 1121 the 1129's and the 1131 the
+  1139's, as on the real machines (they share PROMs), without a stand-in warning.
+- Results, GRiDBench 2.2 against the real machines: 1101 CPU/bus rows 1.07 %
+  rms, 8087 rows 2.5 % (was 5.7 %); 1139 against the real 1137 CPU/bus 1.49 %
+  (was 1.96 %). GRiDBench's bubble rows (GRiDBench 2.1b on a real 1101), ms,
+  emulated / real: same page 100.2 / 99.9, sequential 126.0 / 127.7, random
+  112.6 / 123.6, first/last 98.1 / 100.9.
+
 ## 0.8.0
 
 - The 2101 hard disk box runs low-level when roms holds its firmware

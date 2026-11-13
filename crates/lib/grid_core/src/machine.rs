@@ -218,7 +218,9 @@ impl GridMachine {
         let period = env_u32("GRID_REFRESH").unwrap_or(48);
         if period > 0 {
             cpu.set_option(CpuOption::ScheduleDramRefresh(true, period, period, true));
-            cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(4)));
+            // the 113x (real 1137) fits best with 2
+            let wait = if model.wide_screen() { 2 } else { 4 };
+            cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(wait)));
         }
         // JMP SHORT quirk: on a real Compass a chain of JMP SHORTs runs like taken Jcc's (1101
         // and 1137 GRiDBench 2.2 j01-j05, c55, c58, c59), as if the jump spent one more clock

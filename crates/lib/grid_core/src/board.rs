@@ -539,7 +539,7 @@ impl ExternalBoard for GridBoard {
                 self.rtc.tick(now);
                 let idb = self.machine_id[off >> 1];
                 let idn = if off & 1 == 1 { idb & 0xF0 } else { (idb & 0x0F) << 4 };
-                idn | (self.rtc.read(off) & 0x0F)
+                idn | (self.rtc.read(off, now) & 0x0F)
             }
             0x80000..=0x9FFFF if self.model.split_board() => self.rom_read(address),
             // The 7220 answers at DFE80/82; on the split board (real 1137, GRiDBench 2.2 u40) it

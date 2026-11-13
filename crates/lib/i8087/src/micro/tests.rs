@@ -145,7 +145,9 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             let before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
             old.esc(&mut NoMem, 0, first, modrm, None, 0);
             let res = new.exec(first & 7, modrm);
-            let ok = res.is_ok() && same(&old, &new);
+            // unnormals: the instruction-level core is no reference for them, so only
+            // check that the microcode runs to its end
+            let ok = res.is_ok() && (kinds == Kinds::All || same(&old, &new));
             if !ok {
                 fails += 1;
                 if shown < 2 {
@@ -202,6 +204,7 @@ fn stack_moves() {
     ops.extend([(0xD9, 0xD0), (0xD9, 0xF6), (0xD9, 0xF7)]); // FNOP, FDECSTP, FINCSTP
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::All, &CWS);
 }
 
 #[test]
@@ -210,6 +213,7 @@ fn constants_and_signs() {
     ops.extend([(0xD9, 0xE0), (0xD9, 0xE1)]); // FCHS, FABS
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::All, &CWS);
 }
 
 #[test]
@@ -219,4 +223,5 @@ fn examine_and_compare() {
     ops.push((0xDE, 0xD9)); // FCOMPP
     check(&ops, Kinds::Plain, &MASKED);
     check(&ops, Kinds::Denormal, &CWS);
+    check(&ops, Kinds::All, &CWS);
 }

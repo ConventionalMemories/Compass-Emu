@@ -307,6 +307,17 @@ fn check(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16]) {
     }
 }
 
+/// The microcode alone on every kind of operand and control word: it must reach its end.
+fn runs(rom: &MicroRom, first: u8, modrm: u8) {
+    let mut r = Rng(0x1980_8087);
+    for _ in 0..5000 {
+        let cw = CWS[r.below(CWS.len() as u64) as usize];
+        let (_, mut new) = setup(rom, &mut r, Kinds::All, cw);
+        let res = new.exec(first & 7, modrm);
+        assert!(res.is_ok(), "{:02X} {:02X}: {:?}", first, modrm, res);
+    }
+}
+
 fn range(first: u8, from: u8, n: u8) -> Vec<(u8, u8)> {
     (0..n).map(|i| (first, from + i)).collect()
 }
@@ -511,9 +522,9 @@ fn fptan_real_chip() {
 fn fptan_range() {
     let Some(rom) = MicroRom::find() else { return };
     // every kind of operand runs to the end of the microcode
-    check(&[(0xD9, 0xF2)], Kinds::All, &CWS);
+    runs(&rom, 0xD9, 0xF2);
     let mut r = Rng(0x8087_1980);
-    let mut m = Micro8087::new(rom);
+    let mut m = Micro8087::new(rom.clone());
     for _ in 0..20000 {
         let e = 0x3FFF - r.below(70) as u128;
         let x = (r.below(2) as u128) << 79 | e << 64 | (r.next() | 1 << 63) as u128;

@@ -46,6 +46,12 @@ stream of 16-bit words):
 | FSQRT | same, plus denormals |
 | FRNDINT, FSCALE, FXTRACT, FPREM | zeros, normals, infinities, NaNs, empties; all rounding modes; masked and unmasked |
 | FBLD, FBSTP | 0 to 18 digit numbers; zeros, normals, denormals, empties |
+| FPTAN | 19 results from a real 8087 (Compass 1101, GRiDBench 2.0): 18 bit-exact in both X and Y, one X one unit off; 20000 random arguments against the fitted model |
+
+FPTAN is the first routine checked against real hardware instead of the old core. It uses
+the CORDIC shift register, the arctangent constants and the SQUARE loop. The constant ROM's
+bits are not published, so the 16 arctangents are computed (atan(2^-n) scaled to 67 bits,
+rounded to nearest); the one result that is a unit off depends on their last bits.
 
 The multiply, divide, square-root and remainder loops are hardware inside the adder that the microcode
 only starts (a control word arms it, an adder word runs the loop counter down). Their inner
@@ -108,11 +114,11 @@ The microcode reading and the old core differ here, and only a real chip can say
    by a truncated count.
 9. FPREM by zero: the microcode has no test for it and runs the loop with a zero divisor.
 10. FBSTP of a NaN, infinity or too large a number: which bytes are under the FFFF?
-11. FPTAN: does the CORDIC path start at exponent -16 (Shirriff's reading of the constant)
-   or -15 (the earlier fit to the 1101 dumps)?
+11. The constant ROM's own bits (arctangents and logarithms, 67 bits each): one FPTAN result
+    in 19 is a unit off with computed constants.
 
 ## Not there yet
 
-The transcendentals (FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1), the environment
+FPATAN, F2XM1, FYL2X, FYL2XP1, the environment
 instructions (FLDCW, FSTENV, FSAVE...), clocks per micro-instruction, and the switch that
 lets the emulator run on this core.

@@ -30,7 +30,8 @@ pass without running and the emulator keeps the instruction-level core.
 
 ## What runs from the ROM today
 
-Register forms only (no memory operands yet):
+Register and memory forms (the memory operand is read and written as the bus interface's
+stream of 16-bit words):
 
 | Instructions | Checked against the instruction-level core on |
 | --- | --- |
@@ -38,6 +39,16 @@ Register forms only (no memory operands yet):
 | FLD1, FLDL2T, FLDL2E, FLDPI, FLDLG2, FLDLN2, FLDZ, FCHS, FABS | same |
 | FXAM, FTST, FCOM, FCOMP, FCOMPP | same |
 | FADD, FSUB, FSUBR (ST,ST(i) / ST(i),ST / pop forms) | zeros, normals, infinities, NaNs, empties; four rounding modes at 64, 53 and 24 bits; masked and unmasked |
+| FLD/FST/FSTP m32, m64, m80 | same, plus denormals |
+| FILD/FIST/FISTP m16, m32, m64 | same, plus denormals |
+| FADD/FSUB/FSUBR/FCOM/FCOMP with m32, m64, m16int, m32int | as the register forms |
+| FMUL, FDIV, FDIVR (register and memory forms) | as FADD |
+| FSQRT | same, plus denormals |
+
+The multiply, divide and square-root loops are hardware inside the adder that the microcode
+only starts (a control word arms it, an adder word runs the loop counter down). Their inner
+steps are not documented, so the model computes what the loop leaves behind (product,
+quotient or root with guard, round and sticky bits) rather than each step.
 
 Unnormal operands run to the end of the microcode but have no reference to compare with.
 
@@ -55,6 +66,15 @@ Run the comparison with `I8087_MICROCODE=/path/8087mc.txt cargo test -p i8087 mi
 - FCHS/FABS of an empty register store the indefinite NaN unchanged.
 - Precision control rounds the fraction once to 24 or 53 bits and leaves the exponent range
   alone.
+- NaNs load from and store to short and long reals as they are (fraction cut to size, no
+  exception, no "quieting").
+- Loading or using a denormal short/long/temporary real raises D; the load still happens
+  unless the stack also overflows.
+- A store that raises an unmasked exception writes nothing and pops nothing; FSTP m80 of an
+  empty register stores the indefinite NaN.
+- FIST/FISTP of a denormal is invalid.
+- FSQRT is computed bit by bit and rounded once (rounding and precision control); a
+  denormal or (in projective mode) infinite operand is invalid.
 
 ## Open questions for a real 8087
 
@@ -70,10 +90,15 @@ The microcode reading and the old core differ here, and only a real chip can say
    (assumed: the true guard/round/sticky)?
 5. Denormal operands in FADD/FSUB: the microcode turns them into unnormals with exponent 1
    and the result stays an unnormal with exponent 1.
-6. FPTAN: does the CORDIC path start at exponent -16 (Shirriff's reading of the constant)
+6. FMUL/FDIV results that underflow: the microcode rounds to 64 bits first and then again
+   as a denormal (double rounding, one unit off now and then).
+7. A denormal short or long real as a memory operand of FADD/FSUB/FMUL/FDIV stays an
+   unnormal, and so does the result.
+8. FPTAN: does the CORDIC path start at exponent -16 (Shirriff's reading of the constant)
    or -15 (the earlier fit to the 1101 dumps)?
 
 ## Not there yet
 
-Memory operands (the bus interface word stream), FMUL/FDIV/FSQRT (hardware loops), FPREM,
-FRNDINT, FSCALE, FXTRACT, the transcendentals, BCD, clocks per micro-instruction.
+FPREM, FRNDINT, FSCALE, FXTRACT, the transcendentals, BCD (FBLD/FBSTP), the environment
+instructions (FLDCW, FSTENV, FSAVE...), clocks per micro-instruction, and the switch that
+lets the emulator run on this core.

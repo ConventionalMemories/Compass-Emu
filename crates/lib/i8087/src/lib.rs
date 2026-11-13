@@ -64,12 +64,6 @@ fn f80_to_f64(x: F80) -> f64 {
     f64::from_bits(r.value.to_bits() as u64)
 }
 
-fn f64_to_f80(x: f64) -> F80 {
-    let d = Double::from_bits(x.to_bits() as u128);
-    let r: StatusAnd<F80> = d.convert(&mut false);
-    r.value
-}
-
 /// Instruction counters, for profiling.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FpuStats {
@@ -1404,33 +1398,68 @@ impl I8087 {
         }
     }
 
+    /// FSQRT as the microcode does it: bit by bit, correctly rounded once (rounding and
+    /// precision control), and only for normal numbers.
     fn sqrt(&mut self, x: F80) -> Option<F80> {
-        if x.is_zero() || x.is_nan() || x.is_pos_infinity() {
+        if x.is_zero() {
             return Some(x);
         }
-        if x.is_negative() {
+        let bits = x.to_bits();
+        let nan = x.is_nan();
+        if x.is_denormal() && self.exception(SW_DE) {
+            return None;
+        }
+        // invalid: negative, denormal, infinity in projective mode, any NaN (which stays)
+        if nan || x.is_negative() || x.is_denormal() || (x.is_infinite() && self.cw & 0x1000 == 0) {
             if self.exception(SW_IE) {
                 return None;
             }
-            return Some(indefinite());
+            return Some(if nan { x } else { indefinite() });
         }
-        // Start from the double result (scaled into range), then one Newton step in 80 bits.
-        let e = x.ilogb() & !1;
-        let xs = x.scalbn(-e);
-        let y0 = f64_to_f80(f80_to_f64(xs).sqrt());
-        let half = F80::from_bits(0x3FFE_8000_0000_0000_0000);
-        let q = xs.div_r(y0, Round::NearestTiesToEven).value;
-        let y1 = y0.add_r(q, Round::NearestTiesToEven).value.mul_r(half, Round::NearestTiesToEven).value;
-        let r = y1.scalbn(e / 2);
-        let mut f = SW_PE;
-        let sq = y1.mul_r(y1, Round::NearestTiesToEven);
-        if sq.status == Status::OK && sq.value.bitwise_eq(xs) {
-            f = 0;
+        if x.is_infinite() {
+            return Some(x);
         }
-        if f != 0 {
-            self.exception(f);
+        let e = (bits >> 64) & 0x7FFF;
+        let f = bits as u64 as u128;
+        // radicand 1 <= x < 4 with 63 fraction bits, root with 65 and a remainder
+        let n = (if e & 1 != 0 { f } else { f << 1 }) << 63;
+        let (mut root, mut rem) = (0u128, 0u128);
+        for i in (0..66).rev() {
+            rem = rem << 2 | if i >= 2 { (n >> (2 * (i - 2))) & 3 } else { 0 };
+            let trial = root << 2 | 1;
+            root <<= 1;
+            if rem >= trial {
+                rem -= trial;
+                root |= 1;
+            }
         }
-        Some(r)
+        let p = match (self.cw >> 8) & 3 {
+            0 => 24,
+            2 => 53,
+            _ => 64,
+        };
+        let drop = 66 - p;
+        let lost = root & ((1u128 << drop) - 1);
+        let inexact = lost != 0 || rem != 0;
+        let half = 1u128 << (drop - 1);
+        let mut m = root >> drop;
+        let up = match self.round() {
+            Round::NearestTiesToEven => lost > half || (lost == half && (rem != 0 || m & 1 != 0)),
+            Round::TowardPositive => inexact,
+            _ => false,
+        };
+        let mut e = ((e + 0x4000) >> 1) - 1 + (e & 1);
+        if up {
+            m += 1;
+            if m >> p != 0 {
+                m >>= 1;
+                e += 1;
+            }
+        }
+        if inexact {
+            self.exception(SW_PE);
+        }
+        Some(F80::from_bits(e << 64 | m << (64 - p)))
     }
 
     fn fxam(&mut self) {

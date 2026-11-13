@@ -197,7 +197,7 @@ fn describe(old: &I8087, new: &Micro8087) -> String {
 fn same(old: &I8087, new: &Micro8087, first: u8, modrm: u8) -> bool {
     // rounding writes C1 in the microcode (the instruction-level core leaves it alone)
     let store = first & 1 == 1 && modrm < 0xC0 && modrm & 0x10 != 0;
-    let m = if (first & 1 == 0 && modrm & 0x30 != 0x10) || store { 0x7D7F } else { 0x7F7F };
+    let m = if (first & 1 == 0 && modrm & 0x30 != 0x10) || store || (first, modrm) == (0xD9, 0xFA) { 0x7D7F } else { 0x7F7F };
     if old.sw & m != new.status_word() & m || old.tw != new.tag_word() {
         return false;
     }
@@ -410,6 +410,17 @@ fn multiply_divide() {
         ops.extend(mem(first, &[1, 6, 7]));
     }
     check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+#[test]
+fn square_root() {
+    let ops = [(0xD9, 0xFA)];
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::Plain, &ROUNDING);
     check(&ops, Kinds::Special, &ROUNDING);
     check(&ops, Kinds::Special, &CWS);

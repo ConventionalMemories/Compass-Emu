@@ -147,7 +147,8 @@ pub struct Micro8087 {
     round_h: u8,
     exp_conv: u16,
     counter: u8,
-    quotient: u64,
+    /// quotient / multiplier / radicand register (65 bits used by the square root)
+    quotient: u128,
     exp_adj: u8,
     sign_latch: bool,
     flag: bool,
@@ -165,11 +166,13 @@ pub struct Micro8087 {
     conv_fmt: Fmt,
     /// what the adder's loop hardware is armed for
     loop_mode: u8,
+    loop_grs: u8,
     pub trace: bool,
 }
 
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
+const LOOP_SQRT: u8 = 3;
 
 /// How the exponent converter treats the value it holds.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -217,6 +220,7 @@ impl Micro8087 {
             bus_out: Vec::new(),
             conv_fmt: Fmt::X80,
             loop_mode: 0,
+            loop_grs: 0,
             trace: false,
         }
     }
@@ -680,6 +684,7 @@ impl Micro8087 {
             // arm the adder's loop hardware: multiply, divide
             0x6948 => self.loop_mode = LOOP_MUL,
             0x6A48 => self.loop_mode = LOOP_DIV,
+            0x6C48 => self.loop_mode = LOOP_SQRT,
             0x60C0 => self.a().sign = false,
             0x61C0 => self.a().sign = true,
             0x6384 => self.sign_latch = !self.sign_latch,
@@ -770,7 +775,9 @@ impl Micro8087 {
             0x00 => Val::exp(self.shift_count),
             // the exponent converter's output
             0x01 => Val::exp(match self.conv_fmt {
-                Fmt::X80 => self.exp_conv,
+                // FSQRT's use: the exponent with a second bias, so that half of it is a
+                // biased exponent again (inferred)
+                Fmt::X80 => self.exp_conv.wrapping_add(0x4000),
                 Fmt::Load(diff, _) => self.exp_conv.max(1) + diff,
                 Fmt::Store(diff, _) => self.exp_conv.wrapping_sub(diff),
             }),
@@ -800,7 +807,7 @@ impl Micro8087 {
             // the shifter's output merged with the sum register
             0x1C => Val::wide(self.shl | (self.sum & FRAC_MASK)),
             0x15 => Val::wide(self.shr),
-            0x16 => Val::frac(self.quotient),
+            0x16 => Val::frac(self.quotient as u64),
             0x17 => Val::wide(self.tmpc),
             0x1A => Val::frac(self.frac_const()?),
             0x1B => Val::frac(1),
@@ -868,7 +875,7 @@ impl Micro8087 {
             0x12 => self.sum = v.wide & (FRAC_MASK | BIT64),
             0x13 => self.sum = v.wide,
             0x15 => self.counter = (v.f64() & 0x3F) as u8,
-            0x16 => self.quotient = v.f64(),
+            0x16 => self.quotient = (v.wide >> RND) & 0x1_FFFF_FFFF_FFFF_FFFF,
             0x17 => self.tmpc = v.wide,
             _ => return Err(format!("destination register {:02X}", dst)),
         }
@@ -894,7 +901,7 @@ impl Micro8087 {
         match self.loop_mode {
             LOOP_MUL => {
                 let n = 2 * steps;
-                let p = self.quotient as u128 * b;
+                let p = (self.quotient as u64 as u128) * b;
                 let lost = p & ((1u128 << n) - 1);
                 let grs = ((lost >> (n - 2)) << 1) | (lost & ((1u128 << (n - 2)) - 1) != 0) as u128;
                 self.sum = ((p >> n) << RND | grs) & WIDE_MASK;
@@ -909,8 +916,26 @@ impl Micro8087 {
                     let rem = (num % b) << 2;
                     (num / b, (rem / b) << 1 | (rem % b != 0) as u128)
                 };
-                self.quotient = q as u64;
+                self.quotient = q as u64 as u128;
                 self.sum = grs & 7;
+            }
+            LOOP_SQRT => {
+                // the radicand (1 <= x < 4, 63 fraction bits) is in the quotient register;
+                // the root (1 <= r < 2) builds up in the B register, one bit per step
+                let n = self.quotient << 63;
+                let (mut root, mut rem) = (0u128, 0u128);
+                for i in (0..steps + 2).rev() {
+                    let two = if i >= 2 { (n >> (2 * (i - 2))) & 3 } else { 0 };
+                    rem = rem << 2 | two;
+                    let trial = root << 2 | 1;
+                    root <<= 1;
+                    if rem >= trial {
+                        rem -= trial;
+                        root |= 1;
+                    }
+                }
+                self.breg = (root >> 2) << RND & FRAC_MASK;
+                self.loop_grs = ((root & 3) << 1 | (rem != 0) as u128) as u8;
             }
             _ => return Err("loop without a mode".into()),
         }
@@ -931,6 +956,10 @@ impl Micro8087 {
         let s = x + y + cin;
         self.carry = s & BIT64 != 0;
         self.sum = s & WIDE_MASK;
+        if self.loop_mode == LOOP_SQRT && !round_bits {
+            // the root leaves the loop with its guard, round and sticky bits (inferred)
+            self.sum |= self.loop_grs as u128;
+        }
         Ok(())
     }
 

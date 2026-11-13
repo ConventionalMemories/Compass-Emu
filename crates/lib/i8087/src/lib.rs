@@ -557,11 +557,12 @@ impl I8087 {
         let r = v.to_i128_r(bits, self.round(), &mut false);
         let mut out = r.value;
         let mut flags = 0;
-        if r.status.contains(Status::INVALID_OP) || v.is_nan() {
-            flags |= SW_IE;
+        // (a denormal is not a number an integer store accepts: invalid, like the microcode)
+        if r.status.contains(Status::INVALID_OP) || v.is_nan() || v.is_denormal() {
+            flags = SW_IE;
             out = -1i128 << (bits - 1); // integer indefinite
         }
-        if r.status.contains(Status::INEXACT) {
+        else if r.status.contains(Status::INEXACT) {
             flags |= SW_PE;
         }
         if flags != 0 && self.exception(flags) && flags & SW_IE != 0 {

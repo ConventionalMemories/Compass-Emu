@@ -656,6 +656,14 @@ impl Micro8087 {
             0x6084 => self.sign_latch = self.ra().sign,
             0x6280 => self.a().sign = self.sign_latch,
             0x6380 => self.a().sign = !self.sign_latch,
+            // sign transfers: the high byte picks the source (60 A, 62 latch, 63 not latch,
+            // 64 B, 65 A xor B), the low byte the destination (80 A, 84 latch, 88 B);
+            // C0/C8 write a constant
+            0x6480 => self.a().sign = self.rb().sign,
+            0x6580 => self.a().sign = self.ra().sign != self.rb().sign,
+            0x6088 => self.b().sign = self.ra().sign,
+            0x60C8 => self.b().sign = false,
+            0x61C8 => self.b().sign = true,
             0x60C0 => self.a().sign = false,
             0x61C0 => self.a().sign = true,
             0x6384 => self.sign_latch = !self.sign_latch,
@@ -671,7 +679,7 @@ impl Micro8087 {
                 self.shift_count = (self.shift_count & 0x38) | (f.leading_zeros().min(7)) as u16;
             }
             0x680A => self.breg = (self.breg & !7) | self.round_h as u128,
-            0x6904 => self.sum = (self.sum & !7) | self.round_h as u128,
+            0x6904 | 0x6804 => self.sum = (self.sum & !7) | self.round_h as u128,
             // precision control to the shift count: 23 or 52 (one less than the bits kept)
             0x6880 => self.shift_count = if self.precision_bits() == 24 { 23 } else { 52 },
             _ => return Err("control word".into()),

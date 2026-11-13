@@ -206,6 +206,18 @@ impl GridMachine {
         if let Some(v) = std::env::var("FPU_WAITMIN").ok().and_then(|v| v.parse().ok()) {
             fpu.wait_min = v;
         }
+        // FPU_CORE=micro: run the 8087 on its own microcode ROM, which the user supplies
+        // (I8087_MICROCODE or roms/8087mc.txt, see docs/8087-microcode.md). Without the ROM
+        // the instruction-level core carries on.
+        if std::env::var("FPU_CORE").is_ok_and(|v| v.eq_ignore_ascii_case("micro")) {
+            match i8087::micro::MicroRom::find() {
+                Some(rom) => {
+                    fpu.use_microcode(rom);
+                    eprintln!("8087: running on the microcode ROM");
+                }
+                None => eprintln!("8087: FPU_CORE=micro, but no microcode ROM found (I8087_MICROCODE or roms/8087mc.txt); using the instruction-level core"),
+            }
+        }
         cpu.bus_mut().install_coprocessor(Box::new(crate::fpu::Fpu(fpu)));
         cpu.reset();
         // Wait states on: display contention and the GPIB pseudo-DMA window need them.

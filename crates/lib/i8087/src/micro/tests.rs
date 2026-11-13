@@ -249,7 +249,10 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             let flags = old.sw | new.sw;
             // Also: with overflow or underflow unmasked the microcode stores the result with
             // its exponent moved by 6000h (the old core stores nothing).
-            let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && cw & 0x0100 == 0) || flags & !cw & (SW_OE | SW_UE) != 0;
+            // A product or quotient that underflows is rounded twice by the microcode: to 64
+            // bits first, then again as a denormal (one unit off now and then).
+            let muldiv = first & 1 == 0 && matches!((modrm >> 3) & 7, 1 | 6 | 7);
+            let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && (cw & 0x0100 == 0 || muldiv)) || flags & !cw & (SW_OE | SW_UE) != 0;
             let ok = res.is_ok() && (kinds == Kinds::All || open || mem_denormal || (same(&old, &new, first, modrm) && ram.0 == ram.1));
             if !ok {
                 fails += 1;
@@ -394,4 +397,21 @@ fn add_subtract_compare_memory() {
     check(&com, Kinds::Special, &MASKED);
     check(&com, Kinds::Denormal, &CWS);
     check(&com, Kinds::All, &CWS);
+}
+
+#[test]
+fn multiply_divide() {
+    let mut ops = Vec::new();
+    for first in [0xD8, 0xDC, 0xDE] {
+        ops.extend(range(first, 0xC8, 8)); // FMUL
+        ops.extend(range(first, 0xF0, 16)); // FDIV, FDIVR
+    }
+    for first in [0xD8, 0xDC, 0xDA, 0xDE] {
+        ops.extend(mem(first, &[1, 6, 7]));
+    }
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
 }

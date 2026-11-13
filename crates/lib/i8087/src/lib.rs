@@ -350,21 +350,39 @@ impl I8087 {
     }
 
     /// Round a result to the precision control setting (24, 53 or 64 bits).
+    /// Precision control: rounds the significand to 24 or 53 bits. The exponent keeps its
+    /// full range (the chip only rounds the fraction).
     fn precision(&self, r: StatusAnd<F80>) -> StatusAnd<F80> {
-        let rnd = self.round();
-        match (self.cw >> 8) & 3 {
-            0 => {
-                let s: StatusAnd<Single> = r.value.convert_r(rnd, &mut false);
-                let back: StatusAnd<F80> = s.value.convert(&mut false);
-                StatusAnd { status: r.status | s.status, value: back.value }
-            }
-            2 => {
-                let d: StatusAnd<Double> = r.value.convert_r(rnd, &mut false);
-                let back: StatusAnd<F80> = d.value.convert(&mut false);
-                StatusAnd { status: r.status | d.status, value: back.value }
-            }
-            _ => r,
+        let pc = (self.cw >> 8) & 3;
+        let bits = r.value.to_bits();
+        let e = (bits >> 64) & 0x7FFF;
+        if pc & 1 != 0 || e == 0 || e == 0x7FFF || bits >> 63 & 1 == 0 {
+            return r;
         }
+        let rnd = self.round();
+        // narrow with the exponent moved to 0, then put the exponent back
+        let mid = F80::from_bits((bits & !(0x7FFFu128 << 64)) | (0x3FFFu128 << 64));
+        let (status, back) = if pc == 0 {
+            let s: StatusAnd<Single> = mid.convert_r(rnd, &mut false);
+            let b: StatusAnd<F80> = s.value.convert(&mut false);
+            (s.status, b.value.to_bits())
+        }
+        else {
+            let d: StatusAnd<Double> = mid.convert_r(rnd, &mut false);
+            let b: StatusAnd<F80> = d.value.convert(&mut false);
+            (d.status, b.value.to_bits())
+        };
+        let e2 = e + ((back >> 64) & 0x7FFF) - 0x3FFF;
+        let value = if e2 >= 0x7FFF {
+            // rounded up out of range: overflow, by the rounding mode
+            let big: StatusAnd<F80> = F80::largest().mul_r(F80::largest(), rnd);
+            let v = if bits >> 79 != 0 { -big.value } else { big.value };
+            return StatusAnd { status: r.status | status | big.status, value: v };
+        }
+        else {
+            F80::from_bits((back & !(0x7FFFu128 << 64)) | (e2 << 64))
+        };
+        StatusAnd { status: r.status | status, value }
     }
 
     /// Finish an arithmetic result: flags, masked/unmasked handling. Returns Some(value) to store.
@@ -384,8 +402,29 @@ impl I8087 {
     }
 
     fn arith(&mut self, op: Arith, a: F80, b: F80) -> Option<F80> {
-        let rnd = self.round();
-        let r = match op {
+        // Any NaN operand is invalid on the 8087 (it has no quiet NaNs); masked, the result
+        // is the NaN with the larger fraction.
+        if a.is_nan() || b.is_nan() {
+            if matches!(op, Arith::Com | Arith::Comp) {
+                return None;
+            }
+            if self.exception(SW_IE) {
+                return None;
+            }
+            let fa = a.to_bits() as u64;
+            let fb = b.to_bits() as u64;
+            return Some(if !b.is_nan() || (a.is_nan() && fa >= fb) { a } else { b });
+        }
+        // Projective closure (the default): infinity has no sign, so infinity plus or minus
+        // infinity is always invalid.
+        if self.cw & 0x1000 == 0 && a.is_infinite() && b.is_infinite() && matches!(op, Arith::Add | Arith::Sub | Arith::SubR) {
+            return if self.exception(SW_IE) { None } else { Some(indefinite()) };
+        }
+        // With 24 or 53 bit precision the chip rounds once, from the exact result. Get that
+        // by chopping to 64 bits and keeping "inexact" as a sticky lowest bit.
+        let narrow = self.cw & 0x100 == 0;
+        let rnd = if narrow { Round::TowardZero } else { self.round() };
+        let mut r = match op {
             Arith::Add => a.add_r(b, rnd),
             Arith::Sub => a.sub_r(b, rnd),
             Arith::SubR => b.sub_r(a, rnd),
@@ -394,6 +433,25 @@ impl I8087 {
             Arith::DivR => b.div_r(a, rnd),
             Arith::Com | Arith::Comp => return None,
         };
+        if narrow {
+            let bits = r.value.to_bits();
+            let e = (bits >> 64) & 0x7FFF;
+            if r.status.contains(Status::INEXACT) && e != 0 && e != 0x7FFF {
+                r.value = F80::from_bits(bits | 1);
+            }
+            else if e == 0 || e == 0x7FFF {
+                // zero, denormal, overflow: as before, in the real rounding mode
+                let rnd = self.round();
+                r = match op {
+                    Arith::Add => a.add_r(b, rnd),
+                    Arith::Sub => a.sub_r(b, rnd),
+                    Arith::SubR => b.sub_r(a, rnd),
+                    Arith::Mul => a.mul_r(b, rnd),
+                    Arith::Div => a.div_r(b, rnd),
+                    _ => b.div_r(a, rnd),
+                };
+            }
+        }
         self.result(r)
     }
 
@@ -651,6 +709,11 @@ impl I8087 {
                     let a = self.opt(0);
                     self.fcom(a, Some(v), (reg == 3) as u32);
                 }
+                else if self.empty(0) {
+                    if !self.exception(SW_IE) {
+                        self.set_st(0, indefinite());
+                    }
+                }
                 else if let Some(st0) = self.src(0) {
                     {
                         if let Some(r) = self.arith(ar, st0, v) {
@@ -841,10 +904,14 @@ impl I8087 {
                     let (a, b) = (self.opt(0), self.opt(i));
                     self.fcom(a, b, (reg == 3) as u32);
                 }
-                else if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
-                    if let Some(r) = self.arith(ar, a, b) {
-                        self.set_st(0, r);
+                else if self.empty(0) || self.empty(i) {
+                    // an empty operand: invalid, and the indefinite NaN if masked
+                    if !self.exception(SW_IE) {
+                        self.set_st(0, indefinite());
                     }
+                }
+                else if let Some(r) = self.arith(ar, self.st(0), self.st(i)) {
+                    self.set_st(0, r);
                 }
                 if reg == 1 && !short {
                     if big { 127 } else { 138 }
@@ -869,12 +936,23 @@ impl I8087 {
                     self.fcom(a, b, (op == 6) as u32 + (reg == 3) as u32);
                     return (if op == 6 && reg == 3 { 50 } else { [45, 47][(reg & 1) as usize] }, 0);
                 }
-                if let (Some(a), Some(b)) = (self.src(i), self.src(0)) {
-                    if let Some(r) = self.arith(ar, a, b) {
-                        self.set_st(i, r);
+                let mut stored = true;
+                if self.empty(0) || self.empty(i) {
+                    if self.exception(SW_IE) {
+                        stored = false;
+                    }
+                    else {
+                        self.set_st(i, indefinite());
                     }
                 }
-                if op == 6 && !matches!(ar, Arith::Com | Arith::Comp) {
+                else if let Some(r) = self.arith(ar, self.st(i), self.st(0)) {
+                    self.set_st(i, r);
+                }
+                else {
+                    stored = false;
+                }
+                // no pop when an unmasked exception stopped the instruction
+                if op == 6 && stored {
                     self.pop();
                 }
                 if op == 6 {

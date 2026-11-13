@@ -65,9 +65,10 @@ stream of 16-bit words):
 | FRNDINT, FSCALE, FXTRACT, FPREM | zeros, normals, infinities, NaNs, empties; all rounding modes; masked and unmasked |
 | FBLD, FBSTP | 0 to 18 digit numbers; zeros, normals, denormals, empties |
 | FPTAN | 19 results from a real 8087 (Compass 1101, GRiDBench 2.0): 18 bit-exact in both X and Y, one X one unit off; 20000 random arguments against the fitted model |
-| FPATAN | 20000 random 0 < y < x against a quad precision arctangent: at most 1 unit off when y is within 2^12 of x, up to 5 units (always low) for smaller ratios, exact where it falls back to a plain division (ratio under 2^-63); y > x leaves y as the result, as measured on the real 1101 |
-| F2XM1 | 20000 random 0 < x <= 0.5 against the quad precision value: at most 2 units off |
-| FYL2X, FYL2XP1 | 20000 random operands each against the quad precision value: FYL2X at most 3 units off, FYL2XP1 (|x| < 1 - sqrt(2)/2) at most 5, mostly 1 |
+| FPATAN | 36 results from the real 1101 (GRiDBench 2.2): 34 bit-exact, 2 one unit off (atan of exactly 1/2: the constant ROM's last bits); 20000 random 0 < y < x against a quad precision arctangent; y > x leaves y as the result, as on the real chip |
+| F2XM1 | 34 results from the real 1101: 31 bit-exact, 3 one unit off; 20000 random 0 < x <= 0.5 against the quad precision value (at most 2 units off) |
+| FYL2X, FYL2XP1 | 15 and 25 results from the real 1101: FYL2X 15 of 15 bit-exact, FYL2XP1 24 of 25 (one a unit off); 20000 random operands each against quad precision |
+| FSQRT | also 12 of 12 real 1101 results bit-exact |
 
 FPTAN is the first routine checked against real hardware instead of the old core. It uses
 the CORDIC shift register, the arctangent constants and the SQUARE loop. The constant ROM's
@@ -137,13 +138,10 @@ The microcode reading and the old core differ here, and only a real chip can say
 10. FBSTP of a NaN, infinity or too large a number: which bytes are under the FFFF?
 11. The constant ROM's own bits (arctangents and logarithms, 67 bits each): one FPTAN result
     in 19 is a unit off with computed constants.
-12. FPATAN on small ratios: the microcode's chopped fixed-point divisions lose 2 to 5 units
-    of the last place when y is 2^13 or more below x. No real results exist to confirm
-    this (real-hw-tests item F1 would).
-
-13. F2XM1, FYL2X and FYL2XP1 have no real results to compare with either. Their logarithm
-    constants log2(1 + 2^-n) * 2^(n+66) are computed like the arctangents, and control word
-    6E44 (F2XM1, before the denominator's subtraction) is a no-op in the model.
+12. Six of the 110 real FPATAN, F2XM1 and FYL2XP1 results are one unit off. FPATAN of
+    exactly 1/2 is the arctangent constant itself, so the chip's constant differs from the
+    computed one in its last bits (see 11); the others may be the same thing or control
+    word 6E44 (F2XM1, before the denominator's subtraction), a no-op in the model.
 
 ## Timing
 

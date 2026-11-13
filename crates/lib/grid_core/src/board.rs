@@ -125,6 +125,11 @@ pub struct GridBoard {
     pub ram_extra_wait: u32,
     /// Split board video/memory control registers DFE00-DFE06 (last written).
     pub split_regs: [u8; 4],
+    /// Serial port select latches ST0-ST3 (last written): DFE10/12/14/16 on the split board,
+    /// DFE00/02/04/06 on the 1101 board. Patent FIG. 12: ST0-ST2 pick the clock sources and
+    /// the RS-422 transmit driver; GRiDLink multidrop sets ST0 (DFE10) only while sending.
+    #[serde(default)]
+    pub serial_select: [u8; 4],
     /// 113x large screen switched on.
     wide: bool,
     /// Next clock at which tick_to updates bubble, GPIB and keyboard.
@@ -228,6 +233,7 @@ impl GridBoard {
             ram_top: model.ram_size(),
             ram_extra_wait: 0,
             split_regs: [0; 4],
+            serial_select: [0; 4],
             wide: false,
             next_slow: 0,
             e0000_dma: false,
@@ -593,8 +599,10 @@ impl ExternalBoard for GridBoard {
         let split = self.model.split_board();
         match address {
             0xDFE00..=0xDFE07 if split && address & 1 == 0 => self.split_write(address, data),
-            // serial port select latches: nothing to model (channel A is the only port)
+            // serial port select latches (the link reads ST0 as the transmit driver)
+            0xDFE10..=0xDFE17 if split && address & 1 == 0 => self.serial_select[(address >> 1) & 3] = data,
             0xDFE10..=0xDFE1F if split => {}
+            0xDFE00..=0xDFE07 if !split && address & 1 == 0 => self.serial_select[(address >> 1) & 3] = data,
             0xDFE08..=0xDFE0F if split && address & 1 == 0 => self.rom_quarter[(address >> 1) & 3] = data,
             0xDFEA2 if split => self.rom_32k = data,
             0xDFEA8 if split => self.rom_enable = data,

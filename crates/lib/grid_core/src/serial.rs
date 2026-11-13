@@ -17,9 +17,10 @@
 //! they are delivered one byte time apart (x1 clock: 8 baud clocks per byte, bit stuffing
 //! not counted), with address search against WR6 (and FFh). The receive FIFO gets the frame
 //! bytes, the two CRC bytes (End of Frame in RR1 shows when the second one is at the top of
-//! the FIFO and stays until Error Reset) and one more byte after them: the GRiDLink driver's
-//! ShortRead waits for that fifth byte of a 4-byte frame before it reads RR1, so the chip
-//! must leave something there (an inference from the driver, not from a data sheet).
+//! the FIFO and stays until Error Reset) and, four byte times later, one more byte: the
+//! GRiDLink driver's ShortRead waits for a fifth byte of a 4-byte frame before it reads RR1,
+//! while its LongRead must not find one right after the CRC (both inferred from the driver,
+//! not from a data sheet).
 //! Special receive condition interrupts are not generated.
 
 use std::collections::VecDeque;
@@ -71,8 +72,11 @@ impl Channel {
     }
 
     fn push_rx(&mut self, b: u8, stat: u8) {
-        if self.rx_fifo.len() >= 4 {
-            // three FIFO bytes plus the one held in the shift register
+        if self.rx_fifo.len() >= 5 {
+            // three FIFO bytes, the shift register and the 8-bit delay ahead of the CRC
+            // checker (assumed: the GRiDLink ISR reaches its first data read about 900
+            // clocks after the address byte, when a 4-byte frame and the byte after it are
+            // all in; it then reads all five)
             self.rx_overrun = true;
             return;
         }
@@ -172,6 +176,14 @@ pub struct Serial8274 {
     rx_line_free: u64,
     /// Cable loops channel A's RTS back to CTS (GRiDLink point-to-point cable).
     pub cts_loop: bool,
+    /// GRiDLink multidrop: DCD on channel A means "another station is driving the line".
+    /// When set, DCD (while the link is up) is on while a received frame is on the line and
+    /// from the end of a frame the Compass sent until the end of the next frame it receives
+    /// (the primary turning its driver on to answer; the Compass's LongRead wants DCD at
+    /// once, and CableTest waits for DCD to go off before it answers a poll).
+    pub dcd_auto: bool,
+    /// dcd_auto: the Compass sent a frame and nothing has come back yet.
+    turnaround: bool,
 }
 
 impl Default for Serial8274 {
@@ -195,6 +207,8 @@ impl Serial8274 {
             rx_line: VecDeque::new(),
             rx_line_free: 0,
             cts_loop: false,
+            dcd_auto: false,
+            turnaround: false,
         }
     }
 
@@ -265,7 +279,7 @@ impl Serial8274 {
                 if sdlc && !ch.tx_frame.is_empty() && ch.tx_buf_time > ch.tx_shift_until {
                     // the shifter ran dry before this byte came: the frame ended there
                     let at = ch.tx_shift_until;
-                    Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
+                    self.turnaround |= Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
                     continue;
                 }
                 let start = ch.tx_shift_until.max(ch.tx_buf_time);
@@ -281,7 +295,7 @@ impl Serial8274 {
             }
             if sdlc && ch.tx_buf.is_none() && !ch.tx_frame.is_empty() && ch.tx_shift_until <= now {
                 let at = ch.tx_shift_until;
-                Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
+                self.turnaround |= Self::underrun(ch, c, at, cc, &mut self.sdlc_out, self.log);
             }
         }
         self.advance_sdlc_rx(now);
@@ -320,6 +334,9 @@ impl Serial8274 {
         let v = if reg < 2 {
             let ch = &mut self.ch[c];
             let v = ch.pop_rx();
+            if self.log && ch.sdlc() {
+                eprintln!("serial {} rx {:02X} at {}", if c == 0 { 'A' } else { 'B' }, v, now);
+            }
             if ch.rx_fifo.is_empty() {
                 ch.rx_int_pending = false;
             }
@@ -341,9 +358,10 @@ impl Serial8274 {
                     if ch.tx_buf.is_none() {
                         v |= 0x04;
                     }
-                    if ch.dcd {
+                    if self.dcd_now(c, now) {
                         v |= 0x08;
                     }
+                    let ch = &self.ch[c];
                     let cts = if c == 0 && self.cts_loop { ch.rts() } else { ch.cts };
                     if cts {
                         v |= 0x20;
@@ -372,7 +390,13 @@ impl Serial8274 {
                     }
                     v
                 }
-                2 if c == 1 => self.vector(),
+                2 if c == 1 => {
+                    let v = self.vector();
+                    if self.log {
+                        eprintln!("serial RR2B = {v:02X} at {now}");
+                    }
+                    v
+                }
                 _ => 0,
             }
         };
@@ -415,8 +439,10 @@ impl Serial8274 {
         else {
             7
         };
-        // WR2A bit 5: vector mode; 8086 mode puts the cause in bits 0-2, 8085 in bits 2-4.
-        if self.ch[0].wr[2] & 0x20 != 0 {
+        // WR2A bits 3-4: interrupt mode (00/01 8085 modes 1/2, 10 8086/88). 8086 mode puts
+        // the cause in bits 0-2, the 8085 modes in bits 2-4 (bit 5 only picks vectored or
+        // not). GRiDLink sets WR2A = 10h and compares RR2B with 6 (channel A receive).
+        if self.ch[0].wr[2] & 0x18 == 0x10 {
             (base & !0x07) | cause
         }
         else {
@@ -447,6 +473,9 @@ impl Serial8274 {
         let ch = &mut self.ch[c];
         let p = ch.ptr;
         ch.ptr = 0;
+        if self.log {
+            eprintln!("serial {} WR{} = {:02X} at {}", if c == 0 { 'A' } else { 'B' }, p, v, now);
+        }
         if p == 0 {
             ch.ptr = (v & 7) as usize;
             if v >> 6 == 3 {
@@ -492,7 +521,7 @@ impl Serial8274 {
     /// SDLC transmit underrun at clock `at`: with the EOM latch reset and Tx CRC on, the 8274
     /// sends the CRC and the closing flag (the frame is complete 3 byte times later);
     /// otherwise the frame is cut off without CRC and no station takes it.
-    fn underrun(ch: &mut Channel, c: usize, at: u64, cc: u64, out: &mut VecDeque<(u64, Vec<u8>)>, log: bool) {
+    fn underrun(ch: &mut Channel, c: usize, at: u64, cc: u64, out: &mut VecDeque<(u64, Vec<u8>)>, log: bool) -> bool {
         let frame = std::mem::take(&mut ch.tx_frame);
         if !ch.eom_latch && ch.wr[5] & 1 != 0 {
             ch.eom_latch = true;
@@ -502,6 +531,7 @@ impl Serial8274 {
             }
             if c == 0 {
                 out.push_back((ch.tx_shift_until, frame));
+                return true;
             }
         }
         else {
@@ -510,6 +540,18 @@ impl Serial8274 {
                 eprintln!("sdlc tx underrun without CRC: {} bytes dropped", frame.len());
             }
         }
+        false
+    }
+
+    /// Channel `c`'s DCD input at clock `now`.
+    fn dcd_now(&self, c: usize, now: u64) -> bool {
+        let ch = &self.ch[c];
+        if c != 0 || !self.dcd_auto || !ch.sdlc() {
+            return ch.dcd;
+        }
+        let cc = self.char_clocks(0);
+        let on_line = self.rx_line.front().is_some_and(|&(t, _, _)| now + 2 * cc >= t);
+        ch.dcd && (self.turnaround || on_line)
     }
 
     /// SDLC receive on channel A: frames from `sdlc_in` go onto the line one byte time apart,
@@ -534,8 +576,11 @@ impl Serial8274 {
                 let st = if i == 0 { 1 } else if i == n + 1 { 0x80 } else { 0 };
                 self.rx_line.push_back((t, b, st));
             }
-            // the closing flag shifts one more byte into the FIFO
-            t += cc;
+            // One more byte after the frame. ShortRead (no timeout) waits for it before it
+            // reads RR1; LongRead reads one byte after End of Frame only if one is there, so it
+            // must not come soon after the second CRC byte (the exact core reaches that check
+            // about 200 clocks after reading it). Four byte times after the CRC suits both.
+            t += 4 * cc;
             self.rx_line.push_back((t, 0x7E, 2));
             self.rx_line_free = t;
         }
@@ -544,6 +589,10 @@ impl Serial8274 {
                 break;
             }
             self.rx_line.pop_front();
+            if st & 2 != 0 {
+                // closing flag: the sender lets go of the line
+                self.turnaround = false;
+            }
             let ch = &mut self.ch[0];
             if st & 1 != 0 {
                 let search = ch.wr[3] & 4 != 0;

@@ -210,6 +210,86 @@ impl SerialLink {
     }
 }
 
+/// GRiDLink cable: the 8274's channel A in SDLC mode, carried as whole frames over TCP.
+///
+/// Wire format (both directions; see docs/gridlink.md): a stream of messages, each
+/// `length` (u16, little-endian: the bytes that follow it), `type` (u8), payload.
+///   type 46h 'F'  one SDLC frame that passed its CRC: address, control, then the rest
+///                 (for GRiDLink I and XID frames a 16-bit LE length and the data); no flags,
+///                 no CRC, no bit stuffing.
+///   type 48h 'H'  hello, sent once by each side on connecting: ASCII "GRiDLink-TCP 1".
+/// Messages of any other type are skipped, so later versions can add line-state messages.
+pub struct GridLink {
+    link: SerialLink,
+    inbuf: VecDeque<u8>,
+    up: bool,
+    pub frames_out: u64,
+    pub frames_in: u64,
+}
+
+pub const GRIDLINK_HELLO: &[u8] = b"GRiDLink-TCP 1";
+
+impl GridLink {
+    /// `spec`: tcp:PORT, tcp:HOST:PORT (wait for a connection) or connect:[HOST:]PORT.
+    pub fn open(spec: &str) -> Result<GridLink, String> {
+        if !spec.starts_with("tcp:") && !spec.starts_with("connect:") {
+            return Err("GRiDLink needs tcp:PORT, tcp:HOST:PORT or connect:[HOST:]PORT (a PC serial port can't do SDLC)".into());
+        }
+        Ok(GridLink { link: SerialLink::open(spec)?, inbuf: VecDeque::new(), up: false, frames_out: 0, frames_in: 0 })
+    }
+
+    pub fn connected(&self) -> bool {
+        self.link.connected()
+    }
+
+    fn message(out: &mut Vec<u8>, kind: u8, payload: &[u8]) {
+        out.extend(((payload.len() + 1) as u16).to_le_bytes());
+        out.push(kind);
+        out.extend(payload);
+    }
+
+    /// Send the frames the Compass finished; take in the frames the other side sent.
+    pub fn pump(&mut self, frames: impl Iterator<Item = Vec<u8>>, into: &mut VecDeque<Vec<u8>>) {
+        let mut out = Vec::new();
+        if self.up {
+            for f in frames {
+                Self::message(&mut out, b'F', &f);
+                self.frames_out += 1;
+            }
+        }
+        else {
+            frames.for_each(drop);
+        }
+        let mut raw = VecDeque::new();
+        self.link.pump(&out, &mut raw, 0.0);
+        let now_up = self.link.connected();
+        if now_up != self.up {
+            self.up = now_up;
+            self.inbuf.clear();
+            if now_up {
+                let mut hello = Vec::new();
+                Self::message(&mut hello, b'H', GRIDLINK_HELLO);
+                self.link.pump(&hello, &mut raw, 0.0);
+            }
+        }
+        self.inbuf.extend(raw);
+        loop {
+            if self.inbuf.len() < 2 {
+                break;
+            }
+            let n = self.inbuf[0] as usize | (self.inbuf[1] as usize) << 8;
+            if self.inbuf.len() < 2 + n {
+                break;
+            }
+            let msg: Vec<u8> = self.inbuf.drain(..2 + n).skip(2).collect();
+            if msg.first() == Some(&b'F') && msg.len() >= 3 {
+                into.push_back(msg[1..].to_vec());
+                self.frames_in += 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +320,33 @@ mod tests {
         }
         assert_eq!(inb.iter().copied().collect::<Vec<u8>>(), b"hello");
         assert_eq!(ina.iter().copied().collect::<Vec<u8>>(), b"world");
+    }
+
+    #[test]
+    fn gridlink_frames_over_tcp() {
+        let mut a = GridLink::open("tcp:23988").unwrap();
+        let mut b = GridLink::open("connect:23988").unwrap();
+        let (mut ina, mut inb) = (VecDeque::new(), VecDeque::new());
+        for _ in 0..50 {
+            b.pump(std::iter::empty(), &mut inb);
+            a.pump(std::iter::empty(), &mut ina);
+            if a.connected() && b.connected() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(a.connected() && b.connected());
+        let big: Vec<u8> = [0x82u8, 0x10, 0x08, 0x02].into_iter().chain((0..520).map(|i| i as u8)).collect();
+        a.pump(vec![vec![0xC0, 0xBF], big.clone()].into_iter(), &mut ina);
+        for _ in 0..50 {
+            a.pump(std::iter::empty(), &mut ina);
+            b.pump(std::iter::empty(), &mut inb);
+            if inb.len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(inb, VecDeque::from(vec![vec![0xC0, 0xBF], big]));
+        assert_eq!((a.frames_out, b.frames_in), (2, 2));
     }
 }

@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.8.1)
+## Status (0.9.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -175,7 +175,11 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   (`--serial tcp:2323`, or `tcp:0.0.0.0:2323` for another PC), the other connects
   (`--serial connect:2323` or `connect:HOST:2323`, retried every second); DCD and CTS are
   up while connected. Received bytes are paced at the receiver's own bit rate.
-  Synchronous (GRiDLink SDLC) modes are not modelled.
+  SDLC (GRiDLink, 0.9.0): channel A sends and takes whole frames (`sdlc_out` / `sdlc_in`),
+  CRC by underrun after WR0 = C0h, address search, End of Frame, CTS looped to RTS for the
+  point-to-point cable, DCD following the line for multidrop; `--gridlink` carries the
+  frames over TCP (`docs/gridlink.md`). Tested against the real client code (CableTest)
+  with `grid_core/tests/gridlink.rs`. No GRiD Server is built in.
 - Sound: the sound DAC (DFE4:2), volume DAC (DFE4:4) and the DTMF chip on 8255 port B,
   played through the PC's sound card (`--mute` to turn it off).
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.

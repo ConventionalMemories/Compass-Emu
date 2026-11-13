@@ -16,6 +16,70 @@ impl FpuMem for NoMem {
     fn write_u8(&mut self, _: u32, _: u8) {}
 }
 
+#[derive(Clone, PartialEq)]
+struct Ram([u8; 16]);
+impl FpuMem for Ram {
+    fn read_u8(&mut self, a: u32) -> u8 {
+        self.0[a as usize & 15]
+    }
+    fn write_u8(&mut self, a: u32, v: u8) {
+        self.0[a as usize & 15] = v
+    }
+}
+
+/// A random memory operand for a memory form: reals and integers with the edge cases
+/// (zero, smallest, largest, denormal, infinity, NaN) well represented.
+fn operand(r: &mut Rng, first: u8, modrm: u8, kinds: Kinds) -> Ram {
+    let reg = (modrm >> 3) & 7;
+    let mut m = Ram([0xEE; 16]);
+    let (bytes, v): (usize, u128) = match (first & 7, reg) {
+        (3, 5) | (3, 7) => {
+            let v = loop {
+                if let Some(v) = value(r, kinds) {
+                    break v;
+                }
+            };
+            (10, v)
+        }
+        (0, _) | (1, _) | (4, _) | (5, _) => {
+            let (ebits, fbits) = if first & 4 == 0 { (8, 23) } else { (11, 52) };
+            let emax = (1u128 << ebits) - 1;
+            let n = match kinds {
+                Kinds::Plain => 6,
+                Kinds::Special => 8,
+                _ => 9,
+            };
+            let (e, f) = match r.below(n) {
+                0 => (0, 0),
+                1..=3 => (emax / 2 - 4 + r.below(9) as u128, r.next() as u128),
+                4 => (1 + r.below(emax as u64 - 1) as u128, r.next() as u128),
+                5 => ([1, emax - 1][r.below(2) as usize], [0, u64::MAX as u128, r.next() as u128][r.below(3) as usize]),
+                6 => (emax, 0),
+                7 => (emax, r.next() as u128 | 1),
+                _ => (0, (r.next() >> r.below(52)) as u128 | 1),
+            };
+            ((ebits + fbits + 1) / 8, (r.below(2) as u128) << (ebits + fbits) | e << fbits | (f & ((1 << fbits) - 1)))
+        }
+        _ => {
+            let bytes = match (first & 7, reg) {
+                (7, 5) | (7, 7) => 8,
+                (2, _) | (3, _) => 4,
+                _ => 2,
+            };
+            let v = match r.below(6) {
+                0 => 0,
+                1 => r.below(200) as i64 - 100,
+                2 => i64::MIN >> (64 - 8 * bytes),
+                3 => i64::MAX >> (64 - 8 * bytes),
+                _ => (r.next() as i64) >> r.below(64),
+            };
+            (bytes, v as u128)
+        }
+    };
+    m.0[..bytes].copy_from_slice(&v.to_le_bytes()[..bytes]);
+    m
+}
+
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -132,7 +196,8 @@ fn describe(old: &I8087, new: &Micro8087) -> String {
 
 fn same(old: &I8087, new: &Micro8087, first: u8, modrm: u8) -> bool {
     // rounding writes C1 in the microcode (the instruction-level core leaves it alone)
-    let m = if first & 1 == 0 && modrm & 0x30 != 0x10 { 0x7D7F } else { 0x7F7F };
+    let store = first & 1 == 1 && modrm < 0xC0 && modrm & 0x10 != 0;
+    let m = if (first & 1 == 0 && modrm & 0x30 != 0x10) || store { 0x7D7F } else { 0x7F7F };
     if old.sw & m != new.status_word() & m || old.tw != new.tag_word() {
         return false;
     }
@@ -152,9 +217,19 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
         for _ in 0..rounds {
             let cw = cws[r.below(cws.len() as u64) as usize];
             let (mut old, mut new) = setup(&rom, &mut r, kinds, cw);
-            let before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
-            old.esc(&mut NoMem, 0, first, modrm, None, 0);
-            let res = new.exec(first & 7, modrm);
+            let mut before = format!("top {} st(i) r{}\n{}", new.top, (new.top + (modrm & 7)) & 7, describe(&old, &new));
+            let mut ram = (Ram([0; 16]), Ram([0; 16]));
+            let res = if modrm < 0xC0 {
+                ram.0 = operand(&mut r, first, modrm, kinds);
+                ram.1 = ram.0.clone();
+                before += &format!("  mem {:02X?}\n", &ram.0 .0[..10]);
+                old.esc(&mut ram.0, 0, first, modrm, Some(0), 0);
+                new.exec_mem(first & 7, modrm, Some((&mut ram.1, 0)))
+            }
+            else {
+                old.esc(&mut NoMem, 0, first, modrm, None, 0);
+                new.exec(first & 7, modrm)
+            };
             // unnormals: the instruction-level core is no reference for them, so only
             // check that the microcode runs to its end
             // Two places where the microcode core is on its own (to be checked on a real
@@ -166,7 +241,7 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // Also: with overflow or underflow unmasked the microcode stores the result with
             // its exponent moved by 6000h (the old core stores nothing).
             let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && cw & 0x0100 == 0) || flags & !cw & (SW_OE | SW_UE) != 0;
-            let ok = res.is_ok() && (kinds == Kinds::All || open || same(&old, &new, first, modrm));
+            let ok = res.is_ok() && (kinds == Kinds::All || open || (same(&old, &new, first, modrm) && ram.0 == ram.1));
             if !ok {
                 fails += 1;
                 if shown < 2 {
@@ -175,6 +250,9 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
                         Err(f) => f.to_string(),
                         Ok(_) => "different result".into(),
                     }, before, describe(&old, &new));
+                    if modrm < 0xC0 {
+                        out += &format!("  mem old {:02X?}\n      new {:02X?}\n", &ram.0 .0[..10], &ram.1 .0[..10]);
+                    }
                 }
             }
         }
@@ -259,5 +337,23 @@ fn add_subtract() {
     check(&ops, Kinds::Plain, &ROUNDING);
     check(&ops, Kinds::Special, &ROUNDING);
     check(&ops, Kinds::Special, &CWS);
+    check(&ops, Kinds::All, &CWS);
+}
+
+/// modrm bytes of the memory forms /reg (mod 00, any rm: the microcode only sees the byte)
+fn mem(first: u8, regs: &[u8]) -> Vec<(u8, u8)> {
+    regs.iter().map(|&reg| (first, reg << 3 | 6)).collect()
+}
+
+#[test]
+fn load_store_real() {
+    let mut ops = mem(0xD9, &[0, 2, 3]); // FLD, FST, FSTP m32
+    ops.extend(mem(0xDD, &[0, 2, 3])); // m64
+    ops.extend(mem(0xDB, &[5, 7])); // FLD, FSTP m80
+    check(&ops, Kinds::Plain, &MASKED);
+    check(&ops, Kinds::Plain, &ROUNDING);
+    check(&ops, Kinds::Special, &ROUNDING);
+    check(&ops, Kinds::Denormal, &ROUNDING);
+    check(&ops, Kinds::Denormal, &CWS);
     check(&ops, Kinds::All, &CWS);
 }

@@ -6,9 +6,9 @@ README follows in README.md.
 
 Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), accurate
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
-Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
+Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 
-## Status (0.9.1)
+## Status (0.10.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -31,7 +31,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - A fast whole-instruction 8086 core for build mode (`grid_core::fast86`), switchable at any
   instruction boundary; same SingleStepTests results for registers, flags and memory.
 - 1101 board (`crates/lib/grid_core`): 16K boot PROM, 256K RAM, 80130 interrupt
-  controller, IR3 vertical blank, 320x240 screen at 0400h.
+  controller (8259A on the 113x), IR3 vertical blank, 320x240 screen at 0400h.
 - TMS9914 GPIB with the pseudo-DMA window at E0000h; 2101 hard disk (address 4), 2101
   floppy (5) and 2102 floppy (6) at the level of GRiD's disk protocol. In exact mode the
   hard disk has mechanics like a real 2101 with an ST-225: 3600 rpm, 17 sectors a track,
@@ -179,11 +179,21 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   Abort takes 0.14-0.16 ms, and an Abort between two pages of a read leaves multi-page
   reads stopping after one page with status 2C until a Software Reset. `tests/devices.rs`
   replays GRiDProbe's seek patterns and the B7 states against the real numbers.
-- The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5).
+- The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5);
+  the 113x's discrete 8259A takes it (assumed, not tested on a real 1137).
 - Bus details measured on a real 1101: empty memory and ports read the address still on
   the bus (low byte on even addresses, A8-A15 on odd ones), D0000-DEFFF reads FF on even
   bytes, the PROM also shows at F0000-FBFFF, ports 00-7F mirror the 80130 every 10h,
-  RTC/ID reads have wait states, timers 0 and 2 count and timer 1 doesn't.
+  RTC/ID reads have wait states.
+- Timers (ports 08h-0Eh, `grid_core/src/timers.rs`), per board as the motherboard photos
+  and GRiDProbe's T tests show. 110x/112x, 80130: timer 0 counts at 2.5 MHz (CPU clock / 2),
+  timer 1 counts timer 0's output pulses (GRiD's 32-bit stopwatch chain), timer 2 at 5 MHz;
+  they run from power-on, there is no read-back, 0Eh reads FFh. 113x, discrete 8254: all
+  three at the 5 MHz CPU clock, read-back command (status B4/B6 as on the real 1137), a
+  counter stands at FFFF until a count is written, 0Eh reads the bus; timer 1 counts only
+  while timer 0 has a count (how the board gates it is not known). Timer 2 is the 8274's
+  baud clock on every model, and the 8274 runs from the 5 MHz CPU clock (no 4.032 MHz
+  crystal on any motherboard; that one is on the modem, for its TMS99532).
 - 8274 serial controller, asynchronous mode, IR0, bit rate from the 80130 baud timer;
   the window version connects it to a TCP port (`--serial tcp:2323`) or a real serial
   port (`--serial COM3`). Two emulators link like a null-modem cable: one listens
@@ -196,19 +206,30 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   frames over TCP (`docs/gridlink.md`). Tested against the real client code (CableTest)
   with `grid_core/tests/gridlink.rs`. No GRiD Server is built in.
 - Sound: the sound DAC (DFE4:2), volume DAC (DFE4:4) and the DTMF chip on 8255 port B,
-  played through the PC's sound card (`--mute` to turn it off).
+  played through the PC's sound card (`--mute` to turn it off). All on the modem board,
+  except on the 1137: no modem and no 8255 (DFEC0-DFECF read FFh, so Modem~Device~ finds no
+  modem), DACs and DTMF chip on the motherboard. ASSUMED for the 1137 until SoundTest runs
+  on one: the DACs answer at the same addresses and a write-only latch at DFEC2 drives the
+  DTMF chip with the 8255 port B bits.
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.
 - Models (`GridModel` in grid_core/src/machine.rs, `--model` in the window version,
   `GRID_MODEL` headless):
 
-  | Model | Board | RAM | Screen | Boot PROM used |
-  |-------|-------|-----|--------|----------------|
-  | 1101 | original | 256K | 320 x 240 | 1101 rev 4 (rev 3 if rev 4 is missing) |
-  | 1109 | original | 512K | 320 x 240 | 1101 (same PROM) |
-  | 1121 | split | 256K | 320 x 240 | 1129 (same PROM; if missing, 1101) |
-  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101) |
-  | 1131 | split | 256K | 512 x 256 | 1139 (same PROM) |
-  | 1139 | split | 512K | 512 x 256 | 1139 |
+  | Model | Board | RAM | Screen | Timers + PIC | Timing fit | Sound | Boot PROM used | Keyboard 8741 |
+  |-------|-------|-----|--------|--------------|------------|-------|----------------|---------------|
+  | 1101 | original | 256K | 320 x 240 | 80130 | real 1101 | modem | 1101 rev 4 (rev 3 if rev 4 is missing) | 300067-01 |
+  | 1109 | original | 512K | 320 x 240 | 80130 | real 1101 | modem | 1101 (same PROM) | 300067-01 |
+  | 1121 | split | 256K | 320 x 240 | 80130 | real 1101 | modem | 1129 (same PROM; if missing, 1101) | 300067-01 |
+  | 1129 | split | 512K | 320 x 240 | 80130 | real 1101 | modem | 1129 (if missing, 1101) | 300067-01 |
+  | 1131 | split | 256K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 (same PROM) | 300067-01 |
+  | 1137 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | motherboard, no modem | 1139 (same PROM, as on Kurt's 1137) | 300001-02 |
+  | 1139 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 | 300067-01 |
+
+  The 112x carry the 1101's 80130 and the 300063-00 gate array of the later 1101 boards, so
+  they take the 1101's timers, interrupts and RAM/display timing, with the Compass II ROM
+  sockets, PROM and plug-in bubble board. The 113x share the 1137's 300415-00 gate array
+  and 8254, so they take the timing fitted to Kurt's real 1137. Each keyboard firmware
+  stands in for the other when missing (the early 1101's 300027-01 is not dumped).
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
   DFE00h (DFE00 = 1 selects the video chip, DFE04 bit 2 clear = large screen; the 113x OS
@@ -224,9 +245,9 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   real 1137: 281 clocks a line, 297 lines (59.9 Hz; AAM loop in refreshes, the 1137's RTC
   was dead), IR3 at the top, 32 display fetches on every line, one every 16 states (gap rows 1.2%
   rms). The split board's bus also follows the 1137: empty memory reads the address, the
-  PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
-  DFE8F.
-  All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
+  PROM shows at F8000-FBFFF, the 7220 repeats up to DFE8F; on the 113x (8259A + 8254)
+  ports 4/6 mirror the PIC and 0E is open, on the 112x (80130) they behave as on the 1101.
+  All seven boot to the Executive (1131/1137/1139 with the 113x build, the others with the 11xx
   build). The 1139 PROM can't stand in for the 1121/1129 PROM: it keeps its data
   at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
   error in CCOS". The 1129 PROM (data at 0298:0, like the 1101's) boots the 11xx build on

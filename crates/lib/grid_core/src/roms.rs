@@ -1,8 +1,8 @@
 //! Which ROM files a model boots from, looked up in a roms folder under MAME's names.
 //!
 //! Boot PROM: the model's own pair (`1129even.ccprom.bin` ...) when present. The models
-//! share PROMs: the 1109 uses the 1101's (rev 4), the 1121 the 1129's and the 1131 the
-//! 1139's. The 1139 PROM can't stand in for the 1121/1129: it
+//! share PROMs: the 1109 uses the 1101's (rev 4), the 1121 the 1129's and the 1131 and 1137
+//! the 1139's (Kurt's real 1137 has the 1139 PROM, 300442-17/300441-17). The 1139 PROM can't stand in for the 1121/1129: it
 //! keeps its data at 0440:0, where the 11xx build of CCOS loads. Without the 1129 PROM the
 //! 1101 PROM stands in, with the split board also answering the 1101's GPIB DMA window at
 //! E0000 (`GridBoard::e0000_dma`).
@@ -67,11 +67,16 @@ pub fn find(model: GridModel, dir: &Path) -> RomSet {
             true,
             Some(format!("no {} boot PROM in roms, using the 1101's (put 1129even/odd.ccprom.bin in roms)", model.name())),
         ),
-        GridModel::Compass1131 => (pair("1139"), false, None),
+        GridModel::Compass1131 | GridModel::Compass1137 => (pair("1139"), false, None),
         GridModel::Compass1139 => (own, false, None),
     };
-    let k2 = p("300001-02.bin");
-    let keyboard = if model.split_board() && k2.exists() { k2 } else { p("300067-01.bin") };
+    // Keyboard 8741 firmware as the boards carry it (photos): 300001-02 on the 1137 ("TEMP
+    // 300001-02", dumped from Kurt's 1137), 300067-01 on the 1121 and 1139 (the early 1101's
+    // 300027-01 is not dumped, so 300067-01 stands in for the 110x). Either stands in for the
+    // other when missing.
+    let (k_own, k_other) = (p("300001-02.bin"), p("300067-01.bin"));
+    let (k_own, k_other) = if model == GridModel::Compass1137 { (k_own, k_other) } else { (k_other, k_own) };
+    let keyboard = if !k_own.exists() && k_other.exists() { k_other } else { k_own };
     RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note, fd2102: find_2102(dir), hd2101: find_2101(dir) }
 }
 

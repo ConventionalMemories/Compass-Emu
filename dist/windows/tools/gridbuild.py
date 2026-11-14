@@ -280,9 +280,9 @@ def build(src, use_state=True, debug=False):
             shutil.copyfile(base, img)
         else:
             shutil.copyfile(DISK, img)
-            # the GRiD-OS build for the model that runs the build: 113x for the 1131/1139
+            # the GRiD-OS build for the model that runs the build: 113x for the 1131/1137/1139
             # (and MAME's 1139), 11xx for the others
-            wide = MODEL in ('1131', '1139') or not use_emu
+            wide = MODEL in ('1131', '1137', '1139') or not use_emu
             r = subprocess.run([sys.executable, os.path.join(HERE, 'gridmodel.py'), '1139' if wide else '1101', img, '--no-check'],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             if r.returncode:

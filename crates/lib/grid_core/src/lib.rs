@@ -6,6 +6,7 @@
 //! Memory map follows MAME's gridcomp.cpp and GRiD's own CP sources.
 
 pub mod board;
+pub mod timers;
 pub mod bubble;
 pub mod serial;
 pub mod sound;
@@ -33,7 +34,7 @@ pub mod symbols;
 pub mod oscalls;
 
 pub use board::GridBoard;
-pub use machine::{GridMachine, GridModel};
+pub use machine::{GridMachine, GridModel, TimerChip};
 
 /// serde for byte arrays longer than 32 (saved machine states).
 pub(crate) mod bytes_n {

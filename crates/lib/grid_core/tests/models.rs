@@ -10,7 +10,8 @@ fn machine(m: GridModel) -> GridMachine {
 fn model_table() {
     assert_eq!(GridModel::parse("1139"), Some(GridModel::Compass1139));
     assert_eq!(GridModel::parse("grid1121"), Some(GridModel::Compass1121));
-    assert_eq!(GridModel::parse("1137"), None);
+    assert_eq!(GridModel::parse("1137"), Some(GridModel::Compass1137));
+    assert_eq!(GridModel::parse("1138"), None);
     for m in GridModel::ALL {
         let ram = if matches!(m, GridModel::Compass1101 | GridModel::Compass1121 | GridModel::Compass1131) { 256 } else { 512 };
         assert_eq!(m.ram_size(), ram * 1024, "{m:?}");

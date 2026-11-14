@@ -1,7 +1,7 @@
 //! GRiD 2101 hard disk and floppy box, low-level: its board CPU runs the real firmware (ROM
 //! 300205-05 for the 20 MB drive, 300205-06 for the 10 MB one).
 //!
-//! The board ("Disk Controller II", assembly 100371-00, from a photo of Kurt's 2101 and the
+//! The board ("Disk Controller II", assembly 100371-00, from a photo of a real 2101 and the
 //! ROM's own accesses; the board CPU's DS is 0040h, so DS-relative addresses are 400h lower):
 //! - Intel 8088 with an 8284A clock (crystal marked DS-1200, taken as 12 MHz: 4 MHz CPU;
 //!   GRID_2101_MHZ overrides it). 8 KB RAM (2186) at 0-1FFFh, 8 KB ROM at E000h of every

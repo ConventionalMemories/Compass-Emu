@@ -1,22 +1,10 @@
-"""Make CHANGELOG.md and docs/user-guide.md from dist/windows/README.txt (the text that
-ships in the Windows zip). Run from the repository root after editing README.txt."""
+"""Make docs/user-guide.md from dist/windows/README.txt (the text that ships in the Windows
+zip). Run from the repository root after editing README.txt. CHANGELOG.md is edited by hand."""
 import re
 
 lines = open('dist/windows/README.txt').read().split('\n')
-i = next(k for k, l in enumerate(lines) if l.startswith('New in'))
-guide, notes = lines[2:i], lines[i:]
-
-out = ['# Changelog', '', "Compass-Emu versions (newest first). MartyPC's own changelog is in "
-       '[MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).', '']
-for l in notes:
-    m = re.match(r'^New in (\S+)', l)
-    if m:
-        out += ['## ' + m.group(1), '']
-    elif l.startswith('Not there yet'):
-        out += ['## Not there yet', '']
-    else:
-        out.append(l[2:] if l.startswith('  ') else l)
-open('CHANGELOG.md', 'w').write('\n'.join(out).rstrip() + '\n')
+i = next(k for k, l in enumerate(lines) if l.startswith('Versions'))
+guide = lines[2:i]
 
 g = '# Compass-Emu user guide\n\nThe same text ships as README.txt in the Windows zip.\n'
 sec, body = None, []

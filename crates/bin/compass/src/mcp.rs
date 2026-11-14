@@ -2,11 +2,12 @@
 //! message per line) with tools to build GRiD programs, drive an emulated Compass (boot,
 //! type, run, screenshots, memory) and time code fragments.
 //!
-//! Claude Code: `claude mcp add compass -- C:\GRiD-MAME\compass-emu\compass.exe mcp`
+//! Claude Code: `claude mcp add compass -- C:\path\to\compass.exe mcp`
 //! (or an .mcp.json entry with command compass.exe and args ["mcp"]).
 //!
-//! Environment: GRID_ROOT = the GRiD-MAME folder (default: the folder above compass.exe, when
-//! it has tools\gridbuild.py), GRID_MODEL = default model (1129).
+//! Environment: GRID_DEV_DISK = the development disk for grid_build (the build inside
+//! compass.exe); GRID_ROOT = a folder with tools\gridbuild.py for the older Python build
+//! (default: the folder above compass.exe, when it has one); GRID_MODEL = default model (1129).
 
 use std::{
     io::{BufRead, Write},
@@ -36,8 +37,8 @@ fn tools() -> Value {
     json!([
         {
             "name": "grid_build",
-            "description": "Compile, link and test-run a GRiD Pascal (+ ASM-86) program with the GRiD's own tools on an emulated Compass (gridbuild.py build). SOURCE is a .pas file, a project folder or a project name (\"hello\" = projects\\hello\\hello.pas). Returns the build messages (compiler errors, BUILD OK/FAILED) and the GRiD screen at the end. NAME.lst, NAME.run, screen.png and output\\ land next to the source. debug: true also keeps the symbols (NAME.pas.obj files, same code) for grid_debug sym FOLDER.",
-            "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "model": model, "debug": {"type": "boolean"}}, "required": ["source"]}
+            "description": "Compile, link and test-run a GRiD Pascal (+ ASM-86) program with the GRiD's own tools on an emulated Compass. SOURCE is a .pas file or a project folder. With `disk` (or GRID_DEV_DISK) = a development disk image with the GRiD Pascal compiler, the build runs inside compass.exe (as Project > Build); otherwise it uses tools\\gridbuild.py in GRID_ROOT, where SOURCE may also be a project name (\"hello\" = projects\\hello\\hello.pas). Returns the build messages (compiler errors, BUILD OK/FAILED) and the GRiD screen at the end. NAME.lst, NAME.run, screen.png and output\\ land next to the source. debug: true also keeps the symbols (NAME.pas.obj files, same code) for grid_debug sym FOLDER.",
+            "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "disk": {"type": "string", "description": "development disk image (only read)"}, "model": model, "debug": {"type": "boolean"}}, "required": ["source"]}
         },
         {
             "name": "grid_boot",
@@ -333,7 +334,11 @@ impl Server {
     fn build(&mut self, a: &Value) -> Result<Vec<Value>, String> {
         let source = a["source"].as_str().ok_or("source is needed")?;
         let model = self.model(a)?;
-        let root = grid_root().ok_or("cannot find the GRiD-MAME folder with tools\\gridbuild.py: set GRID_ROOT")?;
+        let disk = a["disk"].as_str().map(PathBuf::from).or_else(|| std::env::var_os("GRID_DEV_DISK").map(PathBuf::from));
+        if let Some(disk) = disk {
+            return self.build_inside(source, disk, a.get("debug").and_then(|v| v.as_bool()).unwrap_or(false));
+        }
+        let root = grid_root().ok_or("give `disk` (a development disk image) or set GRID_DEV_DISK; or set GRID_ROOT to a folder with tools\\gridbuild.py")?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let start = SystemTime::now();
         let mut out = None;
@@ -359,6 +364,36 @@ impl Server {
         // the screen at the end, next to the source
         let dir = project_dir(&root, source);
         let shot = dir.join("screen.png");
+        if let Ok(meta) = std::fs::metadata(&shot) {
+            if meta.modified().map(|t| t >= start).unwrap_or(false) {
+                if let Ok(png) = std::fs::read(&shot) {
+                    content.push(image(&png));
+                }
+            }
+        }
+        Ok(content)
+    }
+}
+
+impl Server {
+    /// The build built into compass.exe (src/build.rs), as Project > Build.
+    fn build_inside(&mut self, source: &str, disk: PathBuf, debug: bool) -> Result<Vec<Value>, String> {
+        let p = PathBuf::from(source.trim_end_matches(['\\', '/']));
+        let project = if p.is_file() { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) } else { p };
+        let start = SystemTime::now();
+        let job = crate::build::BuildJob { project: project.clone(), disk, roms: crate::default_path(""), debug, exact: false };
+        let mut msg = String::new();
+        for m in crate::build::spawn(job) {
+            match m {
+                crate::build::BuildMsg::Line(l) => {
+                    msg.push_str(&l);
+                    msg.push('\n');
+                }
+                crate::build::BuildMsg::Done(r) => msg.push_str(if r.ok { "BUILD OK" } else { "BUILD FAILED" }),
+            }
+        }
+        let mut content = vec![text(msg.trim().to_string())];
+        let shot = project.join("screen.png");
         if let Ok(meta) = std::fs::metadata(&shot) {
             if meta.modified().map(|t| t >= start).unwrap_or(false) {
                 if let Ok(png) = std::fs::read(&shot) {

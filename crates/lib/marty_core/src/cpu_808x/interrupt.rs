@@ -219,6 +219,10 @@ impl Intel808x {
         );
         self.int_count += 1;
 
+        let extra = crate::cpu_808x::INT_EXTRA.load(std::sync::atomic::Ordering::Relaxed);
+        if extra > 0 {
+            self.cycles(extra);
+        }
         self.biu_fetch_suspend(); // 1a3 SUSP
         cycles_mc!(self, 0x1a3, 0x1a4, 0x1a5);
         self.push_flags();

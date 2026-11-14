@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 
-## Status (0.9.0)
+## Status (0.9.1)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -69,6 +69,8 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   boot PROM's first try fails while the box runs its self test). Against the real 2102
   (GRiDBench 2.1b, a Gotek in the box) with the motor running: same page 200 ms (real 212),
   sequential 121 (133), random 243 (235), first/last 403 (415), steps of 1/16 196 (172).
+  GRiDProbe 0.0.13's floppy test: the same page again 181 ms (real 185), after 12-30 s idle
+  (the box powers the drive down) 1.8-1.9 s (real 1.9-2.0).
   `GRID_2102=protocol` uses the protocol model instead; `BOXLOG=1` prints the bytes the box
   moves, `FDCLOG=1` every WD2797 command. Bench test: `FD2102_ROM=rom cargo test --test
   lle2102`.
@@ -82,10 +84,15 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   8291A INT or WD INTRQ (no 8259), NMI = the back-panel test button. The Xebec S1410 stays at
   command level (`s1410`: TUR, recal, sense, format, check, read, read long, write, seek,
   init params, buffer commands, diagnostics; format fill 6Ch), timed after an ST-225:
-  seeks 1/38/200/611 cylinders 20/62/85/130 ms, 3600 rpm, 17 sectors, interleave 4
-  (`S1410_IL`, `S1410_SEEK`). Against a real 1101 + 2101 (GRiDBench 2.1b): same page 17.0
-  (real 19.0), sequential 23.8 (21.1), random 55.8 (53.5), first/last 133.7 (130.3), steps
-  117.8 (122.5). The 2101 floppy (address 5) goes through the firmware too: its format
+  3600 rpm, 17 sectors, interleave 5 (the real drive's sector IDs; `S1410_IL`), heads-in
+  times measured inside a real box (Disk Toolkit 0.4.1: 1 cylinder 9.5 ms, 38 21.5 ms, 611
+  70.4 ms; `S1410_SEEK`). The Seek command is buffered (it answers after 1.5 ms + 20 us a
+  cylinder, and Test Ready says not ready until the heads are in); a read's or write's own
+  seek waits that long again plus 8 ms (`S1410_SETTLE`) before its first sector;
+  Recalibrate steps back at 3 ms a cylinder; commands decode in 0.44 ms. The box's CPU time
+  is stretched 4.7% (`BOX_SLOW`). Against a real 1101 + 2101 (GRiDBench 2.1b): same page
+  21.1 (real 19.0), sequential 26.8 (21.1), 8 pages 63.8 (53.5), random 132.8 (130.3),
+  steps of 1/16 118.4 (122.5). The 2101 floppy (address 5) goes through the firmware too: its format
   writes interleave 3 with no skew, and an empty slot gives error 128 (the WD READY line).
   The 4-character display shows in the status bar. `GRID_2101=protocol` uses the protocol
   model; `GRID_2101_EARLY` (default 4 s), `GRID_2101_MHZ`. Bench test: `HD2101_ROM=rom
@@ -135,21 +142,25 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   ~6 clocks. Like the chip, FLD of a denormal single or double gives an unnormal (exponent
   3F81h / 3C01h, integer bit 0), and FLD m80 keeps an unnormal; FSTP m80, FSAVE and FXAM see
   that pattern, arithmetic uses its value (the chip's unnormal arithmetic is not modelled). 8087 code is slow on a real Compass because GRiD-OS's
-  loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
-  95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
-  within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
+  loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET):
+  55.8 clocks over a plain WAIT on the 1101 and 57.8 on the 113x (GRiDProbe on a real 1101
+  and 1137: 55.7 and 58.7; INT/IRET take 1 (113x: 2) clocks more than MartyPC's 8088
+  model, a WAIT 2 more, `INT_EXTRA` / `WAIT_EXTRA`). GRiDProbe's 8087 rows (FNOP, FLD/FSTP,
+  FDIV, short and long FMUL, a long FMUL that rounds up +5) are within about a clock of
+  the real chip; FADD is ~5 clocks fast. Raw fragments with
   real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
-- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 270 clocks a line, 306
-  lines (60.5 Hz), IR3 rising as the picture starts at the top and high for 276 lines (113x:
-  292 of 297) (GRiDBench on a real 1101: beam finder for the lines, 2.2 d11 and GRiDProbe
-  d15/d16 for the frame and the IR3 level in CPU clocks), and display RAM contention:
-  the display takes one RAM slot (5 states) every 32 states (10.7 clocks, 20 a line; 113x:
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 307 clocks a line, 268
+  lines (60.8 Hz), IR3 rising on line 3 of the picture and high for 241 lines (113x: 316
+  clocks x 263 lines, 60.2 Hz, IR3 high 259 lines) (GRiDProbe 0.0.13's beam finder on a
+  real 1101 and 1137, with its own row loop counted, and d16/l54 for the IR3 level), and
+  display RAM contention:
+  the display takes one RAM slot (6 states) every 32 states (10.7 clocks, 20 a line; 113x:
   every 16 states, 32 a line, 3 states each, and a CPU access needs the RAM for 4 states, so
   data accesses are ~1 clock slower than on the 1101 as on a real 1137) on every line, blank
   ones too (GRiDProbe's contention map is flat across the frame), and a CPU access that
   starts inside a slot waits for its end; plus a 4-clock bus steal every 48 clocks (113x: 2).
   Fitted with the JMP SHORT quirk to GRiDBench 2.2's gap rows (c50-c61, j01-j30, REP per
-  word: 1.05% rms, 3% at most) and the whole 1101 report.
+  word: 1.2% rms on the 1101, 1.3% on the 113x) and the whole 1101 report.
   The window shows each screen word as the beam fetched it, so racing the beam (and
   tearing) looks as on the real screen.
 - 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
@@ -162,8 +173,12 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   clocks while a page passes (two FIFO interrupts a page, 35 + 29 bytes, as on the real 1101);
   a write's FIFO takes data from 1.2 ms before the first page. Initialize takes ~6 ms and
   turns to the next of 40 stop positions (0.5 ms after an MBM Purge, until the next
-  transfer); the short commands take their measured 0.08-0.43 ms. `tests/devices.rs` replays GRiDProbe's seek
-  patterns against the real numbers.
+  transfer); the short commands take their measured 0.08-0.43 ms. As on the real 1101
+  (GRiDProbe B7): writes end with status 42 (parity bit; GRiD-OS ignores it), Read FSA
+  Status gives FF 20 20 20 20 20 (28 for an MBM written since the last Software Reset),
+  Abort takes 0.14-0.16 ms, and an Abort between two pages of a read leaves multi-page
+  reads stopping after one page with status 2C until a Software Reset. `tests/devices.rs`
+  replays GRiDProbe's seek patterns and the B7 states against the real numbers.
 - The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5).
 - Bus details measured on a real 1101: empty memory and ports read the address still on
   the bus (low byte on even addresses, A8-A15 on odd ones), D0000-DEFFF reads FF on even

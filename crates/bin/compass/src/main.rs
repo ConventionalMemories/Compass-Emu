@@ -53,7 +53,7 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.9.0";
+pub const VERSION: &str = "0.9.1";
 
 fn usage() -> ! {
     eprintln!(

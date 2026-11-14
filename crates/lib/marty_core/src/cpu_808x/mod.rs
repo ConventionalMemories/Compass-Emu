@@ -92,6 +92,12 @@ use marty_common::syntax_token::*;
 /// Extra clocks a JMP SHORT spends before it suspends prefetching (a machine quirk fitted to a
 /// real GRiD Compass; 0 = the plain 8086 of the SingleStepTests).
 pub static JMP_SHORT_EXTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Extra clocks an interrupt (INT n, INT 3, INTO, a hardware interrupt) spends before it
+/// suspends prefetching (fitted to a real GRiD Compass; 0 = the plain 8086).
+pub static INT_EXTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Extra clocks of a WAIT instruction before it samples TEST (fitted to a real GRiD Compass;
+/// 0 = the plain 8086 of the SingleStepTests).
+pub static WAIT_EXTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[cfg(feature = "cpu_validator")]
 use crate::cpu_validator::ValidatorType;

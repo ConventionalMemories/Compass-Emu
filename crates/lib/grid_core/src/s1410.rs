@@ -37,7 +37,7 @@ pub fn timing() -> &'static Timing {
     T.get_or_init(|| {
         let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(d) * 1000;
         Timing {
-            cmd: env("S1410_CMD", 600),
+            cmd: env("S1410_CMD", 440),
             byte: env("S1410_BYTE", 2),
             ecc: env("S1410_ECC", 300),
             sel: env("S1410_SEL", 10),
@@ -46,11 +46,24 @@ pub fn timing() -> &'static Timing {
     })
 }
 
-const SEEK: [(u32, u64); 4] = [(1, 20_000), (38, 62_000), (200, 85_000), (611, 130_000)];
+const SEEK: [(u32, u64); 12] = [
+    (1, 9_500),
+    (2, 12_600),
+    (4, 13_200),
+    (8, 14_900),
+    (16, 16_000),
+    (38, 21_500),
+    (64, 26_500),
+    (128, 28_500),
+    (200, 32_200),
+    (306, 41_500),
+    (400, 51_000),
+    (611, 70_400),
+];
 
-/// Seek time (ns) for `d` cylinders: ST-225 in a real 2101, fitted to the real 1101 + 2101
-/// GRiDBench 2.1b disk rows through the low-level box (e41 19.0 / e42 21.1 / e43 53.5 /
-/// e44 130.3 / e46 122.5 ms real vs 17.0 / 23.8 / 55.8 / 133.7 / 117.8 emulated).
+/// Time for the heads to arrive (ns) `d` cylinders away: measured inside a real 2101 by the
+/// Disk Toolkit 0.4.1 box probe (Seek, then Test Ready until good, less the 2.5 ms the pair
+/// takes for 0 cylinders), smoothed where the run was not monotonic (64-128).
 pub fn seek_ns(d: u32) -> u64 {
     static TABLE: std::sync::OnceLock<Vec<(u32, u64)>> = std::sync::OnceLock::new();
     // S1410_SEEK="1:20000,38:65000,611:135000" (cylinders:us) overrides the curve for fitting.
@@ -83,13 +96,24 @@ pub fn seek_ns(d: u32) -> u64 {
     us * 1000
 }
 
-/// The drive's format interleave (S1410_IL). Default 4: fits the real box best, although the
-/// 2101 firmware's own format command writes interleave 5 (the real drive was likely formatted
-/// elsewhere). A format through the emulated box does not change this.
+/// The drive's format interleave (S1410_IL). Default 5: the 2101 firmware's own format, and what
+/// the box probe read from the sector IDs of a real 2101's drive.
 fn interleave() -> u64 {
     static IL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *IL.get_or_init(|| std::env::var("S1410_IL").ok().and_then(|v| v.parse().ok()).unwrap_or(4))
+    *IL.get_or_init(|| std::env::var("S1410_IL").ok().and_then(|v| v.parse().ok()).unwrap_or(5))
 }
+
+/// A buffered seek: the S1410 answers the Seek command once it has sent the step pulses
+/// (2 ms + 20 us a cylinder; a real box took 2-14 ms), while the heads arrive later.
+const SEEK_CMD_NS: u64 = 1_500_000;
+const STEP_PULSE_NS: u64 = 20_000;
+/// Recalibrate steps back to track 0 slowly (a real box needed over 1.7 s from cylinder 611).
+const RECAL_STEP_NS: u64 = 3_000_000;
+/// Request Sense answers sooner than other commands (0.27 ms against Test Ready's 0.41 ms).
+const SENSE_EARLY_NS: u64 = 140_000;
+/// Extra wait after a Read's or Write's own seek (see `S1410::seek`); S1410_SETTLE (us).
+static IMPLIED_SETTLE_NS: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(|| std::env::var("S1410_SETTLE").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(8_000) * 1000);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Phase {
@@ -144,6 +168,9 @@ pub struct S1410 {
     sbuf: Vec<u8>,
     /// Last sector timing: when the controller can start the next read (read pointer).
     read_free: u64,
+    /// When the heads arrive after a buffered seek (Test Ready reports not ready until then).
+    #[serde(default)]
+    heads_at: u64,
     pub log: bool,
     /// Commands seen, for the box log.
     #[serde(skip)]
@@ -178,6 +205,7 @@ impl S1410 {
             cyls: 612,
             sbuf: vec![0; SECTOR],
             read_free: 0,
+            heads_at: 0,
             log: std::env::var_os("BOXLOG").is_some(),
             trace: Vec::new(),
         }
@@ -283,18 +311,36 @@ impl S1410 {
         lba / (SPT * self.heads.max(1))
     }
 
-    /// Time at or after `t` when sector `s` (0-16, interleave 5) of a track starts under the head.
+    /// Time at or after `t` when sector `s` (0-16) of a track starts under the head.
     fn sector_start(t: u64, s: u32) -> u64 {
         let target = (s as u64 * interleave() % SPT as u64) * SLOT_NS;
         let a = t % ROT_NS;
         t + (target + ROT_NS - a) % ROT_NS
     }
 
+    /// The seek a Read or Write does by itself. Its first sector comes later than the heads
+    /// arrive by a Seek command: a real box (Disk Toolkit 0.1.0 seek test, per read less the
+    /// no-seek read) takes 26 / 78 / 151 ms more for 1 cylinder / random / full stroke, about
+    /// twice the heads-in time plus 8 ms, as if the controller let the heads settle as long
+    /// again before it reads an ID.
     fn seek(&mut self, t: u64, lba: u32) -> u64 {
+        let t = t.max(self.heads_at);
         let c = self.cyl_of(lba);
         let d = c.abs_diff(self.cyl);
         self.cyl = c;
-        t + seek_ns(d)
+        let settle = if d > 0 { seek_ns(d) + *IMPLIED_SETTLE_NS } else { 0 };
+        self.heads_at = t + seek_ns(d) + settle;
+        self.heads_at
+    }
+
+    /// A Seek command: the heads arrive after the measured heads-in time.
+    fn seek_cmd(&mut self, t: u64, lba: u32) -> u64 {
+        let t = t.max(self.heads_at);
+        let c = self.cyl_of(lba);
+        let d = c.abs_diff(self.cyl);
+        self.cyl = c;
+        self.heads_at = t + seek_ns(d);
+        self.heads_at
     }
 
     /// Host reads a byte (data-in, status or message phase) at `now`, completing REQ/ACK.
@@ -481,13 +527,18 @@ impl S1410 {
                 if not_ready {
                     self.err(0x04, 0);
                 }
+                else if t < self.heads_at {
+                    // heads still moving after a buffered seek: no seek complete
+                    self.err(0x02, 0);
+                }
             }
             0x01 => {
                 if not_ready {
                     self.err(0x04, 0);
                 }
                 else {
-                    done = t + seek_ns(self.cyl);
+                    done = t.max(self.heads_at) + self.cyl as u64 * RECAL_STEP_NS;
+                    self.heads_at = done;
                     self.cyl = 0;
                 }
             }
@@ -497,7 +548,7 @@ impl S1410 {
                 self.buf = vec![self.sense | valid, (self.sense_lba >> 16) as u8 & 0x1F, (self.sense_lba >> 8) as u8, self.sense_lba as u8];
                 self.sense = 0;
                 self.phase = Phase::DataIn;
-                self.req_at = t;
+                self.req_at = t.saturating_sub(SENSE_EARLY_NS);
                 return;
             }
             0x04 | 0x06 | 0x07 | 0x0E => {
@@ -559,7 +610,7 @@ impl S1410 {
                     let off = lba as usize * SECTOR;
                     self.buf = image[off..off + count as usize * SECTOR].to_vec();
                     self.work = Work::Read;
-                    self.read_free = t;
+                    self.read_free = t.max(self.heads_at);
                     if self.cyl_of(lba) != self.cyl {
                         self.read_free = self.seek(t, lba);
                     }
@@ -579,7 +630,7 @@ impl S1410 {
                 else {
                     self.work = Work::Write;
                     self.pos = count as usize * SECTOR;
-                    self.read_free = t;
+                    self.read_free = t.max(self.heads_at);
                     self.phase = Phase::DataOut;
                     self.req_at = t;
                     return;
@@ -593,7 +644,11 @@ impl S1410 {
                     self.err(0x21, lba);
                 }
                 else {
-                    done = self.seek(t, lba);
+                    // buffered: the command ends when the steps are out, the heads follow
+                    let from = self.cyl;
+                    let t0 = t.max(self.heads_at);
+                    self.seek_cmd(t0, lba);
+                    done = t0 + SEEK_CMD_NS + from.abs_diff(self.cyl) as u64 * STEP_PULSE_NS - timing().cmd.min(SEEK_CMD_NS);
                 }
             }
             0x0C | 0x0F | 0xE6 => {

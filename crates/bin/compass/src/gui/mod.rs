@@ -27,18 +27,27 @@ const COLOURS: &[(&str, u32)] = &[("Amber", display::AMBER), ("Yellow", 0xFFD860
 
 pub fn run(start: Option<MachineConfig>, opts: &WindowOpts) -> Result<(), String> {
     let title = format!("Compass-Emu {VERSION}");
+    let setup = setup::SetupPage::load();
+    let prefs = setup.prefs().clone();
+    let size = if prefs.window[0] >= 480.0 && prefs.window[1] >= 360.0 { prefs.window } else { [1100.0, 820.0] };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title(&title).with_inner_size([1100.0, 820.0]).with_min_inner_size([480.0, 360.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_title(&title)
+            .with_inner_size(size)
+            .with_min_inner_size([480.0, 360.0])
+            .with_maximized(prefs.maximized)
+            .with_drag_and_drop(true),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
     let overlay = opts.overlay;
     let mut start = start;
+    let mut setup = Some(setup);
     eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
-            let app = App::new(cc, start.take(), overlay);
+            let app = App::new(cc, setup.take().unwrap_or_else(setup::SetupPage::load), start.take(), overlay);
             Ok(Box::new(app))
         }),
     )
@@ -62,6 +71,18 @@ pub struct App {
     colour: u32,
     overlay: bool,
     show_status: bool,
+    show_toolbar: bool,
+    /// The window fills the monitor; menus, toolbar and status bar are hidden.
+    fullscreen: bool,
+    /// Frame number when full screen was last switched (the window takes a few frames).
+    fullscreen_frame: u64,
+    /// Window size (points) while neither maximized nor full screen, to save.
+    window_size: [f32; 2],
+    maximized: bool,
+    /// Files dropped on the window, handled in the next frame.
+    dropped: Vec<(PathBuf, bool)>,
+    /// Files being dragged over the window (for the drop hint).
+    hovering: usize,
     show_debugger: bool,
     show_chips: bool,
     show_media: bool,
@@ -90,7 +111,8 @@ pub struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, start: Option<MachineConfig>, overlay: bool) -> App {
+    fn new(cc: &eframe::CreationContext<'_>, setup: setup::SetupPage, start: Option<MachineConfig>, overlay: bool) -> App {
+        let prefs = setup.prefs().clone();
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.visuals = egui::Visuals::dark();
         cc.egui_ctx.set_global_style(style);
@@ -109,14 +131,21 @@ impl App {
         }
         let mut app = App {
             default_roms: crate::default_path(""),
-            setup: setup::SetupPage::load(),
+            setup,
             sess: None,
             run: None,
             tex: None,
-            fit: Fit::Fit,
-            colour: display::AMBER,
+            fit: if prefs.integer_scale { Fit::Integer } else { Fit::Fit },
+            colour: if COLOURS.iter().any(|c| c.1 == prefs.colour) { prefs.colour } else { display::AMBER },
             overlay,
-            show_status: true,
+            show_status: prefs.show_status,
+            show_toolbar: prefs.show_toolbar,
+            fullscreen: false,
+            fullscreen_frame: 0,
+            window_size: prefs.window,
+            maximized: prefs.maximized,
+            dropped: vec![],
+            hovering: 0,
             show_debugger: false,
             show_chips: false,
             show_media: false,
@@ -158,6 +187,11 @@ impl App {
 
     pub(crate) fn power_on(&mut self, cfg: MachineConfig) {
         self.power_off();
+        let mut p = self.setup.prefs().clone();
+        setup::push_recent(&mut p.recent_hds, &cfg.hd);
+        setup::push_recent(&mut p.recent_floppies, &cfg.flop2101);
+        setup::push_recent(&mut p.recent_floppies, &cfg.flop);
+        self.setup.set_prefs(p);
         match Session::build(&cfg, &self.default_roms) {
             Ok(s) => {
                 for n in s.notes.clone() {
@@ -281,7 +315,11 @@ impl App {
             self.resync();
             return;
         };
-        let r = std::fs::read(&p).map_err(|e| e.to_string()).and_then(|d| match &mut self.sess {
+        self.load_state_path(&p);
+    }
+
+    fn load_state_path(&mut self, p: &std::path::Path) {
+        let r = std::fs::read(p).map_err(|e| e.to_string()).and_then(|d| match &mut self.sess {
             Some(s) => s.load_state_file(&d),
             None => Err("power the machine on first".into()),
         });
@@ -300,6 +338,11 @@ impl App {
     }
 
     pub(crate) fn insert_floppy(&mut self, kind: DriveKind, path: Option<PathBuf>) {
+        if let (Some(p), true) = (&path, self.sess.is_some()) {
+            let mut pr = self.setup.prefs().clone();
+            setup::push_recent(&mut pr.recent_floppies, &p.display().to_string());
+            self.setup.set_prefs(pr);
+        }
         let Some(s) = &mut self.sess else { return };
         match s.insert_floppy(kind, path.as_deref()) {
             Ok(log) => {
@@ -313,13 +356,136 @@ impl App {
     }
 
     fn pick_floppy(&mut self, kind: DriveKind) {
-        let p = rfd::FileDialog::new().add_filter("GRiD floppy image", &["img", "IMG"]).pick_file();
+        let p = rfd::FileDialog::new().add_filter("GRiD floppy image", &["img", "IMG", "imd", "IMD"]).pick_file();
         if p.is_some() {
             self.insert_floppy(kind, p);
         }
         else {
             self.resync();
         }
+    }
+
+    /// Files dropped on the window: floppy images go into the 2102 floppy drive (the 2101's
+    /// with Shift held), a .state file is loaded, and with the machine off a hard disk image
+    /// or a folder goes into the selected profile.
+    fn handle_drops(&mut self) {
+        for (p, shift) in std::mem::take(&mut self.dropped) {
+            let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            let on = self.sess.is_some();
+            let text = p.display().to_string();
+            if p.is_dir() {
+                if on {
+                    self.say("a PC folder drive can only be set with the machine off (Machine > Power off)");
+                }
+                else {
+                    let c = self.setup.current_mut();
+                    c.folder = text.clone();
+                    c.flop2101.clear();
+                    self.say(format!("PC folder {text} set as the 2101 floppy of this profile"));
+                }
+                continue;
+            }
+            if ext == "state" {
+                if on {
+                    self.load_state_path(&p);
+                }
+                else {
+                    self.say("power the machine on first, then drop the state file");
+                }
+                continue;
+            }
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let bubble = p.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().contains("bubble"));
+            if matches!(ext.as_str(), "bat" | "exe" | "json" | "txt" | "png" | "zip") {
+                self.say(format!("{text}: not a disk image or state file"));
+            }
+            else if bubble && !on {
+                self.setup.current_mut().bubble = text.clone();
+                self.say(format!("{text} set as this profile's bubble memory"));
+            }
+            else if size > 2 * 1024 * 1024 {
+                if on {
+                    self.say("the hard disk can only be changed with the machine off (Machine > Power off)");
+                }
+                else {
+                    self.setup.current_mut().hd = text.clone();
+                    let mut pr = self.setup.prefs().clone();
+                    setup::push_recent(&mut pr.recent_hds, &text);
+                    self.setup.set_prefs(pr);
+                    self.say(format!("{text} set as this profile's 2101 hard disk"));
+                }
+            }
+            else {
+                let kind = if shift { DriveKind::Floppy2101 } else { DriveKind::Floppy2102 };
+                if on {
+                    self.insert_floppy(kind, Some(p.clone()));
+                }
+                else {
+                    let c = self.setup.current_mut();
+                    if shift {
+                        c.flop2101 = text.clone();
+                        c.folder.clear();
+                    }
+                    else {
+                        c.flop = text.clone();
+                    }
+                    let mut pr = self.setup.prefs().clone();
+                    setup::push_recent(&mut pr.recent_floppies, &text);
+                    self.setup.set_prefs(pr);
+                    self.say(format!("{text} set as this profile's {} floppy", if shift { "2101" } else { "2102" }));
+                }
+            }
+        }
+    }
+
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        self.fullscreen_frame = ctx.cumulative_frame_nr();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        if self.fullscreen {
+            self.say("full screen: double-click the screen to leave it");
+        }
+    }
+
+    /// The view settings as they are now, for compass-profiles.json.
+    fn store_prefs(&mut self, ctx: &egui::Context) {
+        let vp = ctx.input(|i| i.viewport().clone());
+        let full = vp.fullscreen.unwrap_or(self.fullscreen);
+        // Left by the system (a window manager key): follow it.
+        if self.fullscreen && vp.fullscreen == Some(false) && ctx.cumulative_frame_nr() > self.fullscreen_frame + 30 {
+            self.fullscreen = false;
+        }
+        if !full {
+            self.maximized = vp.maximized.unwrap_or(false);
+            if !self.maximized {
+                if let Some(r) = vp.inner_rect {
+                    self.window_size = [r.width().round(), r.height().round()];
+                }
+            }
+        }
+        let mut p = self.setup.prefs().clone();
+        p.window = self.window_size;
+        p.maximized = self.maximized;
+        p.integer_scale = self.fit == Fit::Integer;
+        p.colour = self.colour;
+        p.show_status = self.show_status;
+        p.show_toolbar = self.show_toolbar;
+        self.setup.set_prefs(p);
+    }
+
+    /// A Recent submenu that inserts the picked floppy image into a drive.
+    fn recent_floppy_menu(&mut self, ui: &mut egui::Ui, kind: DriveKind, label: &str) {
+        let list = self.setup.prefs().recent_floppies.clone();
+        ui.add_enabled_ui(!list.is_empty(), |ui| {
+            ui.menu_button(label, |ui| {
+                for p in list {
+                    let short = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
+                    if ui.button(short).on_hover_text(&p).clicked() {
+                        self.insert_floppy(kind, Some(PathBuf::from(&p)));
+                    }
+                }
+            });
+        });
     }
 
     /// The keys of this frame to the Compass.
@@ -428,12 +594,14 @@ impl App {
                 }
                 if on {
                     ui.separator();
+                    self.recent_floppy_menu(ui, DriveKind::Floppy2102, "Recent into the 2102 drive");
                     if ui.button("Insert 2102 floppy...").clicked() {
                         self.pick_floppy(DriveKind::Floppy2102);
                     }
                     if ui.button("Take out 2102 floppy").clicked() {
                         self.insert_floppy(DriveKind::Floppy2102, None);
                     }
+                    self.recent_floppy_menu(ui, DriveKind::Floppy2101, "Recent into the 2101 drive");
                     if ui.button("Insert 2101 floppy...").clicked() {
                         self.pick_floppy(DriveKind::Floppy2101);
                     }
@@ -461,7 +629,13 @@ impl App {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.overlay, "Demo tools overlay  (F10)");
+                ui.checkbox(&mut self.show_toolbar, "Toolbar");
                 ui.checkbox(&mut self.show_status, "Status bar");
+                ui.separator();
+                if ui.button("Full screen  (double-click the screen)").clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.toggle_fullscreen(&ctx);
+                }
             });
             ui.menu_button("Debug", |ui| {
                 ui.checkbox(&mut self.show_debugger, "Debugger workspace");
@@ -486,7 +660,7 @@ impl App {
                 }
             });
             ui.menu_button("Help", |ui| {
-                if ui.button("Keys").clicked() {
+                if ui.button("Keyboard map").clicked() {
                     self.show_keys = true;
                 }
                 if ui.button("About Compass-Emu").clicked() {
@@ -611,9 +785,9 @@ impl App {
         });
     }
 
-    /// The Compass screen, as large as fits.
-    fn screen(&mut self, ui: &mut egui::Ui) {
-        let Some(s) = &mut self.sess else { return };
+    /// The Compass screen, as large as fits. True when it was double-clicked (full screen).
+    fn screen(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(s) = &mut self.sess else { return false };
         let (w, h) = s.m.screen_size();
         let pix = s.m.render_display();
         let mut buf = display::colorize(&pix, self.colour, display::DARK);
@@ -650,30 +824,57 @@ impl App {
         if resp.clicked() {
             ui.ctx().memory_mut(|m| m.stop_text_input());
         }
-        ui.painter().rect_filled(rect.expand(10.0), 8.0, Color32::from_rgb(0x1A, 0x17, 0x12));
+        if !self.fullscreen {
+            ui.painter().rect_filled(rect.expand(10.0), 8.0, Color32::from_rgb(0x1A, 0x17, 0x12));
+        }
         ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        resp.double_clicked()
     }
 
     fn keys_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Keys").open(&mut self.show_keys).resizable(false).show(ctx, |ui| {
-            ui.label("PC keys map to the Compass keys by position.");
-            egui::Grid::new("keys").striped(true).show(ui, |ui| {
-                for (k, v) in [
-                    ("Alt", "CODE"),
-                    ("Ctrl", "CTRL"),
-                    ("Esc", "ESC"),
-                    ("F8", "pause / go on (debugger)"),
-                    ("F9", "clear the cycle counter marks"),
-                    ("F10", "demo tools overlay"),
-                    ("F11", "screenshot (compass-NNN.png)"),
-                    ("F12", "turbo on / off"),
-                ] {
-                    ui.monospace(k);
-                    ui.label(v);
-                    ui.end_row();
-                }
+        egui::Window::new("Keyboard map").open(&mut self.show_keys).resizable(false).show(ctx, |ui| {
+            ui.label("PC keys work by position (as on a US keyboard), not by the letter your layout prints.");
+            ui.add_space(4.0);
+            ui.columns(2, |cols| {
+                cols[0].label(RichText::new("Compass key").strong());
+                egui::Grid::new("keys-compass").striped(true).num_columns(2).show(&mut cols[0], |ui| {
+                    for (k, v) in [
+                        ("A-Z, 0-9", "the same keys"),
+                        ("- = , . / ; '", "the same keys"),
+                        ("RETURN", "Enter"),
+                        ("BACKSPACE", "Backspace"),
+                        ("TAB", "Tab"),
+                        ("ESC", "Esc"),
+                        ("SPACE", "Space"),
+                        ("arrows", "arrow keys"),
+                        ("SHIFT", "Shift"),
+                        ("CTRL", "Ctrl"),
+                        ("CODE", "Alt"),
+                    ] {
+                        ui.monospace(k);
+                        ui.label(v);
+                        ui.end_row();
+                    }
+                });
+                cols[1].label(RichText::new("Emulator keys").strong());
+                egui::Grid::new("keys-emu").striped(true).num_columns(2).show(&mut cols[1], |ui| {
+                    for (k, v) in [
+                        ("F8", "pause / go on"),
+                        ("F9", "clear the cycle counter marks"),
+                        ("F10", "demo tools overlay"),
+                        ("F11", "screenshot (compass-NNN.png)"),
+                        ("F12", "turbo on / off"),
+                        ("double-click", "full screen on / off"),
+                    ] {
+                        ui.monospace(k);
+                        ui.label(v);
+                        ui.end_row();
+                    }
+                });
             });
-            ui.label("Keys go to the Compass while no text field has the focus; click the screen to give them back.");
+            ui.add_space(4.0);
+            ui.label(RichText::new("The Compass has no [ ] \\ ` keys and no keypad, so those PC keys do nothing. The Compass keyboard reads at most two keys at a time, besides SHIFT, CTRL and CODE.").weak());
+            ui.label(RichText::new("Keys go to the Compass while no text field has the focus; click the screen to give them back.").weak());
         });
     }
 
@@ -714,6 +915,12 @@ impl eframe::App for App {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         let owns = self.owns_keys && self.sess.is_some();
         let m = raw.modifiers;
+        self.hovering = raw.hovered_files.len();
+        for f in raw.dropped_files.drain(..) {
+            if let Some(p) = f.path {
+                self.dropped.push((p, m.shift));
+            }
+        }
         self.mods = (if m.shift { keyboard::MOD_SHIFT } else { 0 }) | (if m.ctrl { keyboard::MOD_CTRL } else { 0 }) | (if m.alt { keyboard::MOD_CODE } else { 0 });
         let mut keep = Vec::with_capacity(raw.events.len());
         for ev in raw.events.drain(..) {
@@ -755,6 +962,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.owns_keys = !ctx.egui_wants_keyboard_input();
+        self.handle_drops();
         self.handle_fkeys();
         self.feed_keys();
         if let (Some(s), Some(r)) = (&mut self.sess, &mut self.run) {
@@ -782,24 +990,50 @@ impl eframe::App for App {
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        egui::Panel::top("menu").show_inside(ui, |ui| self.menu_bar(ui));
-        if self.sess.is_some() {
+        // Full screen keeps only the Compass screen (and the debugger, if it is open).
+        let full = self.fullscreen && self.sess.is_some();
+        if !full {
+            egui::Panel::top("menu").show_inside(ui, |ui| self.menu_bar(ui));
+        }
+        if self.sess.is_some() && self.show_toolbar && !full {
             egui::Panel::top("tools").show_inside(ui, |ui| self.toolbar(ui));
         }
-        if self.show_status {
+        if self.show_status && !full {
             egui::Panel::bottom("status").show_inside(ui, |ui| self.status_bar(ui));
         }
         if self.sess.is_some() && self.show_debugger {
             debugger::panels(self, ui);
         }
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        let frame = if full { egui::Frame::NONE.fill(Color32::BLACK) } else { egui::Frame::central_panel(ui.style()) };
+        egui::CentralPanel::default().frame(frame).show_inside(ui, |ui| {
             if self.sess.is_some() {
-                self.screen(ui);
+                if self.screen(ui) {
+                    self.toggle_fullscreen(&ctx);
+                }
             }
             else {
                 setup::page(self, ui);
             }
+            if self.hovering > 0 {
+                let r = ui.max_rect();
+                ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(170));
+                let text = if self.sess.is_some() {
+                    "Drop a floppy image (.img or .IMD) to insert it in the 2102 drive\nhold Shift for the 2101 drive; a .state file loads that state"
+                }
+                else {
+                    "Drop a disk image or a folder to put it in this profile\nfloppy: 2102 drive (Shift: 2101), large image: hard disk, folder: PC folder drive"
+                };
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(18.0), Color32::from_rgb(0xFF, 0xC9, 0x4D));
+            }
         });
+        // Back to the setup page (power off): leave full screen.
+        if self.fullscreen && self.sess.is_none() {
+            self.toggle_fullscreen(&ctx);
+        }
+        self.store_prefs(&ctx);
+        if self.hovering > 0 {
+            ctx.request_repaint();
+        }
         if self.show_media {
             media::window(self, &ctx);
         }

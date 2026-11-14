@@ -8,13 +8,16 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 
-## Status (0.10.0)
+## Status (0.11.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
-  setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
+  setup with profiles, drag and drop, recent disks, full screen and saved view settings, media
+  manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
   debugger workspace, chips window); machine building in `session.rs`, real-time pacing and
   keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the fallback
   when the GUI can't start).
+- ImageDisk floppies (`src/imd.rs`): an .IMD is used through the .img beside it, made from it
+  when missing.
 - Debugger (`grid_core::debug`): breakpoints, watches, profiler, call stack (BP chain checked
   against CALLs before each return address), recent instructions, a GRiD-OS call log (calls
   through vectors 70h/71h/73h named from the Compact*Calls libraries, `grid_core::oscalls`)

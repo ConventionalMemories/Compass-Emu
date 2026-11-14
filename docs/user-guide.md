@@ -33,7 +33,20 @@ delete and add subjects on image files that are not in use (with the
 machine running, use the PC folder drive for that). "Make..." creates a
 blank 360K floppy image.
 - View: fill the window or whole-pixel scaling, screen colour, the demo tools
-overlay, the status bar.
+overlay, the toolbar, the status bar, full screen (or double-click the
+Compass screen; double-click again to leave it). The window size and these
+settings are kept for the next start (in compass-profiles.json).
+- Drop files on the window: a floppy image (.img or .IMD) goes into the 2102
+floppy drive (hold Shift for the 2101 floppy drive), a .state file loads
+that state. On the setup page a floppy image, a hard disk image (anything
+over 2 MB), a bubble image (name with "bubble") or a folder (PC folder
+drive) goes into the selected profile.
+- Recent disks: Media > Recent into the 2102 / 2101 drive, and a Recent menu
+beside the hard disk and floppy fields on the setup page.
+- .IMD floppy files (ImageDisk) work wherever a floppy image does: the
+emulator uses the .img with the same name beside it, and makes that .img
+from the .IMD the first time. Changes go to the .img; the .IMD stays as it was.
+- Help > Keyboard map: which PC key is which Compass key.
 - Debug: the debugger workspace (see Demo tools) and a Chips window
 (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
 8274 serial, keyboard controller).
@@ -57,12 +70,13 @@ skip through it.
 ## Command line
 
 ```
-compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
+compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
             [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
             [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
             [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-            [--scale 1|2|4] [--overlay] [--fast] [--classic] [--symbols DIR] [--no-catch]
+            [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
+            [--classic] [--symbols DIR] [--no-catch]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
            1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
            1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
@@ -83,6 +97,11 @@ compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop flop
 --gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
 --mute     no sound.
 --fast     start with the fast CPU core (whole instructions, approximate timing).
+--fpu-micro  run the 8087 on its own microcode ROM, a file you supply (see
+           docs/8087-microcode.md): 8087mc.txt or 8087mc.bin in the ROM folder,
+           else I8087_MICROCODE or roms\. Without the ROM the instruction-level
+           8087 runs. Also on the setup page (Computer, 8087).
+--fpu-rom F  the same, with that microcode ROM file.
 --classic  the plain window of 0.4 (no menus); --scale only applies there.
 --symbols  program symbols for the debugger: a debug build's project folder.
 --no-catch crash catcher off (see Program symbols and the crash catcher).

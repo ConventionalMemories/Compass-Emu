@@ -2,8 +2,29 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
-## Unreleased
+## 0.11.0
 
+GUI for everyday use:
+- Full screen: View > Full screen, or double-click the Compass screen
+  (again to leave it). Menus, toolbar and status bar hide while it is on.
+- The window size and maximized state, scaling, screen colour, toolbar and
+  status bar are kept from one start to the next (in compass-profiles.json).
+  View > Toolbar hides the toolbar.
+- Drag and drop: drop a floppy image on the running machine to insert it in
+  the 2102 floppy drive (Shift: the 2101 floppy drive), or a .state file to
+  load it. On the setup page dropped floppy, hard disk and bubble images and
+  folders go into the selected profile.
+- Recent disks: Media > Recent into the 2102 / 2101 drive, and Recent menus
+  beside the disk fields on the setup page (the last 8 floppies and hard disks).
+- ImageDisk .IMD floppies: used through the .img beside them, made from the
+  .IMD when it is missing (GRiD 2102 and IBM sector numbering).
+- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-micro,
+  --fpu-rom) runs the 8087 on its own microcode ROM, which you supply; the
+  setup page says which ROM file it found (docs/8087-microcode.md).
+- Help > Keyboard map lists every Compass key and its PC key, and the
+  emulator keys.
+
+8087:
 - 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
   you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
   arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals

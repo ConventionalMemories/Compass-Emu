@@ -1,5 +1,5 @@
-Compass-Emu 0.9.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
-==============================================================================
+Compass-Emu 0.11.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1137, 1139)
+====================================================================================
 
 Setup
   Put the compass-emu folder inside your GRiD-MAME folder, next to roms, disks and
@@ -30,7 +30,20 @@ The window
     machine running, use the PC folder drive for that). "Make..." creates a
     blank 360K floppy image.
   - View: fill the window or whole-pixel scaling, screen colour, the demo tools
-    overlay, the status bar.
+    overlay, the toolbar, the status bar, full screen (or double-click the
+    Compass screen; double-click again to leave it). The window size and these
+    settings are kept for the next start (in compass-profiles.json).
+  - Drop files on the window: a floppy image (.img or .IMD) goes into the 2102
+    floppy drive (hold Shift for the 2101 floppy drive), a .state file loads
+    that state. On the setup page a floppy image, a hard disk image (anything
+    over 2 MB), a bubble image (name with "bubble") or a folder (PC folder
+    drive) goes into the selected profile.
+  - Recent disks: Media > Recent into the 2102 / 2101 drive, and a Recent menu
+    beside the hard disk and floppy fields on the setup page.
+  - .IMD floppy files (ImageDisk) work wherever a floppy image does: the
+    emulator uses the .img with the same name beside it, and makes that .img
+    from the .IMD the first time. Changes go to the .img; the .IMD stays as it was.
+  - Help > Keyboard map: which PC key is which Compass key.
   - Debug: the debugger workspace (see Demo tools) and a Chips window
     (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
     8274 serial, keyboard controller).
@@ -51,12 +64,13 @@ Using it
   skip through it.
 
 Command line
-  compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
+  compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
               [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
               [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
               [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
               [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-              [--scale 1|2|4] [--overlay] [--fast] [--classic] [--symbols DIR] [--no-catch]
+              [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
+              [--classic] [--symbols DIR] [--no-catch]
   --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
              1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
              1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
@@ -77,6 +91,11 @@ Command line
   --gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
   --mute     no sound.
   --fast     start with the fast CPU core (whole instructions, approximate timing).
+  --fpu-micro  run the 8087 on its own microcode ROM, a file you supply (see
+             docs/8087-microcode.md): 8087mc.txt or 8087mc.bin in the ROM folder,
+             else I8087_MICROCODE or roms\. Without the ROM the instruction-level
+             8087 runs. Also on the setup page (Computer, 8087).
+  --fpu-rom F  the same, with that microcode ROM file.
   --classic  the plain window of 0.4 (no menus); --scale only applies there.
   --symbols  program symbols for the debugger: a debug build's project folder.
   --no-catch crash catcher off (see Program symbols and the crash catcher).
@@ -243,6 +262,115 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.11.0
+  GUI for everyday use:
+  - Full screen: View > Full screen, or double-click the Compass screen
+    (again to leave it). Menus, toolbar and status bar hide while it is on.
+  - The window size and maximized state, scaling, screen colour, toolbar and
+    status bar are kept from one start to the next (in compass-profiles.json).
+    View > Toolbar hides the toolbar.
+  - Drag and drop: drop a floppy image on the running machine to insert it in
+    the 2102 floppy drive (Shift: the 2101 floppy drive), or a .state file to
+    load it. On the setup page dropped floppy, hard disk and bubble images and
+    folders go into the selected profile.
+  - Recent disks: Media > Recent into the 2102 / 2101 drive, and Recent menus
+    beside the disk fields on the setup page (the last 8 floppies and hard disks).
+  - ImageDisk .IMD floppies: used through the .img beside them, made from the
+    .IMD when it is missing (GRiD 2102 and IBM sector numbering).
+  - 8087 core per machine: Computer > 8087 on the setup page (and --fpu-micro,
+    --fpu-rom) runs the 8087 on its own microcode ROM, which you supply; the
+    setup page says which ROM file it found (docs/8087-microcode.md).
+  - Help > Keyboard map lists every Compass key and its PC key, and the
+    emulator keys.
+
+  8087:
+  - 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
+    you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
+    arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals
+    run from the chip's microcode ROM instead of the instruction-level model. Of 141
+    transcendental and square root results dumped from a real 1101, 134 come out bit for
+    bit and the other 7 are one unit off.
+  - The microcode 8087 fitted to 8087 Bench on a real 1101 and 1137 (2181 tests): of 1588
+    real result lines 34 still differ (were 1441), and the busy time now comes from the
+    micro-instructions that ran (mean error about 2.5 % over 2068 timed tests, was 40 % with the
+    tables). Both 8087 cores: FINIT keeps the condition bits, the B bit shows a pending
+    unmasked exception, the IR bit is derived, the control word has 13 bits, reserved
+    opcodes alias their neighbours, FSTENV's pointer is the ESC byte after a segment
+    prefix. The test `bench_real` holds the real reports.
+  - The instruction-level 8087 was corrected wherever the microcode showed it wrong (FSQRT
+    exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
+    loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
+
+New in 0.10.0
+  Each model now has the hardware its real boards carry (from photos of 1101,
+  1121, 1137 and 1139 motherboards):
+  - New model 1137 (`--model 1137`, Kurt's machine): 113x board with 512K and the
+    large screen, the 1139 PROM (as on the real 1137) and the 300001-02 keyboard
+    firmware dumped from it. No modem: the 8255 at DFEC0 is missing, so
+    Modem~Device~ finds no modem as on the real machine. Its sound DACs and DTMF
+    chip are on the motherboard; how the DTMF chip is driven is not known, so
+    for now a write-only latch at DFEC2 takes the 8255's port B bits (to check
+    with SoundTest on the real 1137).
+  - Timers per board (new `timers.rs`). 110x and 112x, 80130: timer 0 counts at
+    2.5 MHz (CPU clock / 2), timer 1 counts timer 0's output pulses, timer 2 at
+    5 MHz, no read-back, all running from power-on. 113x, discrete 8254: all three
+    at 5 MHz, read-back command with status bytes, a counter stands at FFFF until
+    a count is written, timer 1 counts only while timer 0 has a count. Replaying
+    GRiDProbe's T test gives the real machines' patterns: about twice the count
+    per read on the 113x, status B4 (mode 2) and B6 (mode 3), FFFF before
+    loading, read-back ignored on the 1101. Before, every model had all timers at
+    5 MHz and timer 1 frozen.
+  - The 113x board ignores A0 at the 8254: a byte read at 09/0B/0D also steps
+    that counter's LSB/MSB flip-flop. With it, GRiDBench 2.2's port rows (u20-u27)
+    and timer rows (p30-p52) match the real 1137 (low byte of timers 1 and 2 on
+    every row, FFFF on unloaded counters); 0.9.1 gave counting timers there.
+  - Interrupt controller per board: the 80130's quirks (non-specific EOI
+    ignored, ports 4/6 not decoded, 0Eh reads FFh) now apply to the 110x and
+    112x; the 113x's 8259A + 8254 take the non-specific EOI (assumed), mirror the
+    PIC at 4/6 and leave 0Eh open, as measured on the real 1137. The 112x used
+    the 113x behaviour before.
+  - Keyboard firmware per model: 300001-02 on the 1137, 300067-01 on the others
+    (each stands in for the other when missing). The 1139 used 300001-02 before.
+  - The 8274 already counted from the 5 MHz CPU clock; the photos confirm it (no
+    4.032 MHz crystal on any motherboard).
+  - The 113x RAM/display timing, refresh and INT fits (from the real 1137) now
+    hang on `GridModel::board_113x()`, and stay as they were. GRiDBench 2.2 gives
+    the same timing results as 0.9.1 on the 1101 and 1137; only the timer and
+    port rows changed.
+  - gridfrag: FRAG_DUMP=address,length prints memory after the run.
+
+New in 0.9.1
+  Fitted to GRiDProbe 0.0.12-0.0.13 and the Disk Toolkit 0.4.1 box probe on a
+  real 1101 and 1137:
+  - GRiD-OS's INT 3 stand-in for each 8087 WAIT costs what it costs on the real
+    machines: 55.8 clocks over a WAIT on the 1101 (real 55.7) and 57.8 on the
+    113x (real 58.7). A WAIT alone takes 3.7 clocks with the 8087 idle (real
+    3.75). FNOP, FLD/FSTP, FDIV and short and long FMUL are within about a clock
+    of the real chip; a long FMUL that rounds up takes 5 clocks more, an FADD
+    whose smaller operand shifts out completely 5 less, as on the real chip.
+  - Frame geometry from GRiDProbe's beam finder: the 1101 draws 307 clocks a
+    line and 268 lines (60.8 Hz; real 60.8), with IR3 rising on line 3 for 241
+    lines; the 113x 316 x 263 (60.2 Hz). Display contention refitted to these
+    frames (GRiDBench 2.2 gap rows: 1.2% rms on the 1101, 1.3% on the 113x).
+  - 2101 hard disk: interleave 5, read from the real drive's sector IDs. Seek
+    times measured inside a real box (Seek, then Test Ready until ready). A Seek
+    command is buffered: it answers after 1.5 ms plus 20 us a cylinder, and Test
+    Ready reports "not ready" until the heads are in. A read's or write's own seek
+    waits that long again plus 8 ms before its first sector, which matches the
+    Disk Toolkit per-read seek costs and GRiDBench 2.1b (random pages 132.8 ms,
+    real 130.3; steps of 1/16 118.4, real 122.5). Recalibrate steps back at 3 ms
+    a cylinder. Commands take 0.44 ms to decode, as on the real box.
+  - Bubble: writes end with status 42 (the parity bit, data fine), as on the
+    real 1101; GRiD-OS ignores the bit. Read FSA Status gives FF 20 20 20 20 20,
+    with 28 for an MBM written since the last Software Reset. Abort takes 0.14 to
+    0.16 ms. An Abort between two pages of a read leaves the controller stuck as
+    on the real chip: later multi-page reads stop after one page with status 2C
+    until a Software Reset (GRiD-OS's error recovery does one). GRiDProbe B7 now
+    matches the real report line for line.
+  - 2102 floppy: no change needed. The low-level 2102 already matches GRiDProbe's
+    floppy test (same page again 181 ms, real 185; power-up after 12 s idle 1.9 s,
+    real 1.9).
 
 New in 0.9.0
   - GRiDLink: the 8274 serial chip's synchronous SDLC mode, the one the GRiD

@@ -22,7 +22,7 @@ use crate::host;
 #[serde(default)]
 pub struct MachineConfig {
     pub name: String,
-    /// 1101, 1109, 1121, 1129, 1131 or 1139.
+    /// 1101, 1109, 1121, 1129, 1131, 1137 or 1139.
     pub model: String,
     /// Folder with the ROMs ("" = the roms folder next to the program).
     pub rom_dir: String,

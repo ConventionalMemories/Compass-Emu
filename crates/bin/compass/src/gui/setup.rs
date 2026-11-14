@@ -16,6 +16,7 @@ const MODELS: &[(&str, &str)] = &[
     ("1121", "1121 Compass II (256K)"),
     ("1129", "1129 Compass II (512K)"),
     ("1131", "1131 Compass II (256K, 512 x 256)"),
+    ("1137", "1137 Compass II (512K, 512 x 256, no modem)"),
     ("1139", "1139 Compass II (512K, 512 x 256)"),
 ];
 

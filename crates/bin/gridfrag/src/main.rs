@@ -5,7 +5,7 @@
 //!   gridfrag code.bin [max-clocks]
 //! Prints clocks used, instructions, and the 8087 state. Environment: FPU_EXTRA, FPU_WAITMIN
 //! (8087 timing), DISP_CONTENTION (0 = off), DISP_FETCH_LEN, DISP_FETCH_PERIOD,
-//! FRAG_PNG=file saves the last displayed frame. FRAG_MODEL=1139 etc. picks the model,
+//! FRAG_PNG=file saves the last displayed frame, FRAG_DUMP=addr,len (hex) prints memory. FRAG_MODEL=1139 etc. picks the model,
 //! RAM_EXTRA_WAIT the extra wait states on every RAM access. DISP_FETCH_OFFSET, DISP_CPU_LEN, DISP_CPU_WRITE_LEN (display contention, 15 MHz states),
 //! DISP_LINE_CLOCKS, DISP_FRAME_LINES (geometry), DISP_ALL_LINES (0 = contention on visible lines only); JMP_EXTRA, GRID_REFRESH, GRID_REFRESH_WAIT, GRID_TRACE (see grid_core).
 
@@ -109,6 +109,17 @@ fn main() {
         let tx: Vec<u8> = b.serial.tx_out.iter().map(|x| x.1).collect();
         println!("sound dac {} volume {} port_b {:02X} samples {}", b.sound.dac, b.sound.volume, b.sound.port_b, b.sound.out.len());
         println!("serial tx {:?} rate {:.0}", String::from_utf8_lossy(&tx), b.serial.bit_rate());
+    }
+    // FRAG_DUMP=address,length (hex) prints that memory, 16 bytes a line.
+    if let Some((a, n)) = std::env::var("FRAG_DUMP").ok().and_then(|v| {
+        let (a, n) = v.split_once(',')?;
+        Some((usize::from_str_radix(a, 16).ok()?, usize::from_str_radix(n, 16).ok()?))
+    }) {
+        let mem = m.ram();
+        for l in (a..a + n).step_by(16) {
+            let row: Vec<String> = (l..(l + 16).min(a + n)).map(|i| format!("{:02X}", mem.get(i).copied().unwrap_or(0xFF))).collect();
+            println!("dump {l:05X}: {}", row.join(" "));
+        }
     }
     if let Some(f) = m.fpu() {
         println!("fpu sw {:04X} cw {:04X} tw {:04X} busy_until {}", f.sw, f.cw, f.tw, f.busy_until());

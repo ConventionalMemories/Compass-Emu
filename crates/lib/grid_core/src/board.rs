@@ -5,7 +5,7 @@
 //!   C0000-CFFFF  test ROM socket (empty -> FF)
 //!   DFE40-DFE4F  sound DACs (DFE42/DFE44 sound, odd = volume)
 //!   DFE80-DFE83  Intel 7220 bubble controller (even bytes)
-//!   DFEC0-DFECF  8255 modem interface (even bytes)
+//!   DFEC0-DFECF  8255 modem interface (even bytes; not on the 1137, which has no modem)
 //!   DFF00-DFF1F  8274 serial (even bytes)
 //!   DFF40-DFF5F  MM58174 RTC (low nibble) + X2210 machine ID (high nibble), odd bytes
 //!   DFF80-DFF8F  TMS9914 GPIB (even bytes)
@@ -22,7 +22,8 @@
 //!                PROM writes 0Eh (bit 2 set = 320 x 240 compatibility mode)
 //!   DFE08-DFE0F  application ROM control
 //!   DFE10-DFE1F  serial port select latches (ST0-3, at DFE00 on the 1101)
-//! IO ports 00h/02h: 80130 interrupt controller (8259 compatible); 08h-0Eh: 80130 timers.
+//! IO ports 00h/02h: interrupt controller (80130 on the 110x/112x, 8259A on the 113x);
+//! 08h-0Eh: timers (80130, or an 8254 on the 113x; see timers.rs).
 //! IRQ wiring (MAME): IR0 serial, IR1 bubble, IR2 modem, IR3 vsync, IR4 keyboard, IR5 GPIB,
 //! IR6 8087, IR7 ring.
 
@@ -37,7 +38,8 @@ use crate::serial::Serial8274;
 use crate::sound::Sound;
 use crate::rtc::Rtc;
 use crate::keyboard::Keyboard;
-use crate::machine::GridModel;
+use crate::machine::{GridModel, TimerChip};
+use crate::timers::Timers;
 use crate::screen::{Beam, DisplayTiming};
 
 pub const IR_SERIAL: u8 = 0;
@@ -67,29 +69,15 @@ pub struct GridBoard {
     /// CPU clocks since power-on (advanced by tick()).
     pub clocks: u64,
     pic: Pic,
-    /// 80130 timers (8254-like at ports 08-0E), counting at the 5 MHz CPU clock (timers 0 and 2
-    /// count on a real 1101, timer 1 doesn't; the 5 MHz input clock is assumed). Timer 2 is
-    /// the baud clock for the 8274; no timer output reaches an IRQ on the Compass.
-    timer_regs: [u8; 4],
-    pit_count: [u16; 3],
-    pit_lsb_next: [bool; 3],
-    pit_rl: [u8; 3],
-    #[serde(default)]
-    pit_mode: [u8; 3],
-    /// CPU clock at which each counter was last loaded.
-    #[serde(default)]
-    pit_t0: [u64; 3],
-    /// Counter latch (counter latch command), read out before the live count.
-    #[serde(default)]
-    pit_latch: [Option<u16>; 3],
-    #[serde(default = "pit_read_lsb_default")]
-    pit_read_lsb: [bool; 3],
+    /// Timers at ports 08h-0Eh: the 80130's (110x/112x) or a discrete 8254 (113x), see
+    /// timers.rs. Timer 2 is the baud clock for the 8274; no timer output reaches an IRQ.
+    pub timers: Timers,
     // 8741 keyboard (HLE for now)
     kbd_status: u8,
     kbd_queue: std::collections::VecDeque<u8>,
     #[serde(skip)]
     pub kbd_commands: Vec<(u64, u8, bool)>,
-    /// Sound DAC, volume DAC and DTMF (modem board).
+    /// Sound DAC, volume DAC and DTMF (modem board; 1137 motherboard).
     pub sound: Sound,
     /// 7220 bubble memory (None = no bubble image given: reads return FFh).
     pub bubble: Option<Bubble>,
@@ -158,29 +146,9 @@ pub struct GridBoard {
 }
 
 impl GridBoard {
-    /// Live count of 80130 timer r: down from the loaded value at the CPU clock; modes 2/3
-    /// reload (mode 3 counts by 2, twice a period), the others wrap through 0.
-    fn pit_now(&self, r: usize) -> u16 {
-        // Timer 1 never counts on a real 1101 (its gate or clock is off): it reads what was
-        // loaded.
-        if r == 1 {
-            return self.pit_count[1];
-        }
-        let n = if self.pit_count[r] == 0 { 65536u64 } else { self.pit_count[r] as u64 };
-        let e = self.clocks.saturating_sub(self.pit_t0[r]);
-        match self.pit_mode[r] {
-            2 | 6 => (n - e % n) as u16,
-            3 | 7 => {
-                let half = (n + 1) / 2;
-                (n - 2 * (e % half)) as u16 & !1
-            }
-            _ => (n as u64).wrapping_sub(e) as u16,
-        }
-    }
-
-    /// 80130 timers for the debugger: (live count, loaded value, mode) of each.
-    pub fn timers(&self) -> [(u16, u16, u8); 3] {
-        [0, 1, 2].map(|r| (self.pit_now(r), self.pit_count[r], self.pit_mode[r]))
+    /// Timers for the debugger: (live count, loaded value, mode) of each.
+    pub fn timer_state(&self) -> [(u16, u16, u8); 3] {
+        self.timers.state(self.clocks)
     }
 
     /// A 1101 board. `even` and `odd` are the two 8K PROM chips.
@@ -200,14 +168,7 @@ impl GridBoard {
             prom,
             clocks: 0,
             pic: Pic::new(),
-            timer_regs: [0; 4],
-            pit_count: [0; 3],
-            pit_lsb_next: [true; 3],
-            pit_rl: [3; 3],
-            pit_mode: [0; 3],
-            pit_t0: [0; 3],
-            pit_latch: [None; 3],
-            pit_read_lsb: [true; 3],
+            timers: Timers::new(model.timer_chip()),
             kbd_status: 0,
             kbd_queue: Default::default(),
             kbd_commands: Vec::new(),
@@ -228,7 +189,7 @@ impl GridBoard {
             machine_id: [0; 16],
             gpib_int: false,
             dma_wait_limit: 100_000_000,
-            display: if model.wide_screen() { DisplayTiming::wide() } else { DisplayTiming::default() },
+            display: if model.board_113x() { DisplayTiming::wide() } else { DisplayTiming::default() },
             model,
             ram_top: model.ram_size(),
             ram_extra_wait: 0,
@@ -564,7 +525,9 @@ impl ExternalBoard for GridBoard {
                 self.sync_serial_int();
                 v
             }
-            0xDFEC0..=0xDFECF if address & 1 == 0 => self.sound.read_8255((address >> 1) & 3),
+            // The modem board's 8255. The 1137 has no modem and no 8255: FFh as elsewhere (so
+            // Modem~Device~ finds no modem, as on the real machine).
+            0xDFEC0..=0xDFECF if address & 1 == 0 && self.model.has_modem() => self.sound.read_8255((address >> 1) & 3),
             0xDFE00..=0xDFFFF => {
                 self.log(address, false, 0xFF);
                 0xFF
@@ -615,10 +578,19 @@ impl ExternalBoard for GridBoard {
                     _ => self.log(address, true, data),
                 }
             }
-            0xDFEC0..=0xDFECF if address & 1 == 0 => {
+            0xDFEC0..=0xDFECF if address & 1 == 0 && self.model.has_modem() => {
                 let now = self.clocks + _cycles as u64;
                 self.sound.write_8255((address >> 1) & 3, data, now);
             }
+            // 1137: the DACs and the MK5089 are on the motherboard, but how the MK5089 is
+            // driven is not known (no 8255; SoundTest on a real 1137 would tell). ASSUMED: a
+            // write-only latch at the 8255's port B address with the same bits, so programs
+            // written for the modem board's DTMF still sound. Nothing else answers here.
+            0xDFEC2 => {
+                let now = self.clocks + _cycles as u64;
+                self.sound.write_8255(1, data, now);
+            }
+            0xDFEC0..=0xDFECF => {}
             0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
                 let now = self.clocks + _cycles as u64;
                 self.bubble.as_mut().unwrap().write((address >> 1) & 1, data, now);
@@ -683,38 +655,29 @@ impl ExternalBoard for GridBoard {
         if self.debug.ports.contains(&port) {
             self.debug.hit = Some(format!("port {port:02X}h read"));
         }
-        // 1101: ports 4/6 are not decoded and 0E reads FF. Split board (real 1137): 4/6 answer
-        // like the PIC at 0/2 and 0E is not decoded.
-        let split = self.model.split_board();
-        if port >= 0x80 || port & 1 == 1 || (!split && matches!(port & 0x0F, 4 | 6)) || (split && port & 0x0F == 0x0E) {
+        // 80130 (110x/112x): ports 4/6 are not decoded and 0E reads FF (real 1101). 8254 +
+        // 8259A (113x, real 1137): the 8259A decodes A1 only, so 4/6 answer like 0/2, and the
+        // 8254's control port 0E reads the bus.
+        let i8254 = self.model.timer_chip() == TimerChip::I8254;
+        // The 8254 doesn't look at A0: a byte read at 09/0B/0D strobes the counter too (its
+        // byte goes on the low lane, the CPU takes the bus's high lane). Real 1137 GRiDBench
+        // 2.2 u20-u27: reading ports 00-0F in a row gives timer 1 and 2's low byte every time.
+        if i8254 && port < 0x80 && matches!(port & 0x0F, 9 | 0x0B | 0x0D) {
+            let now = self.clocks + _cycles as u64;
+            self.timers.read((((port & 0x0F) - 9) / 2) as usize, now);
+        }
+        if port >= 0x80 || port & 1 == 1 || (!i8254 && matches!(port & 0x0F, 4 | 6)) || (i8254 && port & 0x0F == 0x0E) {
             return bus_value(port as usize);
         }
-        let port = if split && matches!(port & 0x0F, 4 | 6) { port & 0x0B } else { port & 0x0F };
+        let port = if i8254 && matches!(port & 0x0F, 4 | 6) { port & 0x0B } else { port & 0x0F };
         match port {
             0x00 => self.pic.handle_command_register_read(),
             0x02 => self.pic.handle_data_register_read(),
-            // the control register is write-only (real 1101 reads FF)
+            // the 80130's control register is write-only (real 1101 reads FF)
             0x0E => 0xFF,
             0x08 | 0x0A | 0x0C => {
-                let r = ((port - 8) / 2) as usize;
-                let v = match self.pit_latch[r] {
-                    Some(v) => v,
-                    None => self.pit_now(r),
-                };
-                let b = match self.pit_rl[r] {
-                    1 => v as u8,
-                    2 => (v >> 8) as u8,
-                    _ => {
-                        let lsb = self.pit_read_lsb[r];
-                        self.pit_read_lsb[r] = !lsb;
-                        if lsb { v as u8 } else { (v >> 8) as u8 }
-                    }
-                };
-                // the latch is released once read out completely
-                if self.pit_rl[r] != 3 || self.pit_read_lsb[r] {
-                    self.pit_latch[r] = None;
-                }
-                b
+                let now = self.clocks + _cycles as u64;
+                self.timers.read(((port - 8) / 2) as usize, now)
             }
             _ => 0xFF,
         }
@@ -743,53 +706,24 @@ impl ExternalBoard for GridBoard {
         }
         let port = port & 0x0F;
         match port {
-            // A non-specific EOI (OCW2 20h) leaves the in-service bit set on a real 1101
-            // (GRiDProbe B5); GRiD-OS sends specific EOIs (60h + level).
-            0x00 if data & 0xF8 == 0x20 => {}
+            // A non-specific EOI (OCW2 20h) leaves the in-service bit set on a real 1101's
+            // 80130 (GRiDProbe B5); GRiD-OS sends specific EOIs (60h + level). The 113x's
+            // discrete 8259A is assumed to take it like any 8259A (not tested on a real 1137).
+            0x00 if data & 0xF8 == 0x20 && self.model.timer_chip() == TimerChip::I80130 => {}
             0x00 => self.pic.handle_command_register_write(data),
             0x02 => self.pic.handle_data_register_write(data),
-            0x08 | 0x0A | 0x0C | 0x0E => {
+            0x0E => {
+                let now = self.clocks + _cycles as u64;
+                self.timers.control(data, now);
+            }
+            0x08 | 0x0A | 0x0C => {
                 let r = ((port - 8) / 2) as usize;
-                self.timer_regs[r] = data;
-                if r == 3 {
-                    // control word: counter in bits 6-7, read/load mode in bits 4-5
-                    let c = (data >> 6) as usize;
-                    if c < 3 && (data >> 4) & 3 != 0 {
-                        self.pit_rl[c] = (data >> 4) & 3;
-                        self.pit_mode[c] = (data >> 1) & 7;
-                        self.pit_lsb_next[c] = true;
-                        self.pit_read_lsb[c] = true;
-                        self.pit_latch[c] = None;
-                    }
-                    else if c < 3 && self.pit_latch[c].is_none() {
-                        // counter latch command
-                        self.pit_latch[c] = Some(self.pit_now(c));
-                        self.pit_read_lsb[c] = true;
-                    }
-                }
-                else {
-                    match self.pit_rl[r] {
-                        1 => self.pit_count[r] = data as u16,
-                        2 => self.pit_count[r] = (data as u16) << 8,
-                        _ => {
-                            if self.pit_lsb_next[r] {
-                                self.pit_count[r] = (self.pit_count[r] & 0xFF00) | data as u16;
-                            }
-                            else {
-                                self.pit_count[r] = (self.pit_count[r] & 0x00FF) | (data as u16) << 8;
-                            }
-                            self.pit_lsb_next[r] = !self.pit_lsb_next[r];
-                        }
-                    }
-                    if self.pit_rl[r] != 3 || self.pit_lsb_next[r] {
-                        self.pit_t0[r] = self.clocks;
-                    }
-                    if r == 2 {
-                        let now = self.clocks;
-                        self.serial.advance(now);
-                        let c = self.pit_count[2];
-                        self.serial.baud_count = if c == 0 { 65536 } else { c as u32 };
-                    }
+                let now = self.clocks + _cycles as u64;
+                if self.timers.write(r, data, now) && r == 2 {
+                    let now = self.clocks;
+                    self.serial.advance(now);
+                    let c = self.timers.count[2];
+                    self.serial.baud_count = if c == 0 { 65536 } else { c as u32 };
                 }
             }
             _ => {}
@@ -825,10 +759,6 @@ impl ExternalBoard for GridBoard {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-}
-
-fn pit_read_lsb_default() -> [bool; 3] {
-    [true; 3]
 }
 
 /// Wait states of an access to the RTC/ID chip at DFF40-DFF5F.

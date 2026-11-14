@@ -168,6 +168,8 @@ pub struct Micro8087 {
     /// rounding bits made by the last complement shift
     round_h: u8,
     exp_conv: u16,
+    /// bit 16 of the last sum sent to the converter (FSCALE)
+    exp_neg: bool,
     counter: u8,
     cordic: u16,
     index_up: bool,
@@ -203,10 +205,12 @@ pub struct Micro8087 {
 }
 
 /// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
-/// chip: the constant ROM's bits are not published; rounded to nearest).
+/// chip: the constant ROM's bits are not published; rounded to nearest). Entry 1 is one
+/// unit higher than the rounded value: with it 139 of 140 FPTAN and FPATAN results of a
+/// real 8087 are exact, without it 127 (8087 Bench; `fit_constants` in bench.rs searches).
 const ATAN: [u128; 16] = [
     0x6487ed5110b4611a6,
-    0x76b19c1586ed3da2b,
+    0x76b19c1586ed3da2c,
     0x7d6dd7e4b203758ab,
     0x7f56ea6ab0bdb7196,
     0x7fd56edcb3f7a71b6,
@@ -224,20 +228,22 @@ const ATAN: [u128; 16] = [
 ];
 
 /// log2(1 + 2^-n) * 2^(n+66): the logarithm constants (computed, as above). The chip has
-/// no entries for n = 0 and 1.
+/// no entries for n = 0 and 1. Entries 2, 3, 8, 10 and 11 are one or two units higher than
+/// the rounded value, fitted to a real 8087's F2XM1, FYL2X and FYL2XP1 results (208 of 238
+/// exact instead of 190).
 const LOG: [u128; 16] = [
     0x40000000000000000,
     0x4ae00d1cfdeb43cfd,
-    0x5269e12f346e2bf92,
-    0x570068e7ef5a1e7e8,
+    0x5269e12f346e2bf93,
+    0x570068e7ef5a1e7ea,
     0x598fdbeb244c59f33,
     0x5aeb4dd63bf61cc4e,
     0x5b9e5a170b48a629c,
     0x5bf942dbbc2145fe4,
-    0x5c2711b5eab1dd2b6,
+    0x5c2711b5eab1dd2b7,
     0x5c3e0ffc29d59318f,
-    0x5c4994dd0fd1507ea,
-    0x5c4f58bde55f0c2bd,
+    0x5c4994dd0fd1507eb,
+    0x5c4f58bde55f0c2be,
     0x5c523b0a86ff22384,
     0x5c53ac47e94d8dd52,
     0x5c5464ec5f4d74ca3,
@@ -284,6 +290,7 @@ impl Micro8087 {
             shift_count: 0,
             round_h: 0,
             exp_conv: 0,
+            exp_neg: false,
             counter: 0,
             cordic: 0,
             index_up: false,
@@ -472,6 +479,9 @@ impl Micro8087 {
         self.overflow = false;
         self.flag = false;
         self.alt_const = false;
+        // what the loop register holds between instructions is not known; an FPREM that
+        // ends as invalid reports quotient bits 000 on a real chip
+        self.quotient = 0;
         self.stack.clear();
         let mut pc = start;
         let mut run = Run::default();
@@ -655,6 +665,7 @@ impl Micro8087 {
             // exponent, bit 0, small enough for a shift count (bits 6-14 clear), all ones,
             // overflow
             0x18 => match self.conv_fmt {
+                Fmt::X80 if self.opcode == 0x1FD => !self.exp_neg && (1..=0x7FFE).contains(&self.exp_conv),
                 Fmt::X80 => (1..=0x7FFE).contains(&self.exp_conv),
                 Fmt::Raw => (1..=0x7FFE).contains(&(self.exp_conv & 0x7FFF)),
                 Fmt::Load(_, max) => (1..max).contains(&self.exp_conv),
@@ -671,6 +682,7 @@ impl Micro8087 {
             0x1F => match self.conv_fmt {
                 Fmt::Store(..) => self.conv_field() >= self.conv_max() && self.exp_conv < 0xC000,
                 Fmt::Raw => self.exp_conv & 0x8000 != 0,
+                _ if self.opcode == 0x1FD => !self.exp_neg && self.exp_conv >= 0x7FFF,
                 _ => (0x7FFF..0xC000).contains(&self.exp_conv),
             },
             0x1E => self.sum & FRAC_MASK == 0,
@@ -682,7 +694,8 @@ impl Micro8087 {
                 self.overflow
                     || matches!(a.tag, TAG_EMPTY | TAG_SPECIAL)
                     || matches!(b.tag, TAG_EMPTY | TAG_SPECIAL)
-                    || (self.arith_class() && reg >= 6 && (a.tag == TAG_ZERO || b.tag == TAG_ZERO))
+                    || (self.arith_class() && reg >= 6 && (a.tag == TAG_ZERO || b.tag == TAG_ZERO || b.frac >> 63 == 0))
+                    || (self.opcode == 0x1F8 && b.frac >> 63 == 0)
             }
             0x24 => b.tag == TAG_ZERO,
             0x25 => b.tag == TAG_SPECIAL,
@@ -882,7 +895,10 @@ impl Micro8087 {
             0xF40E => {}
             // part of the loop words (see hw_loop)
             0xF40C | 0xE400 if self.loop_mode != 0 => {}
-            // the exponent converter's verdict becomes the overflow or underflow exception
+            // the exponent converter's verdict becomes the overflow or underflow exception.
+            // Not when rounding down or up: a real 8087 then flags only "inexact" (8087
+            // Bench groups o and m on a 1101 and a 1137; the reason is not known)
+            0xE402 if matches!((self.cw >> 10) & 3, 1 | 2) => {}
             0xE402 => {
                 if self.cond(0x1F)? {
                     self.exc |= SW_OE
@@ -1007,6 +1023,11 @@ impl Micro8087 {
             0x00 => self.shift_count = v.exp,
             0x01 => {
                 self.exp_conv = v.exp;
+                // FSCALE adds a number of any size to the exponent. The converter sees
+                // one bit more than the 16 kept: with that bit set the sum counts as
+                // negative (underflow), whatever bit 15 says. From a real 8087: scales of
+                // 40000, -32768, +-0.99 (8087 Bench group s).
+                self.exp_neg = self.opcode == 0x1FD && src == 0x10 && (v.wide >> (RND + 16)) & 1 != 0;
                 // the converter knows the operand format: a field cut out of a short or
                 // long real on a load, a result exponent on its way to one on a store
                 self.conv_fmt = match self.real_format() {
@@ -1027,8 +1048,7 @@ impl Micro8087 {
                     return Err("part of a register to the stack".into());
                 }
                 let mut r = Reg { sign: v.sign, exp: v.exp & 0x7FFF, frac: v.f64(), tag: 0 };
-                // inferred: the stack tag follows the value written
-                r.tag = r.class();
+                r.tag = v.tag;
                 let i = if dst == 2 { self.top as usize } else { self.sti() };
                 self.st[i] = r;
             }
@@ -1036,7 +1056,9 @@ impl Micro8087 {
             0x07 => self.breg = v.wide & (FRAC_MASK | 7),
             0x08 => self.a().exp = v.exp,
             0x09 => {
-                self.a().sign = v.exp & 0x8000 != 0;
+                // (a whole register as the source brings its sign: FBSTP's FFFF over a
+                // number too large for 18 digits)
+                self.a().sign = v.exp & 0x8000 != 0 || (v.whole && v.sign);
                 self.a().exp = v.exp & 0x7FFF;
             }
             0x0A => self.a().frac = v.f64(),

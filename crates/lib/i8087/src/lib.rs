@@ -192,16 +192,28 @@ impl I8087 {
         f
     }
 
+    /// FINIT, and the second half of FSAVE. A real 8087 keeps the condition bits C3-C0
+    /// (8087 Bench on a 1101 and a 1137: the bits the program's own arithmetic left are
+    /// still there after FSAVE and FINIT).
     fn finit(&mut self) {
         self.cw = 0x03FF;
-        self.sw = 0;
+        self.sw &= 0x4700;
         self.tw = 0xFFFF;
         self.irq = false;
     }
 
     /// BUSY output (8086 TEST pin, active while executing).
+    /// With an unmasked exception pending and its interrupt enabled the chip keeps BUSY
+    /// active until the exception is cleared: a WAIT then never ends (8087 Bench hung a
+    /// real 1101 and 1137 that way), and the status word's B bit reads 1.
     pub fn busy(&self, now: u64) -> bool {
-        now < self.busy_until
+        now < self.busy_until || self.irq
+    }
+
+    /// The status word as FSTSW, FSTENV and FSAVE store it: B (bit 15) is the BUSY line
+    /// held by a pending interrupt.
+    fn sw_out(&self) -> u16 {
+        (self.sw & 0x7FFF) | if self.irq { 0x8000 } else { 0 }
     }
 
     pub fn busy_until(&self) -> u64 {
@@ -685,7 +697,7 @@ impl I8087 {
         // 8087 real-mode environment layout
         [
             self.cw,
-            self.sw,
+            self.sw_out(),
             self.tw,
             self.ip as u16,
             (((self.ip >> 16) as u16 & 0xF) << 12) | (self.opcode & 0x7FF),
@@ -702,7 +714,7 @@ impl I8087 {
 
     fn load_env(&mut self, mem: &mut dyn FpuMem, a: u32) {
         let w: Vec<u16> = (0..7).map(|i| Self::rd(mem, a + i * 2, 2) as u16).collect();
-        self.cw = w[0];
+        self.cw = w[0] & 0x1FFF;
         self.sw = w[1];
         self.tw = w[2];
         self.ip = w[3] as u32 | ((w[4] as u32 >> 12) << 16);
@@ -737,10 +749,10 @@ impl I8087 {
         (self.st, self.raw, self.cw, self.sw, self.tw, self.irq, self.push_blocked, self.penalty, self.stats.unknown) = saved;
         let mut m = self.micro.take().unwrap();
         for p in 0..8 {
+            // the chip goes by the tag word, also when FRSTOR or FLDENV loaded one that
+            // does not fit the registers
             let mut r = micro::Reg::from_bits(self.raw[p].unwrap_or_else(|| self.st[p].to_bits()));
-            if self.tag(p) == TAG_EMPTY {
-                r.tag = micro::core::TAG_EMPTY;
-            }
+            r.tag = self.tag(p) as u8;
             m.st[p] = r;
         }
         m.top = self.top() as u8;
@@ -762,17 +774,12 @@ impl I8087 {
         }
         self.micro_runs += 1;
         for p in 0..8 {
+            // keep the chip's own pattern wherever it is not a plain number (unnormals,
+            // pseudo-zeros, exponent 0 with the integer bit set)
             let bits = m.st[p].bits();
-            match unnormal_value(bits) {
-                Some(v) => {
-                    self.st[p] = v;
-                    self.raw[p] = Some(bits);
-                }
-                None => {
-                    self.st[p] = F80::from_bits(bits);
-                    self.raw[p] = None;
-                }
-            }
+            let v = unnormal_value(bits).unwrap_or_else(|| F80::from_bits(bits));
+            self.st[p] = v;
+            self.raw[p] = (v.to_bits() != bits).then_some(bits);
         }
         self.tw = m.tag_word();
         self.sw = (self.sw & (SW_IR | 0x8000)) | (m.sw & !(0x3800 | SW_IR | 0x8000));
@@ -795,16 +802,34 @@ impl I8087 {
     /// cycles take from the bus (operand words beyond the first, which the 8086 reads itself).
     pub fn esc(&mut self, mem: &mut dyn FpuMem, now: u64, opcode: u8, modrm: u8, ea: Option<u32>, ip: u32) -> u32 {
         let start = now.max(self.busy_until);
-        let reg = (modrm >> 3) & 7;
-        let rm = (modrm & 7) as usize;
         let op = opcode & 7;
-        let (clocks, words) = if self.micro.is_some() && micro::has_entry(op, modrm) {
-            self.esc_micro(mem, op, modrm, ea)
+        // The chip does not decode every bit: opcodes Intel left reserved run as one of
+        // their neighbours. From 8087 Bench on a real 1101 (group q): DA C0+i..F8+i are
+        // D8 (FADD ST,ST(i) ...), DB C0+i is FLD ST(i), DF C8+i is FXCH, DF D0+i and
+        // DF D8+i are FSTP ST(i); D9 D8+i only pops and D9 EF does nothing.
+        let (run_op, run_modrm) = match (op, modrm) {
+            (2, 0xC0..=0xFF) => (0, modrm),
+            (3, 0xC0..=0xC7) => (1, modrm),
+            (7, 0xC8..=0xCF) => (1, modrm),
+            (7, 0xD0..=0xDF) => (5, 0xD8 | (modrm & 7)),
+            _ => (op, modrm),
+        };
+        let reg = (run_modrm >> 3) & 7;
+        let rm = (run_modrm & 7) as usize;
+        let (clocks, words) = if ea.is_none() && op == 1 && (0xD8..=0xDF).contains(&modrm) {
+            self.pop();
+            (17, 0)
+        }
+        else if ea.is_none() && op == 1 && modrm == 0xEF {
+            (15, 0)
+        }
+        else if self.micro.is_some() && micro::has_entry(run_op, run_modrm) {
+            self.esc_micro(mem, run_op, run_modrm, ea)
         }
         else {
             match ea {
-                Some(a) => self.esc_mem(mem, op, reg, a),
-                None => self.esc_reg(op, reg, rm),
+                Some(a) => self.esc_mem(mem, run_op, reg, a),
+                None => self.esc_reg(run_op, reg, rm),
             }
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
@@ -815,6 +840,12 @@ impl I8087 {
                 self.dp = a;
             }
         }
+        // The interrupt request bit is not a latch: it is 1 while a flagged exception is
+        // unmasked (FRSTOR of a status word with the bit set and everything masked reads
+        // back 0 on a real chip). INT, BUSY and the B bit follow it unless IEM is set.
+        let ir = self.sw & !self.cw & 0x3F != 0;
+        self.sw = (self.sw & !SW_IR) | if ir { SW_IR } else { 0 };
+        self.irq = ir && self.cw & 0x80 == 0;
         let clocks = clocks + std::mem::take(&mut self.penalty);
         self.busy_until = start + clocks as u64 + self.extra_busy as u64;
         self.stats.instructions += 1;
@@ -899,7 +930,8 @@ impl I8087 {
                     (40, 7)
                 }
                 5 => {
-                    self.cw = Self::rd(mem, a, 2) as u16;
+                    // the control word has 13 bits: the top three read back as 0
+                    self.cw = Self::rd(mem, a, 2) as u16 & 0x1FFF;
                     (10, 1)
                 }
                 6 => {
@@ -990,9 +1022,9 @@ impl I8087 {
                     for i in 0..8 {
                         let bits = Self::rd(mem, a + 14 + i * 10, 10);
                         let p = self.phys(i as usize);
-                        let u = unnormal_value(bits);
-                        self.st[p] = u.unwrap_or_else(|| F80::from_bits(bits));
-                        self.raw[p] = u.map(|_| bits);
+                        let v = unnormal_value(bits).unwrap_or_else(|| F80::from_bits(bits));
+                        self.st[p] = v;
+                        self.raw[p] = (v.to_bits() != bits).then_some(bits);
                     }
                     (205, 47)
                 }
@@ -1005,7 +1037,7 @@ impl I8087 {
                     (205, 47)
                 }
                 7 => {
-                    Self::wr(mem, a, 2, self.sw as u128);
+                    Self::wr(mem, a, 2, self.sw_out() as u128);
                     (15, 1)
                 }
                 _ => {

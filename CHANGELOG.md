@@ -1,6 +1,19 @@
 # Changelog
 
-Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
+Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/dbalsom/martypc](https://github.com/dbalsom/martypc).
+
+## 1.0.0
+
+First public release.
+- The Windows zip starts from the machine setup page: import the ROMs (MAME sets or
+  your own dumps) with Import ROMs..., pick a model and a GRiD-OS disk, Power on.
+  No MAME folder is needed. The old start files for a MAME setup moved to
+  util/grid-mame in the source.
+- The Claude Code hook's grid_build can use the build inside compass.exe: give it
+  `disk` (a development disk image) or set GRID_DEV_DISK. Without either it uses
+  tools\gridbuild.py as before.
+- README.txt in the zip is the user guide only; the version history ships as
+  CHANGELOG.md beside it.
 
 ## 0.11.0
 
@@ -92,7 +105,7 @@ Extras:
 
 Each model now has the hardware its real boards carry (from photos of 1101,
 1121, 1137 and 1139 motherboards):
-- New model 1137 (`--model 1137`, Kurt's machine): 113x board with 512K and the
+- New model 1137 (`--model 1137`, the machine used for the 113x measurements): 113x board with 512K and the
   large screen, the 1139 PROM (as on the real 1137) and the 300001-02 keyboard
   firmware dumped from it. No modem: the 8255 at DFEC0 is missing, so
   Modem~Device~ finds no modem as on the real machine. Its sound DACs and DTMF
@@ -445,7 +458,7 @@ screen shows what the beam saw, so racing the beam and tearing look as on a real
 
 ## Not there yet
 
-The modem itself, GRiDLink (synchronous serial), the test ROM socket.
+The internal modem, the test ROM socket, a GRiD Server for GRiDLink.
 
 Source: https://github.com/ConventionalMemories/compass-emu
 By Conventional Memories (C.M._), MIT license. Built on MartyPC by Daniel Balsom (MIT).

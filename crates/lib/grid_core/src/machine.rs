@@ -21,7 +21,7 @@ use crate::screen::{self, SCREEN_BASE, SCREEN_H, SCREEN_W, WIDE_H, WIDE_W};
 /// | 1137        | 8254 + 8259A          | 300415-00  | 512 x 256 | motherboard, no modem, no 8255 |
 ///
 /// So the 112x take the 1101's timers, interrupts and RAM/display timing, with the Compass
-/// II ROM sockets, PROM and plug-in bubble board; the 113x take the timing fitted to Kurt's
+/// II ROM sockets, PROM and plug-in bubble board; the 113x take the timing fitted to the measured
 /// real 1137.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GridModel {
@@ -30,7 +30,7 @@ pub enum GridModel {
     Compass1121,
     Compass1129,
     Compass1131,
-    /// Kurt's machine: a 113x "Logic II" board with the sound DACs and DTMF chip on the
+    /// The measured machine: a 113x "Logic II" board with the sound DACs and DTMF chip on the
     /// motherboard and no modem.
     Compass1137,
     Compass1139,

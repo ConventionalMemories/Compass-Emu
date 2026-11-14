@@ -25,7 +25,7 @@ fn main() {
     let even = fs::read(&a[1]).unwrap();
     let odd = fs::read(&a[2]).unwrap();
     let secs: f64 = a[3].parse().unwrap();
-    // GRID_MODEL = 1101 (default), 1109, 1121, 1129, 1131, 1139.
+    // GRID_MODEL = 1101 (default), 1109, 1121, 1129, 1131, 1137, 1139.
     let model = std::env::var("GRID_MODEL").ok().and_then(|s| GridModel::parse(&s)).unwrap_or(GridModel::Compass1101);
     println!("model: Compass {}", model.name());
     let mut m = GridMachine::new(model, &even, &odd);

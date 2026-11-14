@@ -1,4 +1,5 @@
-//! Compass sound (all on the internal modem board): the 8-bit sound DAC at DFE42 (DAC0832),
+//! Compass sound (all on the internal modem board; on the 1137, which has no modem, the DACs
+//! and the MK5089 sit on the motherboard, assumed at the same addresses): the 8-bit sound DAC at DFE42 (DAC0832),
 //! the volume DAC at DFE44 (modem / DTMF path), and the MK5089 DTMF generator on 8255 port B
 //! (DFEC2: bits 0-2 column, bits 3-6 row, low = selected, bit 7 = tone on). Real-hardware
 //! results (SoundTest, 2026-10-24): the sound DAC's level is its loudness and is not affected

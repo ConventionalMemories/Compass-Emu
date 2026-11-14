@@ -588,6 +588,14 @@ impl App {
                 ui.separator();
                 ui.label(format!("Serial {} {}", s.cfg.serial, if l.connected() { "(connected)" } else { "(waiting)" }));
             }
+            if let Some(l) = &s.gridlink {
+                ui.separator();
+                ui.label(format!(
+                    "GRiDLink {} {}",
+                    s.cfg.gridlink,
+                    if l.connected() { format!("(connected, frames {} out / {} in)", l.frames_out, l.frames_in) } else { "(waiting)".into() }
+                ));
+            }
             let b = s.m.board();
             let marks = b.marks.summary(b.frame_clocks());
             if !marks.is_empty() {

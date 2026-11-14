@@ -960,6 +960,10 @@ impl Intel808x {
         let mut guard = 0u32;
         let start = self.cycle_num;
         let min = self.bus.coprocessor_wait_min() as u64;
+        let extra = crate::cpu_808x::WAIT_EXTRA.load(std::sync::atomic::Ordering::Relaxed);
+        if extra > 0 {
+            self.cycles(extra);
+        }
         while (self.bus.coprocessor_busy(self.cycle_num) || self.cycle_num - start < min) && guard < 2_000_000 {
             cycles!(self, 5);
             guard += 1;

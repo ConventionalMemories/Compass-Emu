@@ -32,7 +32,7 @@ struct Server {
 }
 
 fn tools() -> Value {
-    let model = json!({"type": "string", "description": "1101, 1109, 1121, 1129, 1131 or 1139 (default 1129)"});
+    let model = json!({"type": "string", "description": "1101, 1109, 1121, 1129, 1131, 1137 or 1139 (default 1129)"});
     json!([
         {
             "name": "grid_build",

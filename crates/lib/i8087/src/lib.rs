@@ -21,6 +21,7 @@ use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
 use rustc_apfloat::ieee::Quad;
 
 mod trans;
+pub mod micro;
 pub mod fptan;
 
 fn to_q(x: F80) -> Quad {
@@ -63,12 +64,6 @@ fn f80_to_f64(x: F80) -> f64 {
     f64::from_bits(r.value.to_bits() as u64)
 }
 
-fn f64_to_f80(x: f64) -> F80 {
-    let d = Double::from_bits(x.to_bits() as u128);
-    let r: StatusAnd<F80> = d.convert(&mut false);
-    r.value
-}
-
 /// Instruction counters, for profiling.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FpuStats {
@@ -106,9 +101,34 @@ pub struct I8087 {
     /// Clocks the current instruction takes beyond its table time (a store that underflows).
     #[serde(default, skip)]
     penalty: u32,
+    push_blocked: bool,
     /// Shortest WAIT in clocks (0 = none). A bare FWAIT costs ~100 clocks on a real Compass
     /// because GRiD-OS runs it as INT 3, not because of the chip.
     pub wait_min: u32,
+    /// The microcode core, when the emulator runs on it (see `use_microcode`). It keeps no
+    /// state of its own between instructions.
+    #[serde(skip)]
+    micro: Option<Box<micro::Micro8087>>,
+    /// Instructions the microcode core ran, and those it gave up on (the instruction-level
+    /// core ran them instead).
+    #[serde(skip)]
+    pub micro_runs: u64,
+    #[serde(skip)]
+    pub micro_faults: u64,
+    /// The last instruction on the microcode core: its busy clocks by the tables, and what
+    /// the microcode did.
+    #[serde(skip)]
+    pub micro_last: Option<(u32, micro::core::Run)>,
+}
+
+/// Memory that passes reads through and drops writes: for a dry run.
+struct DryMem<'a>(&'a mut dyn FpuMem);
+
+impl FpuMem for DryMem<'_> {
+    fn read_u8(&mut self, addr: u32) -> u8 {
+        self.0.read_u8(addr)
+    }
+    fn write_u8(&mut self, _addr: u32, _v: u8) {}
 }
 
 /// Arithmetic operation selected by the ModR/M reg field of D8/DA/DC/DE.
@@ -161,22 +181,39 @@ impl I8087 {
             stats: FpuStats::default(),
             extra_busy: 0,
             penalty: 0,
+            push_blocked: false,
             wait_min: 0,
+            micro: None,
+            micro_runs: 0,
+            micro_faults: 0,
+            micro_last: None,
         };
         f.finit();
         f
     }
 
+    /// FINIT, and the second half of FSAVE. A real 8087 keeps the condition bits C3-C0
+    /// (8087 Bench on a 1101 and a 1137: the bits the program's own arithmetic left are
+    /// still there after FSAVE and FINIT).
     fn finit(&mut self) {
         self.cw = 0x03FF;
-        self.sw = 0;
+        self.sw &= 0x4700;
         self.tw = 0xFFFF;
         self.irq = false;
     }
 
     /// BUSY output (8086 TEST pin, active while executing).
+    /// With an unmasked exception pending and its interrupt enabled the chip keeps BUSY
+    /// active until the exception is cleared: a WAIT then never ends (8087 Bench hung a
+    /// real 1101 and 1137 that way), and the status word's B bit reads 1.
     pub fn busy(&self, now: u64) -> bool {
-        now < self.busy_until
+        now < self.busy_until || self.irq
+    }
+
+    /// The status word as FSTSW, FSTENV and FSAVE store it: B (bit 15) is the BUSY line
+    /// held by a pending interrupt.
+    fn sw_out(&self) -> u16 {
+        (self.sw & 0x7FFF) | if self.irq { 0x8000 } else { 0 }
     }
 
     pub fn busy_until(&self) -> u64 {
@@ -276,6 +313,15 @@ impl I8087 {
         }
     }
 
+    /// A denormal memory operand on a load: the denormal exception, and the load goes on
+    /// even when it is unmasked, unless the stack also overflows (then nothing is pushed).
+    fn denormal_load(&mut self) {
+        if self.exception(SW_DE) && self.tag((self.top() + 7) & 7) != TAG_EMPTY {
+            self.exception(SW_IE);
+            self.push_blocked = true;
+        }
+    }
+
     fn push(&mut self, v: F80) {
         let t = (self.top() + 7) & 7;
         if self.tag(t) != TAG_EMPTY {
@@ -349,21 +395,39 @@ impl I8087 {
     }
 
     /// Round a result to the precision control setting (24, 53 or 64 bits).
+    /// Precision control: rounds the significand to 24 or 53 bits. The exponent keeps its
+    /// full range (the chip only rounds the fraction).
     fn precision(&self, r: StatusAnd<F80>) -> StatusAnd<F80> {
-        let rnd = self.round();
-        match (self.cw >> 8) & 3 {
-            0 => {
-                let s: StatusAnd<Single> = r.value.convert_r(rnd, &mut false);
-                let back: StatusAnd<F80> = s.value.convert(&mut false);
-                StatusAnd { status: r.status | s.status, value: back.value }
-            }
-            2 => {
-                let d: StatusAnd<Double> = r.value.convert_r(rnd, &mut false);
-                let back: StatusAnd<F80> = d.value.convert(&mut false);
-                StatusAnd { status: r.status | d.status, value: back.value }
-            }
-            _ => r,
+        let pc = (self.cw >> 8) & 3;
+        let bits = r.value.to_bits();
+        let e = (bits >> 64) & 0x7FFF;
+        if pc & 1 != 0 || e == 0 || e == 0x7FFF || bits >> 63 & 1 == 0 {
+            return r;
         }
+        let rnd = self.round();
+        // narrow with the exponent moved to 0, then put the exponent back
+        let mid = F80::from_bits((bits & !(0x7FFFu128 << 64)) | (0x3FFFu128 << 64));
+        let (status, back) = if pc == 0 {
+            let s: StatusAnd<Single> = mid.convert_r(rnd, &mut false);
+            let b: StatusAnd<F80> = s.value.convert(&mut false);
+            (s.status, b.value.to_bits())
+        }
+        else {
+            let d: StatusAnd<Double> = mid.convert_r(rnd, &mut false);
+            let b: StatusAnd<F80> = d.value.convert(&mut false);
+            (d.status, b.value.to_bits())
+        };
+        let e2 = e + ((back >> 64) & 0x7FFF) - 0x3FFF;
+        let value = if e2 >= 0x7FFF {
+            // rounded up out of range: overflow, by the rounding mode
+            let big: StatusAnd<F80> = F80::largest().mul_r(F80::largest(), rnd);
+            let v = if bits >> 79 != 0 { -big.value } else { big.value };
+            return StatusAnd { status: r.status | status | big.status, value: v };
+        }
+        else {
+            F80::from_bits((back & !(0x7FFFu128 << 64)) | (e2 << 64))
+        };
+        StatusAnd { status: r.status | status, value }
     }
 
     /// Finish an arithmetic result: flags, masked/unmasked handling. Returns Some(value) to store.
@@ -383,34 +447,96 @@ impl I8087 {
     }
 
     fn arith(&mut self, op: Arith, a: F80, b: F80) -> Option<F80> {
-        let rnd = self.round();
-        let r = match op {
+        // Any NaN operand is invalid on the 8087 (it has no quiet NaNs); masked, the result
+        // is the NaN with the larger fraction.
+        if a.is_nan() || b.is_nan() {
+            if matches!(op, Arith::Com | Arith::Comp) {
+                return None;
+            }
+            if self.exception(SW_IE) {
+                return None;
+            }
+            let fa = a.to_bits() as u64;
+            let fb = b.to_bits() as u64;
+            return Some(if !b.is_nan() || (a.is_nan() && fa >= fb) { a } else { b });
+        }
+        // Projective closure (the default): infinity has no sign, so infinity plus or minus
+        // infinity is always invalid.
+        if self.cw & 0x1000 == 0 && a.is_infinite() && b.is_infinite() && matches!(op, Arith::Add | Arith::Sub | Arith::SubR) {
+            return if self.exception(SW_IE) { None } else { Some(indefinite()) };
+        }
+        // With 24 or 53 bit precision the chip rounds once, from the exact result. Get that
+        // by chopping to 64 bits and keeping "inexact" as a sticky lowest bit.
+        let apply = |rnd: Round| match op {
             Arith::Add => a.add_r(b, rnd),
             Arith::Sub => a.sub_r(b, rnd),
             Arith::SubR => b.sub_r(a, rnd),
             Arith::Mul => a.mul_r(b, rnd),
             Arith::Div => a.div_r(b, rnd),
-            Arith::DivR => b.div_r(a, rnd),
-            Arith::Com | Arith::Comp => {
-                self.compare(a, b);
-                return None;
-            }
+            _ => b.div_r(a, rnd),
         };
+        if matches!(op, Arith::Com | Arith::Comp) {
+            return None;
+        }
+        let mut r = apply(self.round());
+        let e = (r.value.to_bits() >> 64) & 0x7FFF;
+        if self.cw & 0x100 == 0 && e != 0 && e != 0x7FFF && !r.status.intersects(Status::OVERFLOW | Status::UNDERFLOW) {
+            let c = apply(Round::TowardZero);
+            let bits = c.value.to_bits();
+            let sticky = c.status.contains(Status::INEXACT) as u128;
+            r = StatusAnd { status: c.status, value: F80::from_bits(bits | sticky) };
+        }
         self.result(r)
     }
 
-    fn compare(&mut self, a: F80, b: F80) {
-        self.sw &= !SW_CC;
+    /// Sets C3/C2/C0 for a compare b. Returns true if it raised an unmasked exception.
+    /// C1 is left alone (the compare microcode only writes C3, C2 and C0).
+    fn compare(&mut self, a: F80, b: F80) -> bool {
+        self.sw &= !(SW_C0 | SW_C2 | SW_C3);
         if a.is_nan() || b.is_nan() {
             self.sw |= SW_C0 | SW_C2 | SW_C3;
-            self.exception(SW_IE);
-            return;
+            return self.exception(SW_IE);
+        }
+        if self.cw & 0x1000 == 0 && (a.is_infinite() || b.is_infinite()) {
+            // projective closure (the 8087's default): one unsigned infinity, equal to
+            // itself and not ordered against anything else
+            if a.is_infinite() && b.is_infinite() {
+                self.sw |= SW_C3;
+                return false;
+            }
+            self.sw |= SW_C0 | SW_C2 | SW_C3;
+            return self.exception(SW_IE);
         }
         match a.partial_cmp(&b) {
             Some(std::cmp::Ordering::Less) => self.sw |= SW_C0,
             Some(std::cmp::Ordering::Equal) => self.sw |= SW_C3,
             Some(std::cmp::Ordering::Greater) => {}
             None => self.sw |= SW_C0 | SW_C2 | SW_C3,
+        }
+        false
+    }
+
+    /// ST(i), or None if it is empty.
+    fn opt(&self, i: usize) -> Option<F80> {
+        if self.empty(i) { None } else { Some(self.st(i)) }
+    }
+
+    /// FCOM and its relatives as the microcode does them: an empty operand is invalid and
+    /// unordered, and an unmasked exception leaves the stack alone.
+    fn fcom(&mut self, a: Option<F80>, b: Option<F80>, pops: u32) {
+        // a denormal operand raises D; the compare still happens
+        let d = (a.is_some_and(|v| v.is_denormal()) || b.is_some_and(|v| v.is_denormal())) && self.exception(SW_DE);
+        let unmasked = d | match (a, b) {
+            (Some(a), Some(b)) => self.compare(a, b),
+            _ => {
+                self.sw |= SW_C0 | SW_C2 | SW_C3;
+                self.exception(SW_IE)
+            }
+        };
+        if !unmasked {
+            for _ in 0..pops {
+                self.pop();
+            }
         }
     }
 
@@ -454,53 +580,74 @@ impl I8087 {
         for d in (0..18).rev() {
             v = v * 10 + ((raw >> (d * 4)) & 0xF) as i128;
         }
-        if raw >> 79 & 1 != 0 {
-            v = -v;
-        }
-        F80::from_i128(v).value
+        let r = F80::from_i128(v).value;
+        // (minus zero keeps its sign)
+        if raw >> 79 & 1 != 0 { -r } else { r }
     }
 
-    fn store_int(&mut self, mem: &mut dyn FpuMem, a: u32, bytes: usize, v: F80) {
+    fn store_int(&mut self, mem: &mut dyn FpuMem, a: u32, bytes: usize, v: F80) -> bool {
         let bits = bytes * 8;
         let r = v.to_i128_r(bits, self.round(), &mut false);
         let mut out = r.value;
         let mut flags = 0;
-        if r.status.contains(Status::INVALID_OP) || v.is_nan() {
-            flags |= SW_IE;
+        // (a denormal is not a number an integer store accepts: invalid, like the microcode)
+        if r.status.contains(Status::INVALID_OP) || v.is_nan() || v.is_denormal() {
+            flags = SW_IE;
             out = -1i128 << (bits - 1); // integer indefinite
         }
-        if r.status.contains(Status::INEXACT) {
+        else if r.status.contains(Status::INEXACT) {
             flags |= SW_PE;
         }
         if flags != 0 && self.exception(flags) && flags & SW_IE != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, bytes, out as u128);
+        true
     }
 
-    fn store_bcd(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
-        let r = v.to_i128_r(64, self.round(), &mut false);
-        let n = r.value;
-        if r.status.contains(Status::INVALID_OP) || v.is_nan() || n.unsigned_abs() >= 1_000_000_000_000_000_000 {
+    /// FBSTP's conversion, step for step as the microcode does it: add one half (with
+    /// the sign), divide by 10^18 keeping 64 quotient bits (chopped), and take 18 digits
+    /// out of that fraction. Rounding control plays no part, nothing is "inexact", an exact half
+    /// goes toward zero, and a fraction just above one half can too.
+    /// Returns false when nothing was stored (unmasked invalid).
+    fn store_bcd(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        const TEN18: u128 = 0xDE0B_6B3A_7640_0000; // 10^18 * 2^4, exponent 403Ah
+        let sign = v.to_bits() & (1 << 79);
+        if v.is_zero() {
+            Self::wr(mem, a, 10, sign);
+            return true;
+        }
+        let half = F80::from_bits(sign | 0x3FFE_8000_0000_0000_0000);
+        let tb = v.add_r(half, Round::TowardZero).value.to_bits();
+        let (e, f) = (((tb >> 64) & 0x7FFF) as i32, tb as u64 as u128);
+        // the quotient's fraction (normalized) and exponent
+        let (q, qe) = if f >= TEN18 { ((f << 63) / TEN18, e - 0x403A + 0x3FFF) } else { ((f << 64) / TEN18, e - 0x403A + 0x3FFE) };
+        if v.is_nan() || v.is_infinite() || v.is_denormal() || qe >= 0x3FFF {
             if self.exception(SW_IE) {
-                return;
+                return false;
             }
             Self::wr(mem, a, 10, 0xFFFF_C000_0000_0000_0000);
-            return;
+            return true;
         }
-        let mut m = n.unsigned_abs();
+        let frac = q >> (0x3FFF - qe - 1);
+        let mut m = (frac * 1_000_000_000_000_000_000) >> 64;
         let mut out: u128 = 0;
         for d in 0..18 {
-            out |= ((m % 10) as u128) << (d * 4);
+            out |= (m % 10) << (d * 4);
             m /= 10;
         }
-        if n < 0 || v.is_negative() {
-            out |= 1 << 79;
-        }
-        Self::wr(mem, a, 10, out);
+        Self::wr(mem, a, 10, out | sign);
+        true
     }
 
-    fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
+    fn store_real32(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        if v.is_nan() {
+            // the 8087 stores a NaN as it is: fraction cut to size, no exception
+            let b = v.to_bits();
+            let frac = (b as u64) << 1 >> (64 - 23);
+            Self::wr(mem, a, 4, (b >> 79) << 31 | ((1u128 << 8) - 1) << 23 | frac as u128);
+            return true;
+        }
         let r: StatusAnd<Single> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
         if r.status.contains(Status::UNDERFLOW) {
@@ -508,12 +655,20 @@ impl I8087 {
             self.penalty += 49;
         }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, 4, r.value.to_bits());
+        true
     }
 
-    fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) {
+    fn store_real64(&mut self, mem: &mut dyn FpuMem, a: u32, v: F80) -> bool {
+        if v.is_nan() {
+            // the 8087 stores a NaN as it is: fraction cut to size, no exception
+            let b = v.to_bits();
+            let frac = (b as u64) << 1 >> (64 - 52);
+            Self::wr(mem, a, 8, (b >> 79) << 63 | ((1u128 << 11) - 1) << 52 | frac as u128);
+            return true;
+        }
         let r: StatusAnd<Double> = v.convert_r(self.round(), &mut false);
         let f = Self::status_flags(r.status);
         if r.status.contains(Status::UNDERFLOW) {
@@ -521,9 +676,10 @@ impl I8087 {
             self.penalty += 49;
         }
         if f != 0 && self.exception(f) && f & !SW_PE & !self.cw & 0x3F != 0 {
-            return;
+            return false;
         }
         Self::wr(mem, a, 8, r.value.to_bits());
+        true
     }
 
     /// Check ST(i) is not empty; on underflow raise invalid and return None (masked: indefinite).
@@ -541,7 +697,7 @@ impl I8087 {
         // 8087 real-mode environment layout
         [
             self.cw,
-            self.sw,
+            self.sw_out(),
             self.tw,
             self.ip as u16,
             (((self.ip >> 16) as u16 & 0xF) << 12) | (self.opcode & 0x7FF),
@@ -558,7 +714,7 @@ impl I8087 {
 
     fn load_env(&mut self, mem: &mut dyn FpuMem, a: u32) {
         let w: Vec<u16> = (0..7).map(|i| Self::rd(mem, a + i * 2, 2) as u16).collect();
-        self.cw = w[0];
+        self.cw = w[0] & 0x1FFF;
         self.sw = w[1];
         self.tw = w[2];
         self.ip = w[3] as u32 | ((w[4] as u32 >> 12) << 16);
@@ -567,27 +723,133 @@ impl I8087 {
         self.irq = self.sw & SW_IR != 0 && self.cw & 0x80 == 0;
     }
 
+    /// Run the instructions that have microcode on the microcode core from now on. The
+    /// control instructions (FLDCW, FSTENV, FINIT...) are hardwired in the chip, not in its
+    /// microcode ROM, and stay with the instruction-level core, as do FSAVE and FRSTOR.
+    pub fn use_microcode(&mut self, rom: micro::MicroRom) {
+        self.micro = Some(Box::new(micro::Micro8087::new(rom)));
+    }
+
+    pub fn microcode(&self) -> bool {
+        self.micro.is_some()
+    }
+
+    /// One instruction on the microcode core. The instruction-level core runs it first, with
+    /// its writes to memory dropped and its results thrown away, for the number of bus words
+    /// (and as the fallback if the microcode model gives up).
+    fn esc_micro(&mut self, mem: &mut dyn FpuMem, op: u8, modrm: u8, ea: Option<u32>) -> (u32, u32) {
+        let reg = (modrm >> 3) & 7;
+        let rm = (modrm & 7) as usize;
+        let saved = (self.st, self.raw, self.cw, self.sw, self.tw, self.irq, self.push_blocked, self.penalty, self.stats.unknown);
+        let timing = match ea {
+            Some(a) => self.esc_mem(&mut DryMem(mem), op, reg, a),
+            None => self.esc_reg(op, reg, rm),
+        };
+        let penalty = self.penalty;
+        (self.st, self.raw, self.cw, self.sw, self.tw, self.irq, self.push_blocked, self.penalty, self.stats.unknown) = saved;
+        let mut m = self.micro.take().unwrap();
+        for p in 0..8 {
+            // the chip goes by the tag word, also when FRSTOR or FLDENV loaded one that
+            // does not fit the registers
+            let mut r = micro::Reg::from_bits(self.raw[p].unwrap_or_else(|| self.st[p].to_bits()));
+            r.tag = self.tag(p) as u8;
+            m.st[p] = r;
+        }
+        m.top = self.top() as u8;
+        m.cw = self.cw;
+        m.sw = self.sw & !(0x3800 | SW_IR | 0x8000);
+        let res = match ea {
+            Some(a) => m.exec_mem(op, modrm, Some((mem, a))),
+            None => m.exec(op, modrm),
+        };
+        self.micro_last = res.as_ref().ok().map(|r| (timing.0, *r));
+        if res.is_err() {
+            // a micro-instruction the model does not know: the instruction-level core does it
+            self.micro = Some(m);
+            self.micro_faults += 1;
+            return match ea {
+                Some(a) => self.esc_mem(mem, op, reg, a),
+                None => self.esc_reg(op, reg, rm),
+            };
+        }
+        self.micro_runs += 1;
+        for p in 0..8 {
+            // keep the chip's own pattern wherever it is not a plain number (unnormals,
+            // pseudo-zeros, exponent 0 with the integer bit set)
+            let bits = m.st[p].bits();
+            let v = unnormal_value(bits).unwrap_or_else(|| F80::from_bits(bits));
+            self.st[p] = v;
+            self.raw[p] = (v.to_bits() != bits).then_some(bits);
+        }
+        self.tw = m.tag_word();
+        self.sw = (self.sw & (SW_IR | 0x8000)) | (m.sw & !(0x3800 | SW_IR | 0x8000));
+        self.set_top(m.top as usize);
+        if m.exc & !self.cw & 0x3F != 0 {
+            self.sw |= SW_IR;
+            if self.cw & 0x80 == 0 {
+                self.irq = true;
+            }
+        }
+        self.push_blocked = false;
+        self.micro = Some(m);
+        // the time is what the microcode did (see micro::KIND_CLOCKS); the bus words still
+        // come from the instruction-level core's dry run
+        let _ = penalty;
+        (micro::clocks(&res.unwrap(), 0xD8 | op, modrm), timing.1)
+    }
+
     /// Execute an ESC instruction. `opcode` is D8-DF, `modrm` the ModR/M byte, `ea` the linear
     /// address of the memory operand (None for register forms), `ip` the linear address of the
     /// instruction, `now` the CPU clock. Returns the extra CPU clocks the 8087's own memory
     /// cycles take from the bus (operand words beyond the first, which the 8086 reads itself).
     pub fn esc(&mut self, mem: &mut dyn FpuMem, now: u64, opcode: u8, modrm: u8, ea: Option<u32>, ip: u32) -> u32 {
         let start = now.max(self.busy_until);
-        let reg = (modrm >> 3) & 7;
-        let rm = (modrm & 7) as usize;
         let op = opcode & 7;
-        let (clocks, words) = match ea {
-            Some(a) => self.esc_mem(mem, op, reg, a),
-            None => self.esc_reg(op, reg, rm),
+        // The chip does not decode every bit: opcodes Intel left reserved run as one of
+        // their neighbours. From 8087 Bench on a real 1101 (group q): DA C0+i..F8+i are
+        // D8 (FADD ST,ST(i) ...), DB C0+i is FLD ST(i), DF C8+i is FXCH, DF D0+i and
+        // DF D8+i are FSTP ST(i); D9 D8+i only pops and D9 EF does nothing.
+        let (run_op, run_modrm) = match (op, modrm) {
+            (2, 0xC0..=0xFF) => (0, modrm),
+            (3, 0xC0..=0xC7) => (1, modrm),
+            (7, 0xC8..=0xCF) => (1, modrm),
+            (7, 0xD0..=0xDF) => (5, 0xD8 | (modrm & 7)),
+            _ => (op, modrm),
+        };
+        let reg = (run_modrm >> 3) & 7;
+        let rm = (run_modrm & 7) as usize;
+        let (clocks, words) = if ea.is_none() && op == 1 && (0xD8..=0xDF).contains(&modrm) {
+            self.pop();
+            (17, 0)
+        }
+        else if ea.is_none() && op == 1 && modrm == 0xEF {
+            (15, 0)
+        }
+        else if self.micro.is_some() && micro::has_entry(run_op, run_modrm) {
+            self.esc_micro(mem, run_op, run_modrm, ea)
+        }
+        else {
+            match ea {
+                Some(a) => self.esc_mem(mem, run_op, reg, a),
+                None => self.esc_reg(run_op, reg, rm),
+            }
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
-        if !(op == 1 && ea.is_some() && reg >= 4) && !(op == 3 && ea.is_none() && reg == 4) {
+        // (FSTSW and FSAVE too: after them a real chip's FSTENV still shows the instruction
+        // before)
+        if !(op == 1 && ea.is_some() && reg >= 4) && !(op == 3 && ea.is_none() && reg == 4) && !(op == 5 && ea.is_some() && reg >= 6) {
             self.ip = ip;
             self.opcode = (((op as u16) << 8) | modrm as u16) & 0x7FF;
             if let Some(a) = ea {
                 self.dp = a;
             }
         }
+        // The interrupt request bit is not a latch: it is 1 while a flagged exception is
+        // unmasked (FRSTOR of a status word with the bit set and everything masked reads
+        // back 0 on a real chip). INT, BUSY and the B bit follow it unless IEM is set.
+        let ir = self.sw & !self.cw & 0x3F != 0;
+        self.sw = (self.sw & !SW_IR) | if ir { SW_IR } else { 0 };
+        self.irq = ir && self.cw & 0x80 == 0;
         let clocks = clocks + std::mem::take(&mut self.penalty);
         self.busy_until = start + clocks as u64 + self.extra_busy as u64;
         self.stats.instructions += 1;
@@ -607,23 +869,37 @@ impl I8087 {
             0 | 2 | 4 | 6 => {
                 // arithmetic with m32real / m32int / m64real / m16int
                 let (v, base, words) = match op {
-                    0 => (Self::load_real32(mem, a), [105, 118, 65, 68, 105, 105, 220, 221], 2),
+                    0 => (nan_bits(Self::rd(mem, a, 4), 23, 8).map_or_else(|| Self::load_real32(mem, a), F80::from_bits), [105, 118, 65, 68, 105, 105, 220, 221], 2),
                     2 => (Self::load_int(mem, a, 4), [125, 136, 85, 87, 125, 125, 236, 237], 2),
-                    4 => (Self::load_real64(mem, a), [110, 161, 70, 72, 110, 110, 225, 226], 4),
+                    4 => (nan_bits(Self::rd(mem, a, 8), 52, 11).map_or_else(|| Self::load_real64(mem, a), F80::from_bits), [110, 161, 70, 72, 110, 110, 225, 226], 4),
                     _ => (Self::load_int(mem, a, 2), [120, 130, 80, 82, 120, 120, 230, 231], 1),
                 };
+                // a denormal short or long real operand: the denormal exception; the
+                // instruction goes on unless it is unmasked
+                let d = Self::rd(mem, a, 8);
+                let denormal = match op {
+                    0 => d & 0x7F_FFFF != 0 && (d >> 23) & 0xFF == 0,
+                    4 => d & 0xF_FFFF_FFFF_FFFF != 0 && (d >> 52) & 0x7FF == 0,
+                    _ => false,
+                };
                 let ar = Arith::from(reg);
-                if let Some(st0) = self.src(0) {
-                    match ar {
-                        Arith::Com => self.compare(st0, v),
-                        Arith::Comp => {
-                            self.compare(st0, v);
-                            self.pop();
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, st0, v) {
-                                self.set_st(0, r);
-                            }
+                let unmasked = denormal && self.exception(SW_DE);
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    // the compare still happens; only the pop is held back
+                    let a = self.opt(0);
+                    self.fcom(a, Some(v), if unmasked { 0 } else { (reg == 3) as u32 });
+                }
+                else if unmasked {
+                }
+                else if self.empty(0) {
+                    if !self.exception(SW_IE) {
+                        self.set_st(0, indefinite());
+                    }
+                }
+                else if let Some(st0) = self.src(0) {
+                    {
+                        if let Some(r) = self.arith(ar, st0, v) {
+                            self.set_st(0, r);
                         }
                     }
                 }
@@ -632,17 +908,23 @@ impl I8087 {
             1 => match reg {
                 0 => {
                     let d = Self::rd(mem, a, 4);
-                    match denormal_bits(d, 23, 0x3F81) {
+                    if d & 0x7F_FFFF != 0 && (d >> 23) & 0xFF == 0 {
+                        self.denormal_load();
+                    }
+                    match denormal_bits(d, 23, 0x3F81).or(nan_bits(d, 23, 8)) {
+                        _ if self.push_blocked => self.push_blocked = false,
                         Some(bits) => self.push_bits(bits),
                         None => self.push(Self::load_real32(mem, a)),
                     }
                     (43, 2)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_real32(mem, a, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_real32(mem, a, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 87 } else { 89 }, 2)
@@ -652,7 +934,8 @@ impl I8087 {
                     (40, 7)
                 }
                 5 => {
-                    self.cw = Self::rd(mem, a, 2) as u16;
+                    // the control word has 13 bits: the top three read back as 0
+                    self.cw = Self::rd(mem, a, 2) as u16 & 0x1FFF;
                     (10, 1)
                 }
                 6 => {
@@ -676,23 +959,36 @@ impl I8087 {
                     (56, 2)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 4, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_int(mem, a, 4, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 88 } else { 90 }, 2)
                 }
                 5 => {
-                    self.push_bits(Self::rd(mem, a, 10));
+                    let d = Self::rd(mem, a, 10);
+                    if d as u64 != 0 && (d >> 64) & 0x7FFF == 0 {
+                        self.denormal_load();
+                    }
+                    if self.push_blocked {
+                        self.push_blocked = false;
+                    }
+                    else {
+                        self.push_bits(d);
+                    }
                     (57, 5)
                 }
                 7 => {
-                    if self.src(0).is_some() {
-                        Self::wr(mem, a, 10, self.st_raw(0));
+                    // an empty register stores the indefinite; nothing is stored or
+                    // popped when invalid is unmasked
+                    if let Some(v) = self.src(0) {
+                        Self::wr(mem, a, 10, if self.empty(0) { v.to_bits() } else { self.st_raw(0) });
+                        self.pop();
                     }
-                    self.pop();
                     (55, 5)
                 }
                 _ => {
@@ -703,17 +999,23 @@ impl I8087 {
             5 => match reg {
                 0 => {
                     let d = Self::rd(mem, a, 8);
-                    match denormal_bits(d, 52, 0x3C01) {
+                    if d & 0xF_FFFF_FFFF_FFFF != 0 && (d >> 52) & 0x7FF == 0 {
+                        self.denormal_load();
+                    }
+                    match denormal_bits(d, 52, 0x3C01).or(nan_bits(d, 52, 11)) {
+                        _ if self.push_blocked => self.push_blocked = false,
                         Some(bits) => self.push_bits(bits),
                         None => self.push(Self::load_real64(mem, a)),
                     }
                     (39, 4)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_real64(mem, a, v);
-                    }
-                    if reg == 3 {
+                    // nothing is stored or popped after an unmasked exception
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_real64(mem, a, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 85 } else { 87 }, 4)
@@ -724,9 +1026,9 @@ impl I8087 {
                     for i in 0..8 {
                         let bits = Self::rd(mem, a + 14 + i * 10, 10);
                         let p = self.phys(i as usize);
-                        let u = unnormal_value(bits);
-                        self.st[p] = u.unwrap_or_else(|| F80::from_bits(bits));
-                        self.raw[p] = u.map(|_| bits);
+                        let v = unnormal_value(bits).unwrap_or_else(|| F80::from_bits(bits));
+                        self.st[p] = v;
+                        self.raw[p] = (v.to_bits() != bits).then_some(bits);
                     }
                     (205, 47)
                 }
@@ -739,7 +1041,7 @@ impl I8087 {
                     (205, 47)
                 }
                 7 => {
-                    Self::wr(mem, a, 2, self.sw as u128);
+                    Self::wr(mem, a, 2, self.sw_out() as u128);
                     (15, 1)
                 }
                 _ => {
@@ -755,10 +1057,11 @@ impl I8087 {
                     (42, 1)
                 }
                 2 | 3 => {
-                    if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 2, v);
-                    }
-                    if reg == 3 {
+                    let stored = match self.src(0) {
+                        Some(v) => self.store_int(mem, a, 2, v),
+                        None => false,
+                    };
+                    if reg == 3 && stored {
                         self.pop();
                     }
                     (if reg == 2 { 72 } else { 74 }, 1)
@@ -775,16 +1078,18 @@ impl I8087 {
                 }
                 6 => {
                     if let Some(v) = self.src(0) {
-                        self.store_bcd(mem, a, v);
+                        if self.store_bcd(mem, a, v) {
+                            self.pop();
+                        }
                     }
-                    self.pop();
                     (530, 5)
                 }
                 7 => {
                     if let Some(v) = self.src(0) {
-                        self.store_int(mem, a, 8, v);
+                        if self.store_int(mem, a, 8, v) {
+                            self.pop();
+                        }
                     }
-                    self.pop();
                     (100, 4)
                 }
                 _ => {
@@ -804,19 +1109,18 @@ impl I8087 {
                 let short = Self::short_mul(self.st(0), self.st(i));
                 let far = Self::add_shift_out(self.st(0), self.st(i));
                 let up = Self::mul_rounds_up(self.st(0), self.st(i));
-                if let (Some(a), Some(b)) = (self.src(0), self.src(i)) {
-                    match ar {
-                        Arith::Com => self.compare(a, b),
-                        Arith::Comp => {
-                            self.compare(a, b);
-                            self.pop();
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, a, b) {
-                                self.set_st(0, r);
-                            }
-                        }
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    let (a, b) = (self.opt(0), self.opt(i));
+                    self.fcom(a, b, (reg == 3) as u32);
+                }
+                else if self.empty(0) || self.empty(i) {
+                    // an empty operand: invalid, and the indefinite NaN if masked
+                    if !self.exception(SW_IE) {
+                        self.set_st(0, indefinite());
                     }
+                }
+                else if let Some(r) = self.arith(ar, self.st(0), self.st(i)) {
+                    self.set_st(0, r);
                 }
                 if reg == 1 && !short {
                     // a long product that rounds up takes ~5 clocks more (GRiDProbe f22-f24)
@@ -839,31 +1143,30 @@ impl I8087 {
                     7 => Arith::Div,
                     r => Arith::from(r),
                 };
-                if op == 6 && reg == 3 && i == 1 {
-                    // FCOMPP
-                    if let (Some(a), Some(b)) = (self.src(0), self.src(1)) {
-                        self.compare(a, b);
-                    }
-                    self.pop();
-                    self.pop();
-                    return (50, 0);
+                if matches!(ar, Arith::Com | Arith::Comp) {
+                    // DC/DE forms of FCOM/FCOMP: DE pops once more (DE D9 is FCOMPP; the
+                    // microcode does the same for every ST(i))
+                    let (a, b) = (self.opt(0), self.opt(i));
+                    self.fcom(a, b, (op == 6) as u32 + (reg == 3) as u32);
+                    return (if op == 6 && reg == 3 { 50 } else { [45, 47][(reg & 1) as usize] }, 0);
                 }
-                if let (Some(a), Some(b)) = (self.src(i), self.src(0)) {
-                    match ar {
-                        Arith::Com | Arith::Comp => {
-                            self.compare(b, a);
-                            if matches!(ar, Arith::Comp) {
-                                self.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(r) = self.arith(ar, a, b) {
-                                self.set_st(i, r);
-                            }
-                        }
+                let mut stored = true;
+                if self.empty(0) || self.empty(i) {
+                    if self.exception(SW_IE) {
+                        stored = false;
+                    }
+                    else {
+                        self.set_st(i, indefinite());
                     }
                 }
-                if op == 6 && !matches!(ar, Arith::Com | Arith::Comp) {
+                else if let Some(r) = self.arith(ar, self.st(i), self.st(0)) {
+                    self.set_st(i, r);
+                }
+                else {
+                    stored = false;
+                }
+                // no pop when an unmasked exception stopped the instruction
+                if op == 6 && stored {
                     self.pop();
                 }
                 if op == 6 {
@@ -914,11 +1217,12 @@ impl I8087 {
                     12
                 }
                 2 | 3 => {
+                    // an unmasked invalid (empty ST) leaves the stack alone
                     if let Some(v) = self.src(0) {
                         self.set_st(i, v);
-                    }
-                    if reg == 3 {
-                        self.pop();
+                        if reg == 3 {
+                            self.pop();
+                        }
                     }
                     if reg == 2 { 18 } else { 20 }
                 }
@@ -1014,21 +1318,24 @@ impl I8087 {
             }
             4 => match i {
                 0 => {
+                    // an empty ST gives the indefinite NaN as it is (the microcode stores
+                    // it without touching the sign)
+                    let e = self.empty(0);
                     if let Some(v) = self.src(0) {
-                        self.set_st(0, -v);
+                        self.set_st(0, if e { v } else { -v });
                     }
                     15
                 }
                 1 => {
+                    let e = self.empty(0);
                     if let Some(v) = self.src(0) {
-                        self.set_st(0, v.abs());
+                        self.set_st(0, if e { v } else { v.abs() });
                     }
                     14
                 }
                 4 => {
-                    if let Some(v) = self.src(0) {
-                        self.compare(v, F80::ZERO);
-                    }
+                    let a = self.opt(0);
+                    self.fcom(a, Some(F80::ZERO), 0);
                     42
                 }
                 5 => {
@@ -1165,7 +1472,20 @@ impl I8087 {
                 }
                 4 => {
                     // FXTRACT: ST = exponent, push significand
-                    if let Some(x) = self.src(0) {
+                    // The microcode: an empty, infinite, NaN or denormal ST, or no room to
+                    // push, is invalid and pushes the indefinite; zero gives two zeros.
+                    let t = (self.top() + 7) & 7;
+                    let x = self.st(0);
+                    if self.empty(0) || self.tag(t) != TAG_EMPTY || x.is_nan() || x.is_infinite() || x.is_denormal() {
+                        if !self.exception(SW_IE) {
+                            self.set_top(t);
+                            self.set_st(0, indefinite());
+                        }
+                    }
+                    else if x.is_zero() {
+                        self.push(x);
+                    }
+                    else {
                         let e = x.ilogb();
                         let sig = x.scalbn(-e);
                         self.set_st(0, F80::from_i128(e as i128).value);
@@ -1190,35 +1510,8 @@ impl I8087 {
             _ => match i {
                 // reg 7
                 0 => {
-                    // FPREM: partial remainder (chopped quotient)
-                    if let (Some(a), Some(b)) = (self.src(0), self.src(1)) {
-                        let ea = a.ilogb();
-                        let eb = b.ilogb();
-                        self.sw &= !SW_CC;
-                        if ea - eb >= 64 {
-                            // incomplete reduction: reduce by 2^(d-63) steps like the real chip
-                            let shift = ea - eb - 63;
-                            let bs = b.scalbn(shift);
-                            let r = a.c_fmod(bs).value;
-                            self.set_st(0, r);
-                            self.sw |= SW_C2;
-                        }
-                        else {
-                            let q = a.div_r(b, Round::TowardZero).value.round_to_integral(Round::TowardZero).value;
-                            let r = a.c_fmod(b).value;
-                            let qi = q.abs().c_fmod(F80::from_u128(8).value).value.to_i128(8).value;
-                            if qi & 1 != 0 {
-                                self.sw |= SW_C1;
-                            }
-                            if qi & 2 != 0 {
-                                self.sw |= SW_C3;
-                            }
-                            if qi & 4 != 0 {
-                                self.sw |= SW_C0;
-                            }
-                            self.set_st(0, r);
-                        }
-                    }
+                    // FPREM: partial remainder (chopped quotient), as the microcode does it
+                    self.fprem();
                     125
                 }
                 1 => {
@@ -1251,19 +1544,61 @@ impl I8087 {
                 4 => {
                     // FRNDINT
                     if let Some(x) = self.src(0) {
+                        // (precision control does not apply: the integer keeps all its bits)
                         let r = x.round_to_integral(self.round());
-                        if let Some(v) = self.result(r) {
-                            self.set_st(0, v);
+                        if self.empty(0) {
+                            self.set_st(0, x); // the indefinite; src() raised invalid
+                        }
+                        else if x.is_nan() {
+                            self.exception(SW_IE); // the NaN stays
+                        }
+                        else {
+                            if r.status.contains(Status::INEXACT) {
+                                self.exception(SW_PE);
+                            }
+                            self.set_st(0, r.value);
                         }
                     }
                     45
                 }
                 5 => {
-                    // FSCALE: ST = ST * 2^trunc(ST1)
-                    if let (Some(x), Some(y)) = (self.src(0), self.src(1)) {
-                        let n = y.to_i128_r(32, Round::TowardZero, &mut false).value;
-                        let n = n.clamp(-70000, 70000) as i32;
-                        self.set_st(0, x.scalbn_r(n, self.round()));
+                    // FSCALE: ST = ST * 2^trunc(ST1), the way the microcode goes about it:
+                    // a zero in either register ends it at once, empties are invalid, and
+                    // the exponent is moved without rounding while it stays in range.
+                    let z0 = !self.empty(0) && self.st(0).is_zero();
+                    let z1 = !self.empty(1) && self.st(1).is_zero();
+                    if z0 || z1 {
+                    }
+                    else if self.empty(0) || self.empty(1) {
+                        if !self.exception(SW_IE) {
+                            self.set_st(0, indefinite());
+                        }
+                    }
+                    else {
+                        let (x, y) = (self.st(0), self.st(1));
+                        if x.is_nan() || y.is_nan() || x.is_infinite() || y.is_infinite() {
+                            if let Some(r) = self.scale_special(x, y) {
+                                self.set_st(0, r);
+                            }
+                        }
+                        else {
+                            let n = y.to_i128_r(32, Round::TowardZero, &mut false).value;
+                            let n = n.clamp(-70000, 70000) as i32;
+                            let r = x.scalbn_r(n, self.round());
+                            let e = ((x.to_bits() >> 64) & 0x7FFF) as i32 + n;
+                            let flags = if e >= 0x7FFF {
+                                SW_OE | SW_PE
+                            }
+                            else if e <= 0 {
+                                SW_UE | if r.is_zero() || !r.scalbn(-n).bitwise_eq(x) { SW_PE } else { 0 }
+                            }
+                            else {
+                                0
+                            };
+                            if !(flags != 0 && self.exception(flags) && flags & !SW_PE & !self.cw & 0x3F != 0) {
+                                self.set_st(0, r);
+                            }
+                        }
                     }
                     35
                 }
@@ -1275,33 +1610,150 @@ impl I8087 {
         }
     }
 
-    fn sqrt(&mut self, x: F80) -> Option<F80> {
-        if x.is_zero() || x.is_nan() || x.is_pos_infinity() {
-            return Some(x);
+    /// FPREM the microcode's way: a shift-and-subtract loop over the exponent difference
+    /// (at most 63 steps and then C2 = 1), the remainder exact, the low three quotient
+    /// bits to C0, C3, C1.
+    fn fprem(&mut self) {
+        self.sw &= !SW_C2;
+        if self.empty(0) || self.empty(1) {
+            if !self.exception(SW_IE) {
+                self.set_st(0, indefinite());
+                self.sw &= !(SW_C0 | SW_C1 | SW_C3);
+            }
+            return;
         }
-        if x.is_negative() {
+        let (a, b) = (self.st(0), self.st(1));
+        let (ab, bb) = (a.to_bits(), b.to_bits());
+        let (ea, eb) = (((ab >> 64) & 0x7FFF) as i32, ((bb >> 64) & 0x7FFF) as i32);
+        let (fa, fb) = (ab as u64 as u128, bb as u64 as u128);
+        let mut q = 0u128;
+        let r = if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_zero() {
+            if self.exception(SW_IE) {
+                return;
+            }
+            if a.is_nan() || b.is_nan() {
+                if !b.is_nan() || (a.is_nan() && fa >= fb) { a } else { b }
+            }
+            else {
+                indefinite()
+            }
+        }
+        else if a.is_zero() || b.is_infinite() || ea < eb {
+            a
+        }
+        else {
+            let mut d = ea - eb;
+            if d >= 64 {
+                d = 63;
+                self.sw |= SW_C2;
+            }
+            let n = fa << d;
+            q = n / fb;
+            let rem = (n % fb) as u64;
+            if rem == 0 {
+                F80::from_bits(ab & (1 << 79))
+            }
+            else {
+                let lz = rem.leading_zeros() as i32;
+                let e = ea - d - lz;
+                let one = F80::from_bits((ab & (1 << 79)) | 0x3FFF << 64 | ((rem << lz) as u128));
+                if e <= 0 {
+                    self.exception(SW_UE);
+                }
+                one.scalbn(e - 0x3FFF)
+            }
+        };
+        self.sw &= !(SW_C0 | SW_C1 | SW_C3);
+        if q & 1 != 0 {
+            self.sw |= SW_C1;
+        }
+        if q & 2 != 0 {
+            self.sw |= SW_C3;
+        }
+        if q & 4 != 0 {
+            self.sw |= SW_C0;
+        }
+        self.set_st(0, r);
+    }
+
+    /// FSCALE with an infinity or NaN in ST or ST(1).
+    fn scale_special(&mut self, x: F80, y: F80) -> Option<F80> {
+        if x.is_nan() || y.is_nan() {
             if self.exception(SW_IE) {
                 return None;
             }
-            return Some(indefinite());
+            let fx = x.to_bits() as u64;
+            let fy = y.to_bits() as u64;
+            return Some(if !y.is_nan() || (x.is_nan() && fx >= fy) { x } else { y });
         }
-        // Start from the double result (scaled into range), then one Newton step in 80 bits.
-        let e = x.ilogb() & !1;
-        let xs = x.scalbn(-e);
-        let y0 = f64_to_f80(f80_to_f64(xs).sqrt());
-        let half = F80::from_bits(0x3FFE_8000_0000_0000_0000);
-        let q = xs.div_r(y0, Round::NearestTiesToEven).value;
-        let y1 = y0.add_r(q, Round::NearestTiesToEven).value.mul_r(half, Round::NearestTiesToEven).value;
-        let r = y1.scalbn(e / 2);
-        let mut f = SW_PE;
-        let sq = y1.mul_r(y1, Round::NearestTiesToEven);
-        if sq.status == Status::OK && sq.value.bitwise_eq(xs) {
-            f = 0;
+        if y.is_infinite() {
+            return if self.exception(SW_IE) { None } else { Some(indefinite()) };
         }
-        if f != 0 {
-            self.exception(f);
+        Some(x)
+    }
+
+    /// FSQRT as the microcode does it: bit by bit, correctly rounded once (rounding and
+    /// precision control), and only for normal numbers.
+    fn sqrt(&mut self, x: F80) -> Option<F80> {
+        if x.is_zero() {
+            return Some(x);
         }
-        Some(r)
+        let bits = x.to_bits();
+        let nan = x.is_nan();
+        if x.is_denormal() && self.exception(SW_DE) {
+            return None;
+        }
+        // invalid: negative, denormal, infinity in projective mode, any NaN (which stays)
+        if nan || x.is_negative() || x.is_denormal() || (x.is_infinite() && self.cw & 0x1000 == 0) {
+            if self.exception(SW_IE) {
+                return None;
+            }
+            return Some(if nan { x } else { indefinite() });
+        }
+        if x.is_infinite() {
+            return Some(x);
+        }
+        let e = (bits >> 64) & 0x7FFF;
+        let f = bits as u64 as u128;
+        // radicand 1 <= x < 4 with 63 fraction bits, root with 65 and a remainder
+        let n = (if e & 1 != 0 { f } else { f << 1 }) << 63;
+        let (mut root, mut rem) = (0u128, 0u128);
+        for i in (0..66).rev() {
+            rem = rem << 2 | if i >= 2 { (n >> (2 * (i - 2))) & 3 } else { 0 };
+            let trial = root << 2 | 1;
+            root <<= 1;
+            if rem >= trial {
+                rem -= trial;
+                root |= 1;
+            }
+        }
+        let p = match (self.cw >> 8) & 3 {
+            0 => 24,
+            2 => 53,
+            _ => 64,
+        };
+        let drop = 66 - p;
+        let lost = root & ((1u128 << drop) - 1);
+        let inexact = lost != 0 || rem != 0;
+        let half = 1u128 << (drop - 1);
+        let mut m = root >> drop;
+        let up = match self.round() {
+            Round::NearestTiesToEven => lost > half || (lost == half && (rem != 0 || m & 1 != 0)),
+            Round::TowardPositive => inexact,
+            _ => false,
+        };
+        let mut e = ((e + 0x4000) >> 1) - 1 + (e & 1);
+        if up {
+            m += 1;
+            if m >> p != 0 {
+                m >>= 1;
+                e += 1;
+            }
+        }
+        if inexact {
+            self.exception(SW_PE);
+        }
+        Some(F80::from_bits(e << 64 | m << (64 - p)))
     }
 
     fn fxam(&mut self) {
@@ -1412,6 +1864,15 @@ fn unnormal_value(bits: u128) -> Option<F80> {
 
 /// A denormal single (`frac` 23) or double (`frac` 52) as the 8087 loads it: an unnormal with
 /// the format's smallest exponent (`exp80`), the fraction at the top of the significand.
+/// A short or long real NaN as the 8087 loads it: the fraction as it is, no exception.
+fn nan_bits(d: u128, frac_bits: u32, exp_bits: u32) -> Option<u128> {
+    let frac = d & ((1u128 << frac_bits) - 1);
+    if (d >> frac_bits) & ((1 << exp_bits) - 1) != (1 << exp_bits) - 1 || frac == 0 {
+        return None;
+    }
+    Some((d >> (frac_bits + exp_bits)) << 79 | 0x7FFF << 64 | 1 << 63 | frac << (63 - frac_bits))
+}
+
 fn denormal_bits(d: u128, frac: u32, exp80: u128) -> Option<u128> {
     let f = d & ((1u128 << frac) - 1);
     let e = (d >> frac) & if frac == 52 { 0x7FF } else { 0xFF };

@@ -995,7 +995,9 @@ impl Intel808x {
             _ => None,
         };
         if let Some(mut cp) = self.bus.take_coprocessor() {
-            let stolen = cp.esc(&mut self.bus, self.cycle_num, self.i.opcode, self.i.modrm, ea, self.instruction_address);
+            // the 8087 latches the address of the ESC byte itself, not of a prefix before it
+            let esc_at = (self.instruction_address + self.i.segment_override.is_some() as u32) & 0xFFFFF;
+            let stolen = cp.esc(&mut self.bus, self.cycle_num, self.i.opcode, self.i.modrm, ea, esc_at);
             self.bus.put_coprocessor(cp);
             for _ in 0..stolen {
                 self.cycle();

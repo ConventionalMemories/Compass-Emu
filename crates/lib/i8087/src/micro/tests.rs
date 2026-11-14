@@ -268,7 +268,12 @@ pub fn compare(ops: &[(u8, u8)], kinds: Kinds, cws: &[u16], rounds: u32, seed: u
             // A product or quotient that underflows is rounded twice by the microcode: to 64
             // bits first, then again as a denormal (one unit off now and then).
             let muldiv = first & 1 == 0 && matches!((modrm >> 3) & 7, 1 | 6 | 7);
-            let open = (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && (cw & 0x0100 == 0 || muldiv)) || flags & !cw & (SW_OE | SW_UE) != 0;
+            // Since 8087 Bench ran on a real chip: rounding down or up, a real 8087 flags
+            // neither overflow nor underflow (the microcode core follows it, the old core
+            // does not), so results at either end of the exponent range are not compared.
+            let directed = matches!((cw >> 10) & 3, 1 | 2);
+            let extreme = directed && (flags & (SW_OE | SW_UE) != 0 || new.st.iter().any(|r| r.tag != TAG_EMPTY && (r.exp >= 0x7FFE || (r.exp <= 1 && r.frac != 0))));
+            let open = extreme || (flags & SW_OE != 0 && cw & 0x0C00 != 0) || (flags & SW_UE != 0 && (cw & 0x0100 == 0 || muldiv)) || flags & !cw & (SW_OE | SW_UE) != 0;
             // FBSTP of something that is no 18-digit number: the microcode writes whatever
             // is left in the sum register under the FFFF of the indefinite
             let undefined = undefined || ((first, modrm & 0xF8) == (0xDF, 0x30) && flags & SW_IE != 0);

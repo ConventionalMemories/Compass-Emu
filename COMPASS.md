@@ -6,9 +6,9 @@ README follows in README.md.
 
 Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), accurate
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
-Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
+Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 
-## Status (0.8.1)
+## Status (0.10.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, media manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
@@ -31,7 +31,7 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
 - A fast whole-instruction 8086 core for build mode (`grid_core::fast86`), switchable at any
   instruction boundary; same SingleStepTests results for registers, flags and memory.
 - 1101 board (`crates/lib/grid_core`): 16K boot PROM, 256K RAM, 80130 interrupt
-  controller, IR3 vertical blank, 320x240 screen at 0400h.
+  controller (8259A on the 113x), IR3 vertical blank, 320x240 screen at 0400h.
 - TMS9914 GPIB with the pseudo-DMA window at E0000h; 2101 hard disk (address 4), 2101
   floppy (5) and 2102 floppy (6) at the level of GRiD's disk protocol. In exact mode the
   hard disk has mechanics like a real 2101 with an ST-225: 3600 rpm, 17 sectors a track,
@@ -69,6 +69,8 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   boot PROM's first try fails while the box runs its self test). Against the real 2102
   (GRiDBench 2.1b, a Gotek in the box) with the motor running: same page 200 ms (real 212),
   sequential 121 (133), random 243 (235), first/last 403 (415), steps of 1/16 196 (172).
+  GRiDProbe 0.0.13's floppy test: the same page again 181 ms (real 185), after 12-30 s idle
+  (the box powers the drive down) 1.8-1.9 s (real 1.9-2.0).
   `GRID_2102=protocol` uses the protocol model instead; `BOXLOG=1` prints the bytes the box
   moves, `FDCLOG=1` every WD2797 command. Bench test: `FD2102_ROM=rom cargo test --test
   lle2102`.
@@ -82,10 +84,15 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   8291A INT or WD INTRQ (no 8259), NMI = the back-panel test button. The Xebec S1410 stays at
   command level (`s1410`: TUR, recal, sense, format, check, read, read long, write, seek,
   init params, buffer commands, diagnostics; format fill 6Ch), timed after an ST-225:
-  seeks 1/38/200/611 cylinders 20/62/85/130 ms, 3600 rpm, 17 sectors, interleave 4
-  (`S1410_IL`, `S1410_SEEK`). Against a real 1101 + 2101 (GRiDBench 2.1b): same page 17.0
-  (real 19.0), sequential 23.8 (21.1), random 55.8 (53.5), first/last 133.7 (130.3), steps
-  117.8 (122.5). The 2101 floppy (address 5) goes through the firmware too: its format
+  3600 rpm, 17 sectors, interleave 5 (the real drive's sector IDs; `S1410_IL`), heads-in
+  times measured inside a real box (Disk Toolkit 0.4.1: 1 cylinder 9.5 ms, 38 21.5 ms, 611
+  70.4 ms; `S1410_SEEK`). The Seek command is buffered (it answers after 1.5 ms + 20 us a
+  cylinder, and Test Ready says not ready until the heads are in); a read's or write's own
+  seek waits that long again plus 8 ms (`S1410_SETTLE`) before its first sector;
+  Recalibrate steps back at 3 ms a cylinder; commands decode in 0.44 ms. The box's CPU time
+  is stretched 4.7% (`BOX_SLOW`). Against a real 1101 + 2101 (GRiDBench 2.1b): same page
+  21.1 (real 19.0), sequential 26.8 (21.1), 8 pages 63.8 (53.5), random 132.8 (130.3),
+  steps of 1/16 118.4 (122.5). The 2101 floppy (address 5) goes through the firmware too: its format
   writes interleave 3 with no skew, and an empty slot gives error 128 (the WD READY line).
   The 4-character display shows in the status bar. `GRID_2101=protocol` uses the protocol
   model; `GRID_2101_EARLY` (default 4 s), `GRID_2101_MHZ`. Bench test: `HD2101_ROM=rom
@@ -135,21 +142,25 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   ~6 clocks. Like the chip, FLD of a denormal single or double gives an unnormal (exponent
   3F81h / 3C01h, integer bit 0), and FLD m80 keeps an unnormal; FSTP m80, FSAVE and FXAM see
   that pattern, arithmetic uses its value (the chip's unnormal arithmetic is not modelled). 8087 code is slow on a real Compass because GRiD-OS's
-  loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET), about
-  95 clocks a time; with that, the full GRiDBench run in the emulator matches a real 1101
-  within 3% on 14 of its 16 8087 lines (FCOM+FSTSW and FWAIT 6% fast). Raw fragments with
+  loader turns the WAIT before each 8087 instruction into INT 3 (handler: WAIT, IRET):
+  55.8 clocks over a plain WAIT on the 1101 and 57.8 on the 113x (GRiDProbe on a real 1101
+  and 1137: 55.7 and 58.7; INT/IRET take 1 (113x: 2) clocks more than MartyPC's 8088
+  model, a WAIT 2 more, `INT_EXTRA` / `WAIT_EXTRA`). GRiDProbe's 8087 rows (FNOP, FLD/FSTP,
+  FDIV, short and long FMUL, a long FMUL that rounds up +5) are within about a clock of
+  the real chip; FADD is ~5 clocks fast. Raw fragments with
   real WAIT bytes (gridfrag) are faster than GRiD programs for the same reason.
-- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 270 clocks a line, 306
-  lines (60.5 Hz), IR3 rising as the picture starts at the top and high for 276 lines (113x:
-  292 of 297) (GRiDBench on a real 1101: beam finder for the lines, 2.2 d11 and GRiDProbe
-  d15/d16 for the frame and the IR3 level in CPU clocks), and display RAM contention:
-  the display takes one RAM slot (5 states) every 32 states (10.7 clocks, 20 a line; 113x:
+- Display timing (`DisplayTiming` in grid_core/src/screen.rs): 307 clocks a line, 268
+  lines (60.8 Hz), IR3 rising on line 3 of the picture and high for 241 lines (113x: 316
+  clocks x 263 lines, 60.2 Hz, IR3 high 259 lines) (GRiDProbe 0.0.13's beam finder on a
+  real 1101 and 1137, with its own row loop counted, and d16/l54 for the IR3 level), and
+  display RAM contention:
+  the display takes one RAM slot (6 states) every 32 states (10.7 clocks, 20 a line; 113x:
   every 16 states, 32 a line, 3 states each, and a CPU access needs the RAM for 4 states, so
   data accesses are ~1 clock slower than on the 1101 as on a real 1137) on every line, blank
   ones too (GRiDProbe's contention map is flat across the frame), and a CPU access that
   starts inside a slot waits for its end; plus a 4-clock bus steal every 48 clocks (113x: 2).
   Fitted with the JMP SHORT quirk to GRiDBench 2.2's gap rows (c50-c61, j01-j30, REP per
-  word: 1.05% rms, 3% at most) and the whole 1101 report.
+  word: 1.2% rms on the 1101, 1.3% on the 113x) and the whole 1101 report.
   The window shows each screen word as the beam fetched it, so racing the beam (and
   tearing) looks as on the real screen.
 - 7220 bubble memory controller with a 384K bubble image (`--bubble`); GRiD's
@@ -162,34 +173,64 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   clocks while a page passes (two FIFO interrupts a page, 35 + 29 bytes, as on the real 1101);
   a write's FIFO takes data from 1.2 ms before the first page. Initialize takes ~6 ms and
   turns to the next of 40 stop positions (0.5 ms after an MBM Purge, until the next
-  transfer); the short commands take their measured 0.08-0.43 ms. `tests/devices.rs` replays GRiDProbe's seek
-  patterns against the real numbers.
-- The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5).
+  transfer); the short commands take their measured 0.08-0.43 ms. As on the real 1101
+  (GRiDProbe B7): writes end with status 42 (parity bit; GRiD-OS ignores it), Read FSA
+  Status gives FF 20 20 20 20 20 (28 for an MBM written since the last Software Reset),
+  Abort takes 0.14-0.16 ms, and an Abort between two pages of a read leaves multi-page
+  reads stopping after one page with status 2C until a Software Reset. `tests/devices.rs`
+  replays GRiDProbe's seek patterns and the B7 states against the real numbers.
+- The 80130 ignores a non-specific EOI (OCW2 20h) as the real 1101 does (GRiDProbe B5);
+  the 113x's discrete 8259A takes it (assumed, not tested on a real 1137).
 - Bus details measured on a real 1101: empty memory and ports read the address still on
   the bus (low byte on even addresses, A8-A15 on odd ones), D0000-DEFFF reads FF on even
   bytes, the PROM also shows at F0000-FBFFF, ports 00-7F mirror the 80130 every 10h,
-  RTC/ID reads have wait states, timers 0 and 2 count and timer 1 doesn't.
+  RTC/ID reads have wait states.
+- Timers (ports 08h-0Eh, `grid_core/src/timers.rs`), per board as the motherboard photos
+  and GRiDProbe's T tests show. 110x/112x, 80130: timer 0 counts at 2.5 MHz (CPU clock / 2),
+  timer 1 counts timer 0's output pulses (GRiD's 32-bit stopwatch chain), timer 2 at 5 MHz;
+  they run from power-on, there is no read-back, 0Eh reads FFh. 113x, discrete 8254: all
+  three at the 5 MHz CPU clock, read-back command (status B4/B6 as on the real 1137), a
+  counter stands at FFFF until a count is written, 0Eh reads the bus, A0 is ignored (a read
+  at 09/0B/0D steps the counter's byte flip-flop, as GRiDBench's port rows show on a 1137); timer 1 counts only
+  while timer 0 has a count (how the board gates it is not known). Timer 2 is the 8274's
+  baud clock on every model, and the 8274 runs from the 5 MHz CPU clock (no 4.032 MHz
+  crystal on any motherboard; that one is on the modem, for its TMS99532).
 - 8274 serial controller, asynchronous mode, IR0, bit rate from the 80130 baud timer;
   the window version connects it to a TCP port (`--serial tcp:2323`) or a real serial
   port (`--serial COM3`). Two emulators link like a null-modem cable: one listens
   (`--serial tcp:2323`, or `tcp:0.0.0.0:2323` for another PC), the other connects
   (`--serial connect:2323` or `connect:HOST:2323`, retried every second); DCD and CTS are
   up while connected. Received bytes are paced at the receiver's own bit rate.
-  Synchronous (GRiDLink SDLC) modes are not modelled.
+  SDLC (GRiDLink, 0.9.0): channel A sends and takes whole frames (`sdlc_out` / `sdlc_in`),
+  CRC by underrun after WR0 = C0h, address search, End of Frame, CTS looped to RTS for the
+  point-to-point cable, DCD following the line for multidrop; `--gridlink` carries the
+  frames over TCP (`docs/gridlink.md`). Tested against the real client code (CableTest)
+  with `grid_core/tests/gridlink.rs`. No GRiD Server is built in.
 - Sound: the sound DAC (DFE4:2), volume DAC (DFE4:4) and the DTMF chip on 8255 port B,
-  played through the PC's sound card (`--mute` to turn it off).
+  played through the PC's sound card (`--mute` to turn it off). All on the modem board,
+  except on the 1137: no modem and no 8255 (DFEC0-DFECF read FFh, so Modem~Device~ finds no
+  modem), DACs and DTMF chip on the motherboard. ASSUMED for the 1137 until SoundTest runs
+  on one: the DACs answer at the same addresses and a write-only latch at DFEC2 drives the
+  DTMF chip with the 8255 port B bits.
 - Boots GRiD-OS (1101 build of CCOS) from a 2101 hard disk image to the Executive.
 - Models (`GridModel` in grid_core/src/machine.rs, `--model` in the window version,
   `GRID_MODEL` headless):
 
-  | Model | Board | RAM | Screen | Boot PROM used |
-  |-------|-------|-----|--------|----------------|
-  | 1101 | original | 256K | 320 x 240 | 1101 rev 4 (rev 3 if rev 4 is missing) |
-  | 1109 | original | 512K | 320 x 240 | 1101 (same PROM) |
-  | 1121 | split | 256K | 320 x 240 | 1129 (same PROM; if missing, 1101) |
-  | 1129 | split | 512K | 320 x 240 | 1129 (if missing, 1101) |
-  | 1131 | split | 256K | 512 x 256 | 1139 (same PROM) |
-  | 1139 | split | 512K | 512 x 256 | 1139 |
+  | Model | Board | RAM | Screen | Timers + PIC | Timing fit | Sound | Boot PROM used | Keyboard 8741 |
+  |-------|-------|-----|--------|--------------|------------|-------|----------------|---------------|
+  | 1101 | original | 256K | 320 x 240 | 80130 | real 1101 | modem | 1101 rev 4 (rev 3 if rev 4 is missing) | 300067-01 |
+  | 1109 | original | 512K | 320 x 240 | 80130 | real 1101 | modem | 1101 (same PROM) | 300067-01 |
+  | 1121 | split | 256K | 320 x 240 | 80130 | real 1101 | modem | 1129 (same PROM; if missing, 1101) | 300067-01 |
+  | 1129 | split | 512K | 320 x 240 | 80130 | real 1101 | modem | 1129 (if missing, 1101) | 300067-01 |
+  | 1131 | split | 256K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 (same PROM) | 300067-01 |
+  | 1137 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | motherboard, no modem | 1139 (same PROM, as on Kurt's 1137) | 300001-02 |
+  | 1139 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 | 300067-01 |
+
+  The 112x carry the 1101's 80130 and the 300063-00 gate array of the later 1101 boards, so
+  they take the 1101's timers, interrupts and RAM/display timing, with the Compass II ROM
+  sockets, PROM and plug-in bubble board. The 113x share the 1137's 300415-00 gate array
+  and 8254, so they take the timing fitted to Kurt's real 1137. Each keyboard firmware
+  stands in for the other when missing (the early 1101's 300027-01 is not dumped).
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at
   DFE00h (DFE00 = 1 selects the video chip, DFE04 bit 2 clear = large screen; the 113x OS
@@ -205,9 +246,9 @@ Models: 1101, 1109, 1121, 1129, 1131 and 1139 (`--model`).
   real 1137: 281 clocks a line, 297 lines (59.9 Hz; AAM loop in refreshes, the 1137's RTC
   was dead), IR3 at the top, 32 display fetches on every line, one every 16 states (gap rows 1.2%
   rms). The split board's bus also follows the 1137: empty memory reads the address, the
-  PROM shows at F8000-FBFFF, ports 4/6 mirror the PIC, 0E is open, the 7220 repeats up to
-  DFE8F.
-  All six boot to the Executive (1131/1139 with the 113x build, the others with the 11xx
+  PROM shows at F8000-FBFFF, the 7220 repeats up to DFE8F; on the 113x (8259A + 8254)
+  ports 4/6 mirror the PIC and 0E is open, on the 112x (80130) they behave as on the 1101.
+  All seven boot to the Executive (1131/1137/1139 with the 113x build, the others with the 11xx
   build). The 1139 PROM can't stand in for the 1121/1129 PROM: it keeps its data
   at 0440:0, where the 11xx build of CCOS loads (02D8:0 up), and stops with "Checksum
   error in CCOS". The 1129 PROM (data at 0298:0, like the 1101's) boots the 11xx build on

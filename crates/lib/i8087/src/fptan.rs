@@ -117,7 +117,7 @@ fn pack_x(x: u128) -> Option<u128> {
 const CLK_TINY: u32 = 64;
 /// tan(0): Y = 0, X = 1, no precision exception.
 pub const CLK_ZERO: u32 = 64;
-const CLK_DIRECT: u32 = 159;
+const CLK_DIRECT: u32 = 151;
 const CLK_CORDIC: u32 = 161;
 const CLK_MUL_STEP: u32 = 18;
 const CLK_SUB: u32 = 13;

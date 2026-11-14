@@ -1,4 +1,4 @@
-Compass-Emu 0.8.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
+Compass-Emu 0.9.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1139)
 ==============================================================================
 
 Setup
@@ -53,7 +53,8 @@ Using it
 Command line
   compass.exe [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img]
               [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
-              [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn] [--mute]
+              [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
+              [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
               [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
               [--scale 1|2|4] [--overlay] [--fast] [--classic] [--symbols DIR] [--no-catch]
   --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
@@ -70,6 +71,10 @@ Command line
   --serial   the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a
              terminal such as PuTTY in "Raw" mode), or a real PC
              port like COM3 (the bit rate follows what the GRiD program sets).
+  --gridlink the same port with a GRiDLink cable: SDLC frames over TCP. tcp:2400
+             waits on 127.0.0.1:2400 for a GRiDLink server program, connect:HOST:PORT
+             connects to one. See GRiDLink below.
+  --gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
   --mute     no sound.
   --fast     start with the fast CPU core (whole instructions, approximate timing).
   --classic  the plain window of 0.4 (no menus); --scale only applies there.
@@ -218,6 +223,17 @@ Program symbols and the crash catcher
   Timing is cycle-exact against a real 1101 to about 2% on average; a few
   cases (some short jumps) are still up to 14% off, being measured.
 
+GRiDLink
+  GRiDLink is the GRiD Server network: 250 kbit/s synchronous (SDLC) on the
+  serial port, with the server polling each Compass. With --gridlink the
+  emulated 8274 sends every frame the Compass makes to the TCP connection and
+  hands it every frame that comes back (docs/gridlink.md has the format and
+  a short Python example). The other end has to play the GRiD Server; none is
+  included yet. Without a server the Compass's GRiDLink~Device~ just waits
+  for the server's poll. The machine setup page has the same two settings.
+  Keep the emulator at real speed while linked: GRiDLink's timeouts run in
+  emulated time, and turbo shortens them for the program at the other end.
+
 Two Compasses on a null-modem cable
   Start "Start Compass-Emu 1101.bat", then "Start Compass-Emu 1101 link.bat".
   The second machine connects its serial port to the first one's (TCP port
@@ -227,6 +243,60 @@ Two Compasses on a null-modem cable
   first with --serial tcp:0.0.0.0:2323 and the second with
   --serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
   ahead of the other, so leave it off while linked.
+
+New in 0.9.0
+  - GRiDLink: the 8274 serial chip's synchronous SDLC mode, the one the GRiD
+    Server network uses. --gridlink tcp:2400 (or connect:HOST:PORT) carries
+    the Compass's frames over TCP, one message per frame (format in
+    docs/gridlink.md), for a GRiDLink server program on the PC. No GRiD
+    Server is built in: a Compass can only be a GRiDLink client, so two
+    emulators can't link to each other this way.
+  - Tested with the real GRiDLink client code: CableTest from the GRiD
+    Server disks ("Programs for GRiD Compass") signs on, takes its station
+    address and passes its 520-byte test exchanges with no errors, against
+    a small test script playing the server.
+  - Multidrop cable (default) or point-to-point (--gridlink-p2p, RTS looped
+    to CTS), as GRiDLink~Device~ checks at start. The serial port select
+    latches (DFE10-DFE16 on the Compass II board, DFE00-DFE06 on the 1101)
+    are kept and shown to the link.
+  - Fix: the 8274's interrupt vector in 8086 mode (WR2A = 10h) now carries
+    the cause in bits 0-2, as on the chip; it was in bits 2-4.
+
+New in 0.8.1
+  Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
+  - 8087 FPATAN and F2XM1 take as long as the real chip for each input: their
+    time follows the chip's digit loop (steps from the first non-zero digit, and
+    the digits themselves), within about 6 clocks on 36 and 34 inputs (FPATAN
+    was a flat 712 clocks for most inputs, the real chip 380 to 843). FYL2X near
+    1 is about 50 clocks longer, a long FMUL whose significands multiply to 2 or
+    more about 11 shorter, and a store that has to denormalize its result (FST
+    of a number too small for a double) 49 longer, as on the real chip.
+  - 8087 loads like the real chip: FLD of a denormal double or single gives an
+    unnormal (GRiDBench h33 reads back 3C010093445B87315800 as on the real 1101,
+    not the normalized 3BF9...), and FLD m80 of an unnormal keeps it (it used to
+    turn into a NaN). FSTP m80, FSAVE and FXAM see the chip's bit pattern.
+  - The 113x models (1131, 1139) use the real 1137's memory timing: a RAM read or
+    write takes about one clock more than on the 1101, the display slots are
+    shorter and the refresh steal is 2 clocks. Gap rows against the real 1137:
+    1.2 % rms (was 2.0 %).
+  - Bubble: a page's 64 bytes come into the FIFO over about 5 ms (400 clocks a
+    byte), so a read gives two FIFO interrupts a page (35 + 29 bytes) as on the
+    real 1101. Read FSA Status, Reset FIFO, Software Reset, Abort and MBM Purge
+    are shorter; Initialize takes 6 to 9 ms (the real 6.0 to 8.6), but stays
+    short (0.5 ms) after an MBM Purge until the next transfer. On a write the
+    FIFO takes data only from 1.2 ms before the first page passes, as the real
+    7220 (no bytes before the first interrupt).
+  - Real-time clock: for a moment after each tenth (one 32.768 kHz period, about
+    30 us; the real length isn't measured, RTC_UPDATE_CLK sets it in CPU clocks)
+    the MM58174 is updating and its digits read 0Fh, as on the chip, so the
+    PROM's retry on 0Fh runs as on hardware.
+  - ROMs: the 1109 boots the 1101's PROM, the 1121 the 1129's and the 1131 the
+    1139's, as on the real machines (they share PROMs), without a stand-in warning.
+  - Results, GRiDBench 2.2 against the real machines: 1101 CPU/bus rows 1.07 %
+    rms, 8087 rows 2.5 % (was 5.7 %); 1139 against the real 1137 CPU/bus 1.49 %
+    (was 1.96 %). GRiDBench's bubble rows (GRiDBench 2.1b on a real 1101), ms,
+    emulated / real: same page 100.2 / 99.9, sequential 126.0 / 127.7, random
+    112.6 / 123.6, first/last 98.1 / 100.9.
 
 New in 0.8.0
   - The 2101 hard disk box runs low-level when roms holds its firmware

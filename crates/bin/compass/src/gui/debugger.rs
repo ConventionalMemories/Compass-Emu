@@ -589,7 +589,8 @@ pub fn chips_window(app: &mut App, ctx: &egui::Context) {
         };
         egui::ScrollArea::vertical().show(ui, |ui| {
             let b = s.m.board_mut();
-            section(ui, "8259 interrupt controller (80130)", true, |ui| {
+            let i8254 = b.model.timer_chip() == grid_core::TimerChip::I8254;
+            section(ui, if i8254 { "8259A interrupt controller" } else { "8259 interrupt controller (80130)" }, true, |ui| {
                 let st = b.pic().get_string_state();
                 egui::Grid::new("pic").num_columns(2).show(ui, |ui| {
                     for (k, v) in [("IRR", &st.irr), ("ISR", &st.isr), ("IMR", &st.imr), ("IR lines", &st.ir), ("INTR", &st.intr), ("Trigger", &st.trigger_mode)] {
@@ -613,13 +614,13 @@ pub fn chips_window(app: &mut App, ctx: &egui::Context) {
                     }
                 });
             });
-            section(ui, "80130 timers", true, |ui| {
+            section(ui, if i8254 { "8254 timers" } else { "80130 timers" }, true, |ui| {
                 egui::Grid::new("pit").num_columns(4).show(ui, |ui| {
                     for h in ["timer", "count", "loaded", "mode"] {
                         ui.label(RichText::new(h).weak());
                     }
                     ui.end_row();
-                    for (i, (c, l, m)) in b.timers().iter().enumerate() {
+                    for (i, (c, l, m)) in b.timer_state().iter().enumerate() {
                         ui.monospace(format!("{i}"));
                         ui.monospace(format!("{c:04X}"));
                         ui.monospace(format!("{l:04X}"));

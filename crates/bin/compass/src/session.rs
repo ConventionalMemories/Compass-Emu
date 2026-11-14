@@ -22,7 +22,7 @@ use crate::host;
 #[serde(default)]
 pub struct MachineConfig {
     pub name: String,
-    /// 1101, 1109, 1121, 1129, 1131 or 1139.
+    /// 1101, 1109, 1121, 1129, 1131, 1137 or 1139.
     pub model: String,
     /// Folder with the ROMs ("" = the roms folder next to the program).
     pub rom_dir: String,
@@ -43,6 +43,10 @@ pub struct MachineConfig {
     pub bubble: String,
     /// tcp:PORT, tcp:HOST:PORT, connect:[HOST:]PORT or a port name.
     pub serial: String,
+    /// GRiDLink (8274 SDLC frames over TCP): tcp:PORT, tcp:HOST:PORT or connect:[HOST:]PORT.
+    pub gridlink: String,
+    /// GRiDLink point-to-point cable (RTS looped to CTS) instead of multidrop.
+    pub gridlink_p2p: bool,
     pub mute: bool,
     pub readonly: bool,
     /// Fast CPU core (whole instructions, approximate timing).
@@ -107,6 +111,10 @@ impl MachineConfig {
         }
         opt("--bubble", &self.bubble);
         opt("--serial", &self.serial);
+        opt("--gridlink", &self.gridlink);
+        if self.gridlink_p2p {
+            a.push("--gridlink-p2p".into());
+        }
         if self.mute {
             a.push("--mute".into());
         }
@@ -145,6 +153,7 @@ pub struct Session {
     pub media: Vec<Media>,
     pub hostdir: Option<grid_core::hostdir::HostDir>,
     pub serial: Option<host::SerialLink>,
+    pub gridlink: Option<host::GridLink>,
     pub audio: Option<host::Audio>,
     /// Remarks made while starting (a stand-in PROM, a folder's size).
     pub notes: Vec<String>,
@@ -238,6 +247,18 @@ impl Session {
             }
             None => None,
         };
+        let gridlink = match some(&cfg.gridlink) {
+            Some(sp) => {
+                let sp = sp.to_string_lossy().to_string();
+                Some(host::GridLink::open(&sp).map_err(|e| format!("cannot open GRiDLink {sp}: {e}"))?)
+            }
+            None => None,
+        };
+        if gridlink.is_some() {
+            let s = &mut m.board_mut().serial;
+            s.cts_loop = cfg.gridlink_p2p;
+            s.dcd_auto = !cfg.gridlink_p2p;
+        }
         let audio = if cfg.mute { None } else { host::Audio::open() };
         match &audio {
             Some(a) => m.board_mut().sound = grid_core::sound::Sound::new(screen::CPU_HZ, a.rate),
@@ -253,7 +274,7 @@ impl Session {
                 Err(e) => notes.push(format!("symbols: {e}")),
             }
         }
-        Ok(Session { m, cfg: cfg.clone(), media, hostdir, serial, audio, notes, serial_out: vec![] })
+        Ok(Session { m, cfg: cfg.clone(), media, hostdir, serial, gridlink, audio, notes, serial_out: vec![] })
     }
 
     /// Move sound samples to the speaker and serial bytes to and from the link.
@@ -275,6 +296,17 @@ impl Session {
         }
         else {
             b.serial.tx_out.clear();
+        }
+        if let Some(gl) = &mut self.gridlink {
+            let frames: Vec<Vec<u8>> = b.serial.sdlc_out.drain(..).map(|(_, f)| f).collect();
+            gl.pump(frames.into_iter(), &mut b.serial.sdlc_in);
+            let up = gl.connected();
+            // multidrop: CTS on (not looped) tells the driver it is on a multidrop line; DCD
+            // follows the line (dcd_auto). Point-to-point: CTS comes from the Compass's RTS.
+            b.serial.set_modem_lines(up, up && !self.cfg.gridlink_p2p);
+        }
+        else {
+            b.serial.sdlc_out.clear();
         }
     }
 
@@ -381,6 +413,7 @@ impl Session {
         let cfg = self.cfg.clone();
         // Free the serial port and audio device before opening them again.
         self.serial = None;
+        self.gridlink = None;
         self.audio = None;
         *self = Session::build(&cfg, default_roms)?;
         Ok(log)

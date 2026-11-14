@@ -1107,10 +1107,8 @@ impl I8087 {
                 // D8: ST = ST op ST(i)
                 let ar = Arith::from(reg);
                 let short = Self::short_mul(self.st(0), self.st(i));
-                // a product of significands of 2 or more (no normalizing shift left) was ~11
-                // clocks faster on a real 1101 (GRiDBench h12 vs h13/h15)
-                let m = |v: F80| (v.to_bits() as u64) as u128;
-                let big = m(self.st(0)) * m(self.st(i)) >= 1 << 127;
+                let far = Self::add_shift_out(self.st(0), self.st(i));
+                let up = Self::mul_rounds_up(self.st(0), self.st(i));
                 if matches!(ar, Arith::Com | Arith::Comp) {
                     let (a, b) = (self.opt(0), self.opt(i));
                     self.fcom(a, b, (reg == 3) as u32);
@@ -1125,7 +1123,12 @@ impl I8087 {
                     self.set_st(0, r);
                 }
                 if reg == 1 && !short {
-                    if big { 127 } else { 138 }
+                    // a long product that rounds up takes ~5 clocks more (GRiDProbe f22-f24)
+                    if up { 143 } else { 138 }
+                }
+                else if far && matches!(reg, 0 | 4 | 5) {
+                    // the smaller operand shifted out entirely: 5 clocks less (GRiDProbe f17)
+                    72
                 }
                 else {
                     [77, 97, 45, 47, 77, 77, 198, 199][reg as usize]
@@ -1251,6 +1254,27 @@ impl I8087 {
     fn short_mul(a: F80, b: F80) -> bool {
         let lo = |v: F80| (v.to_bits() as u64) & 0xFF_FFFF_FFFF == 0;
         lo(a) || lo(b)
+    }
+
+    /// The 64-bit significand product of a and b rounds up (to nearest, from the exact
+    /// 128-bit product).
+    fn mul_rounds_up(a: F80, b: F80) -> bool {
+        let m = |v: F80| (v.to_bits() as u64) as u128;
+        let p = m(a) * m(b);
+        if p == 0 {
+            return false;
+        }
+        let shift = if p >> 127 != 0 { 64 } else { 63 };
+        let low = p & ((1u128 << shift) - 1);
+        let half = 1u128 << (shift - 1);
+        low > half || (low == half && (p >> shift) & 1 == 1)
+    }
+
+    /// FADD/FSUB whose smaller operand is shifted out past the significand (exponents more
+    /// than 64 apart).
+    fn add_shift_out(a: F80, b: F80) -> bool {
+        let e = |v: F80| ((v.to_bits() >> 64) & 0x7FFF) as i32;
+        (e(a) - e(b)).abs() > 64 && e(a) != 0 && e(b) != 0
     }
 
     fn fxch(&mut self, i: usize) {

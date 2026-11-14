@@ -16,6 +16,7 @@ const MODELS: &[(&str, &str)] = &[
     ("1121", "1121 Compass II (256K)"),
     ("1129", "1129 Compass II (512K)"),
     ("1131", "1131 Compass II (256K, 512 x 256)"),
+    ("1137", "1137 Compass II (512K, 512 x 256, no modem)"),
     ("1139", "1139 Compass II (512K, 512 x 256)"),
 ];
 
@@ -274,6 +275,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     ui.vertical(|ui| {
                         ch |= ui.add(egui::TextEdit::singleline(&mut c.serial).hint_text("not connected").desired_width(260.0)).changed();
                         ui.label(RichText::new("tcp:2323 (wait for a connection), tcp:HOST:PORT, connect:2323 (null-modem link to another emulator) or a port name such as COM3").weak().small());
+                    });
+                    ui.label("GRiDLink (SDLC frames over TCP)");
+                    ui.vertical(|ui| {
+                        ch |= ui.add(egui::TextEdit::singleline(&mut c.gridlink).hint_text("not connected").desired_width(260.0)).changed();
+                        ui.label(RichText::new("tcp:2400 (wait for a GRiDLink server program), tcp:HOST:PORT or connect:[HOST:]PORT; frames only, no server is built in").weak().small());
+                        ch |= ui.checkbox(&mut c.gridlink_p2p, "Point-to-point cable (RTS looped to CTS) instead of multidrop").changed();
                     });
                     ui.label("Sound");
                     ch |= ui.checkbox(&mut c.mute, "No sound").changed();

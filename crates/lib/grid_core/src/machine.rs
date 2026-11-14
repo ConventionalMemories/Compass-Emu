@@ -9,7 +9,20 @@ use crate::screen::{self, SCREEN_BASE, SCREEN_H, SCREEN_W, WIDE_H, WIDE_W};
 
 /// The Compass models. The 110x have the original board; the 112x and 113x (Compass II) the
 /// split board (video/memory board + CPU board). The 113x have the 512 x 256 screen; the
-/// xxx9 models 512K of RAM, the others 256K.
+/// xxx9 models and the 1137 512K of RAM, the others 256K.
+///
+/// What each model's boards carry (motherboard photos, 2026-11-14):
+///
+/// | Model       | Timers + PIC          | Gate array | Screen    | Sound           |
+/// |-------------|-----------------------|------------|-----------|-----------------|
+/// | 1101, 1109  | 80130                 | (TTL) / 300063-00 | 320 x 240 | modem board (8255) |
+/// | 1121, 1129  | 80130                 | 300063-00  | 320 x 240 | modem board (8255) |
+/// | 1131, 1139  | 8254 + 8259A          | 300415-00  | 512 x 256 | modem board (8255) |
+/// | 1137        | 8254 + 8259A          | 300415-00  | 512 x 256 | motherboard, no modem, no 8255 |
+///
+/// So the 112x take the 1101's timers, interrupts and RAM/display timing, with the Compass
+/// II ROM sockets, PROM and plug-in bubble board; the 113x take the timing fitted to Kurt's
+/// real 1137.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GridModel {
     Compass1101,
@@ -17,16 +30,33 @@ pub enum GridModel {
     Compass1121,
     Compass1129,
     Compass1131,
+    /// Kurt's machine: a 113x "Logic II" board with the sound DACs and DTMF chip on the
+    /// motherboard and no modem.
+    Compass1137,
     Compass1139,
 }
 
+/// Which chip holds the timers (ports 08h-0Eh) and the interrupt controller (ports 00h/02h).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TimerChip {
+    /// Intel 80130 (110x, 112x): timer 0 counts at CPU clock / 2 (2.5 MHz), timer 1 counts
+    /// timer 0's output pulses, timer 2 the 5 MHz CPU clock; no read-back command; the
+    /// control port 0Eh reads FFh; ports 04h/06h are not decoded.
+    I80130,
+    /// Discrete 8254 + 8259A (113x): all three timers on the 5 MHz CPU clock, read-back
+    /// command, counters stand still until a count is written; ports 04h/06h answer as the
+    /// PIC (A1 only decoded) and 0Eh reads the bus.
+    I8254,
+}
+
 impl GridModel {
-    pub const ALL: [GridModel; 6] = [
+    pub const ALL: [GridModel; 7] = [
         GridModel::Compass1101,
         GridModel::Compass1109,
         GridModel::Compass1121,
         GridModel::Compass1129,
         GridModel::Compass1131,
+        GridModel::Compass1137,
         GridModel::Compass1139,
     ];
 
@@ -38,6 +68,7 @@ impl GridModel {
             GridModel::Compass1121 => "1121",
             GridModel::Compass1129 => "1129",
             GridModel::Compass1131 => "1131",
+            GridModel::Compass1137 => "1137",
             GridModel::Compass1139 => "1139",
         }
     }
@@ -65,7 +96,24 @@ impl GridModel {
 
     /// 512 x 256 screen (113x).
     pub fn wide_screen(self) -> bool {
-        matches!(self, GridModel::Compass1131 | GridModel::Compass1139)
+        matches!(self, GridModel::Compass1131 | GridModel::Compass1137 | GridModel::Compass1139)
+    }
+
+    /// The 113x boards (300415-00 gate array): RAM/display timing, INT and refresh fitted to
+    /// a real 1137. Same models as wide_screen().
+    pub fn board_113x(self) -> bool {
+        self.wide_screen()
+    }
+
+    /// Timer and interrupt controller chip.
+    pub fn timer_chip(self) -> TimerChip {
+        if self.board_113x() { TimerChip::I8254 } else { TimerChip::I80130 }
+    }
+
+    /// Internal modem board fitted (8255 at DFEC0, sound DACs and DTMF on it). Every model
+    /// but the 1137, whose sound sits on the motherboard.
+    pub fn has_modem(self) -> bool {
+        self != GridModel::Compass1137
     }
 
     /// Size of the panel in pixels.
@@ -219,7 +267,7 @@ impl GridMachine {
         if period > 0 {
             cpu.set_option(CpuOption::ScheduleDramRefresh(true, period, period, true));
             // the 113x (real 1137) fits best with 3 (0.9.1 geometry)
-            let wait = if model.wide_screen() { 3 } else { 4 };
+            let wait = if model.board_113x() { 3 } else { 4 };
             cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(wait)));
         }
         // JMP SHORT quirk: on a real Compass a chain of JMP SHORTs runs like taken Jcc's (1101
@@ -230,14 +278,14 @@ impl GridMachine {
         // INT + IRET runs ~2-3 clocks longer on a real Compass than on the plain 8086, ~3 more
         // on the 1137 (GRiDBench 2.2 c42, GRiDProbe 0.0.13 w16: INT 3 trap 55.7 / 58.7 clocks
         // over a WAIT). INT_EXTRA overrides it.
-        let int_extra = if model.wide_screen() { 2 } else { 1 };
+        let int_extra = if model.board_113x() { 2 } else { 1 };
         marty_core::cpu_808x::INT_EXTRA
             .store(env_u32("INT_EXTRA").unwrap_or(int_extra), std::sync::atomic::Ordering::Relaxed);
         // A WAIT with the 8087 idle takes 3.7 clocks on both machines (GRiDProbe w15), ~2 more
         // than the plain 8086 core gives. WAIT_EXTRA overrides it.
         marty_core::cpu_808x::WAIT_EXTRA
             .store(env_u32("WAIT_EXTRA").unwrap_or(2), std::sync::atomic::Ordering::Relaxed);
-        let size = if model.wide_screen() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
+        let size = if model.board_113x() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
         let mut m = GridMachine {
             cpu,
             model,

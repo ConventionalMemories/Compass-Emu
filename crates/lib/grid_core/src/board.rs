@@ -659,6 +659,13 @@ impl ExternalBoard for GridBoard {
         // 8259A (113x, real 1137): the 8259A decodes A1 only, so 4/6 answer like 0/2, and the
         // 8254's control port 0E reads the bus.
         let i8254 = self.model.timer_chip() == TimerChip::I8254;
+        // The 8254 doesn't look at A0: a byte read at 09/0B/0D strobes the counter too (its
+        // byte goes on the low lane, the CPU takes the bus's high lane). Real 1137 GRiDBench
+        // 2.2 u20-u27: reading ports 00-0F in a row gives timer 1 and 2's low byte every time.
+        if i8254 && port < 0x80 && matches!(port & 0x0F, 9 | 0x0B | 0x0D) {
+            let now = self.clocks + _cycles as u64;
+            self.timers.read((((port & 0x0F) - 9) / 2) as usize, now);
+        }
         if port >= 0x80 || port & 1 == 1 || (!i8254 && matches!(port & 0x0F, 4 | 6)) || (i8254 && port & 0x0F == 0x0E) {
             return bus_value(port as usize);
         }

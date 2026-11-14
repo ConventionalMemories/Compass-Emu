@@ -61,6 +61,79 @@ fn bubble_write_then_read() {
     assert!(got.iter().enumerate().all(|(i, &v)| v == (i as u32 * 7) as u8));
 }
 
+/// Read `pages` pages from page 0 by polling; Abort after `abort_at` bytes (if Some). Returns
+/// the bytes read and the final status.
+fn bubble_poll_read(b: &mut Bubble, t: &mut u64, pages: u16, abort_at: Option<usize>) -> (usize, u8) {
+    params(b, 0x1000 | pages, 0, *t);
+    b.write(1, 0x12, *t);
+    let mut n = 0;
+    loop {
+        *t += 50;
+        if abort_at == Some(n) {
+            b.write(1, 0x19, *t);
+            while b.read(1, *t) & 0x80 != 0 {
+                *t += 50;
+            }
+            b.write(1, 0x1D, *t); // Reset FIFO
+            *t += 2_000;
+            break;
+        }
+        let s = b.read(1, *t);
+        if s & 1 != 0 {
+            b.read(0, *t);
+            n += 1;
+        }
+        else if s & 0x80 == 0 {
+            break;
+        }
+    }
+    let s = b.read(1, *t);
+    (n, s)
+}
+
+/// GRiDProbe B7 on a real 1101: writes end with status 42; an Abort between two pages of a
+/// read leaves multi-page reads stopping after one page with status 2C until a Software Reset.
+#[test]
+fn bubble_write_status_and_stuck_abort() {
+    let mut b = Bubble::new(vec![0; 3 * 128 * 1024]);
+    let mut t = 0u64;
+    params(&mut b, 0x1000, 0, t);
+    b.write(1, 0x11, t);
+    t += 200_000;
+    b.read(1, t);
+    // one page written: status 42, FSA status marks MBM 0
+    params(&mut b, 0x1001, 0, t);
+    b.write(1, 0x13, t);
+    let mut n = 0;
+    loop {
+        t += 50;
+        let s = b.read(1, t);
+        if s & 0x80 == 0 {
+            assert_eq!(s & 0x7E, 0x42);
+            break;
+        }
+        if s & 1 != 0 && n < 64 {
+            b.write(0, 0, t);
+            n += 1;
+        }
+    }
+    b.write(1, 0x18, t);
+    t += 5_000;
+    let fsa: Vec<u8> = (0..6).map(|_| b.read(0, t)).collect();
+    assert_eq!(fsa, [0xFF, 0x28, 0x20, 0x20, 0x20, 0x20]);
+    // Abort after 1 byte: harmless
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 16, Some(1)).0, 1);
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 4, None), (256, 0x40));
+    // Abort after a whole page: the next multi-page reads stop after 64 bytes, failed
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 16, Some(64)).0, 64);
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 16, None), (64, 0x2C));
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 4, None), (64, 0x2C));
+    b.write(1, 0x1F, t); // Software Reset
+    t += 2_000;
+    b.read(1, t);
+    assert_eq!(bubble_poll_read(&mut b, &mut t, 4, None), (256, 0x40));
+}
+
 #[test]
 fn serial_loopback_timing() {
     let mut s = Serial8274::new();

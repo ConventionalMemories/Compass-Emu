@@ -24,6 +24,9 @@ const R_AR_L: usize = 0x0E;
 const R_AR_M: usize = 0x0F;
 
 const SR_FIFO: u8 = 0x01;
+const SR_PARITY: u8 = 0x02;
+const SR_UE: u8 = 0x04;
+const SR_CE: u8 = 0x08;
 const SR_TE: u8 = 0x10;
 const SR_FAIL: u8 = 0x20;
 const SR_DONE: u8 = 0x40;
@@ -109,8 +112,10 @@ impl Default for BubbleTiming {
             init_turn_clocks: 30_000,
             fsa_clocks: 200,
             reset_clocks: 200,
-            abort_clocks: 400,
-            abort_busy_clocks: 700,
+            // GRiDProbe b46 / b73-b76 on a real 1101: busy off 0.16 ms after an idle Abort,
+            // 0.14-0.16 ms during a read
+            abort_clocks: 600,
+            abort_busy_clocks: 480,
             purge_clocks: 1_250,
             fail_clocks: 1_500,
         }
@@ -149,6 +154,16 @@ pub struct Bubble {
     /// A write's FIFO takes data (see `write_lead_clocks`).
     #[serde(default)]
     armed: bool,
+    /// An Abort came between two pages of a read: until a Software Reset, a read of more than
+    /// one page stops after the first with status 2C (GRiDProbe b76-b79 on a real 1101).
+    #[serde(default)]
+    stuck: bool,
+    /// The current read is one of those (it ends after one page, failed).
+    #[serde(default)]
+    short: bool,
+    /// MBMs written since the last Software Reset (their FSA status has bit 3 set).
+    #[serde(default)]
+    written: u16,
 }
 
 impl Bubble {
@@ -177,6 +192,9 @@ impl Bubble {
             reach: 0,
             purged: false,
             armed: false,
+            stuck: false,
+            short: false,
+            written: 0,
         }
     }
 
@@ -342,6 +360,10 @@ impl Bubble {
                     self.op = if cmd == 2 { Op::Read } else { Op::Write };
                     self.counter = 0;
                     self.limit = self.pages() * self.page_bytes();
+                    self.short = cmd == 2 && self.stuck && self.pages() > 1;
+                    if self.short {
+                        self.limit = self.page_bytes();
+                    }
                     self.rot_start = now + if cmd == 2 { t.start_clocks } else { t.write_start_clocks };
                     let l = self.loop_clocks();
                     let pos = (self.addr() as u64 * t.stride % t.loop_slots) * t.slot_clocks;
@@ -367,6 +389,12 @@ impl Bubble {
             9 => {
                 // Abort: a transfer stops at once, its FIFO is dropped.
                 if matches!(self.op, Op::Read | Op::Write) {
+                    // Between two pages of a read (the last page all in, more to come), the
+                    // real 7220 is left in a state where later multi-page reads fail.
+                    let pb = self.page_bytes();
+                    if self.op == Op::Read && self.counter > 0 && self.counter % pb == 0 && self.counter < self.limit {
+                        self.stuck = true;
+                    }
                     self.stop_loops(now.max(self.rot_start));
                     self.fifo_clear();
                     self.quick(now, t.abort_busy_clocks);
@@ -381,6 +409,8 @@ impl Bubble {
                 self.quick(now, t.reset_clocks);
             }
             0x0F => {
+                self.stuck = false;
+                self.written = 0;
                 self.regs[R_UR] = 0;
                 self.fifo_clear();
                 self.quick(now, t.reset_clocks);
@@ -406,8 +436,12 @@ impl Bubble {
                 Op::Fail => self.end(false),
                 Op::Init | Op::Quick => self.end(true),
                 Op::ReadFsa => {
-                    for _ in 0..self.mbms * 2 {
-                        self.fifo_push(0x28);
+                    // GRiDProbe b01/b82 on a real 1101: FF 20 20 20 20 20 (the first channel
+                    // always reads FF), with 28 for both channels of an MBM written since the
+                    // last Software Reset.
+                    for c in 0..self.mbms * 2 {
+                        let w = self.written >> (c / 2) & 1 != 0;
+                        self.fifo_push(if c == 0 { 0xFF } else if w { 0x28 } else { 0x20 });
                     }
                     self.end(true);
                 }
@@ -431,11 +465,33 @@ impl Bubble {
                             }
                         }
                         self.counter += 1;
-                        self.next = if self.counter < self.limit { self.byte_time(self.counter) } else { self.transfer_end() };
+                        self.next = if self.counter < self.limit {
+                            self.byte_time(self.counter)
+                        }
+                        else if self.short {
+                            // busy off ~3 ms after the first byte (real b77-b79)
+                            t + 1_000
+                        }
+                        else {
+                            self.transfer_end()
+                        };
                     }
-                    else {
+                    else if self.short {
+                        self.short = false;
                         self.stop_loops(t);
                         self.end(true);
+                        self.str_ = self.str_ & !SR_DONE | SR_FAIL | SR_CE | SR_UE;
+                    }
+                    else {
+                        let write = self.op == Op::Write;
+                        self.stop_loops(t);
+                        self.end(true);
+                        if write {
+                            // A real 1101 ends nearly every write with status 42 (parity bit
+                            // set, data fine; GRiDProbe b81-b87); GRiD-OS ignores the bit.
+                            self.str_ |= SR_PARITY;
+                            self.written |= 1 << self.mbm();
+                        }
                     }
                 }
                 Op::None => self.next = u64::MAX,

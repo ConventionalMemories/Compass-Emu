@@ -889,7 +889,8 @@ impl Fast86 {
                     }
                     Rm::Reg(_) => None,
                 };
-                let extra = b.esc(self.clocks, op, m, ea, c.lin_start);
+                // the 8087 latches the address of the ESC byte itself, not of a prefix before it
+                let extra = b.esc(self.clocks, op, m, ea, (c.lin_start + c.seg.is_some() as u32) & 0xFFFFF);
                 self.clocks += 2 + extra as u64;
             }
             0xE0..=0xE3 => {

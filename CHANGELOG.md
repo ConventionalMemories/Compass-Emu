@@ -2,6 +2,25 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## Unreleased
+
+- 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
+  you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
+  arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals
+  run from the chip's microcode ROM instead of the instruction-level model. Of 141
+  transcendental and square root results dumped from a real 1101, 134 come out bit for
+  bit and the other 7 are one unit off.
+- The microcode 8087 fitted to 8087 Bench on a real 1101 and 1137 (2181 tests): of 1588
+  real result lines 34 still differ (were 1441), and the busy time now comes from the
+  micro-instructions that ran (mean error about 2.5 % over 2068 timed tests, was 40 % with the
+  tables). Both 8087 cores: FINIT keeps the condition bits, the B bit shows a pending
+  unmasked exception, the IR bit is derived, the control word has 13 bits, reserved
+  opcodes alias their neighbours, FSTENV's pointer is the ESC byte after a segment
+  prefix. The test `bench_real` holds the real reports.
+- The instruction-level 8087 was corrected wherever the microcode showed it wrong (FSQRT
+  exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
+  loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
+
 ## 0.10.0
 
 Each model now has the hardware its real boards carry (from photos of 1101,

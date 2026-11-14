@@ -2,6 +2,39 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.9.1
+
+Fitted to GRiDProbe 0.0.12-0.0.13 and the Disk Toolkit 0.4.1 box probe on a
+real 1101 and 1137:
+- GRiD-OS's INT 3 stand-in for each 8087 WAIT costs what it costs on the real
+  machines: 55.8 clocks over a WAIT on the 1101 (real 55.7) and 57.8 on the
+  113x (real 58.7). A WAIT alone takes 3.7 clocks with the 8087 idle (real
+  3.75). FNOP, FLD/FSTP, FDIV and short and long FMUL are within about a clock
+  of the real chip; a long FMUL that rounds up takes 5 clocks more, an FADD
+  whose smaller operand shifts out completely 5 less, as on the real chip.
+- Frame geometry from GRiDProbe's beam finder: the 1101 draws 307 clocks a
+  line and 268 lines (60.8 Hz; real 60.8), with IR3 rising on line 3 for 241
+  lines; the 113x 316 x 263 (60.2 Hz). Display contention refitted to these
+  frames (GRiDBench 2.2 gap rows: 1.2% rms on the 1101, 1.3% on the 113x).
+- 2101 hard disk: interleave 5, read from the real drive's sector IDs. Seek
+  times measured inside a real box (Seek, then Test Ready until ready). A Seek
+  command is buffered: it answers after 1.5 ms plus 20 us a cylinder, and Test
+  Ready reports "not ready" until the heads are in. A read's or write's own seek
+  waits that long again plus 8 ms before its first sector, which matches the
+  Disk Toolkit per-read seek costs and GRiDBench 2.1b (random pages 132.8 ms,
+  real 130.3; steps of 1/16 118.4, real 122.5). Recalibrate steps back at 3 ms
+  a cylinder. Commands take 0.44 ms to decode, as on the real box.
+- Bubble: writes end with status 42 (the parity bit, data fine), as on the
+  real 1101; GRiD-OS ignores the bit. Read FSA Status gives FF 20 20 20 20 20,
+  with 28 for an MBM written since the last Software Reset. Abort takes 0.14 to
+  0.16 ms. An Abort between two pages of a read leaves the controller stuck as
+  on the real chip: later multi-page reads stop after one page with status 2C
+  until a Software Reset (GRiD-OS's error recovery does one). GRiDProbe B7 now
+  matches the real report line for line.
+- 2102 floppy: no change needed. The low-level 2102 already matches GRiDProbe's
+  floppy test (same page again 181 ms, real 185; power-up after 12 s idle 1.9 s,
+  real 1.9).
+
 ## 0.9.0
 
 - GRiDLink: the 8274 serial chip's synchronous SDLC mode, the one the GRiD

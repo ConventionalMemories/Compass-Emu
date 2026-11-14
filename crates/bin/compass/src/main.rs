@@ -1,7 +1,7 @@
 //! Compass-Emu 0.9.0: a GRiD Compass in a window.
 //!
 //! compass [options]
-//!   --model M                    1101 (default), 1109, 1121, 1129, 1131 or 1139
+//!   --model M                    1101 (default), 1109, 1121, 1129, 1131, 1137 or 1139
 //!   --prom-even F --prom-odd F   boot PROM chips (default: see default_prom)
 //!   --prom F                     boot PROM as one 16K file (even/odd bytes interleaved)
 //!   --kbd F                      8741 keyboard firmware (default roms/300067-01.bin; the
@@ -53,11 +53,11 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.9.1";
+pub const VERSION: &str = "0.10.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -120,7 +120,7 @@ fn main() {
                 let v = val();
                 cfg.model = GridModel::parse(&v)
                     .unwrap_or_else(|| {
-                        eprintln!("unknown model {v} (1101, 1109, 1121, 1129, 1131, 1139)");
+                        eprintln!("unknown model {v} (1101, 1109, 1121, 1129, 1131, 1137, 1139)");
                         std::process::exit(1)
                     })
                     .name()

@@ -17,7 +17,7 @@ compilers and the programs written for it, and fast enough to use as a build mac
 
 | | |
 |---|---|
-| Models | 1101, 1109 (original board); 1121, 1129, 1131, 1139 (Compass II split board, 512 x 256 screen on the 113x) |
+| Models | 1101, 1109 (original board); 1121, 1129, 1131, 1137, 1139 (Compass II split board, 512 x 256 screen on the 113x), each with its own timer and interrupt chips and sound wiring |
 | CPU | 8086 with prefetch queue and bus timing, plus a fast whole-instruction core for builds |
 | FPU | 8087 with bit-exact 80-bit results; FPTAN follows the chip's own method |
 | Storage | 2101 hard disk and floppy, 2102 portable floppy, bubble memory, application ROM sockets, a PC folder as a GRiD drive |

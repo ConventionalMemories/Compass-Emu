@@ -2,6 +2,40 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
 
+## 0.10.0
+
+Each model now has the hardware its real boards carry (from photos of 1101,
+1121, 1137 and 1139 motherboards):
+- New model 1137 (`--model 1137`, Kurt's machine): 113x board with 512K and the
+  large screen, the 1139 PROM (as on the real 1137) and the 300001-02 keyboard
+  firmware dumped from it. No modem: the 8255 at DFEC0 is missing, so
+  Modem~Device~ finds no modem as on the real machine. Its sound DACs and DTMF
+  chip are on the motherboard; how the DTMF chip is driven is not known, so
+  for now a write-only latch at DFEC2 takes the 8255's port B bits (to check
+  with SoundTest on the real 1137).
+- Timers per board (new `timers.rs`). 110x and 112x, 80130: timer 0 counts at
+  2.5 MHz (CPU clock / 2), timer 1 counts timer 0's output pulses, timer 2 at
+  5 MHz, no read-back, all running from power-on. 113x, discrete 8254: all three
+  at 5 MHz, read-back command with status bytes, a counter stands at FFFF until
+  a count is written, timer 1 counts only while timer 0 has a count. Replaying
+  GRiDProbe's T test gives the real machines' patterns: about twice the count
+  per read on the 113x, status B4 (mode 2) and B6 (mode 3), FFFF before
+  loading, read-back ignored on the 1101. Before, every model had all timers at
+  5 MHz and timer 1 frozen.
+- Interrupt controller per board: the 80130's quirks (non-specific EOI
+  ignored, ports 4/6 not decoded, 0Eh reads FFh) now apply to the 110x and
+  112x; the 113x's 8259A + 8254 take the non-specific EOI (assumed), mirror the
+  PIC at 4/6 and leave 0Eh open, as measured on the real 1137. The 112x used
+  the 113x behaviour before.
+- Keyboard firmware per model: 300001-02 on the 1137, 300067-01 on the others
+  (each stands in for the other when missing). The 1139 used 300001-02 before.
+- The 8274 already counted from the 5 MHz CPU clock; the photos confirm it (no
+  4.032 MHz crystal on any motherboard).
+- The 113x RAM/display timing, refresh and INT fits (from the real 1137) now
+  hang on `GridModel::board_113x()`, and stay as they were. GRiDBench 2.2 on
+  the 1101 and the 1137 gives the same results as 0.9.1.
+- gridfrag: FRAG_DUMP=address,length prints memory after the run.
+
 ## 0.9.1
 
 Fitted to GRiDProbe 0.0.12-0.0.13 and the Disk Toolkit 0.4.1 box probe on a

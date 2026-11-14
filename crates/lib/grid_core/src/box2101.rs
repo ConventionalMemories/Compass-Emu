@@ -39,6 +39,12 @@ fn box_log() -> bool {
     *ON.get_or_init(|| std::env::var_os("BOXLOG").is_some())
 }
 
+/// Extra board time per instruction, per mille (BOX_SLOW; default 47).
+fn box_slow() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("BOX_SLOW").ok().and_then(|v| v.parse().ok()).unwrap_or(47))
+}
+
 /// The board's clock rate in Hz.
 fn clock_hz() -> u64 {
     static HZ: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
@@ -61,6 +67,8 @@ struct Hw {
     rom: Vec<u8>,
     ram: Vec<u8>,
     clocks: u64,
+    #[serde(default)]
+    slow_acc: u64,
     latch: u8,
     /// Byte on the SASI data bus from the board (selection).
     sasi_out: u8,
@@ -314,6 +322,7 @@ impl Box2101 {
                 rom,
                 ram: vec![0; 0x2000],
                 clocks: 0,
+                slow_acc: 0,
                 latch: 0,
                 sasi_out: 0,
                 display: [b' '; 4],
@@ -439,7 +448,12 @@ impl Box2101 {
             let mut ctx = Ctx { hw: &mut self.hw, m };
             self.cpu.step(&mut ctx);
             let c = (self.cpu.clocks - c0).max(self.hw.cycles * 4).max(2);
-            self.hw.clocks += c;
+            // The fast core leaves out the 8088's byte-wide prefetch: the real board's wait loop
+            // runs 617 turns a disk turn (27.0 us) where the core gives 647 (box probe 0.4.1),
+            // so stretch its time by 4.7 % (BOX_SLOW, per mille).
+            self.hw.slow_acc += c * box_slow();
+            self.hw.clocks += c + self.hw.slow_acc / 1000;
+            self.hw.slow_acc %= 1000;
             if self.hw.display != disp {
                 let t = self.hw.display_text();
                 if box_log() {

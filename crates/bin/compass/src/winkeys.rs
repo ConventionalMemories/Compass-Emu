@@ -6,7 +6,7 @@
 //! Alt+Space (window menu) while the emulator has focus; those keys then go to the Compass
 //! as CODE-Esc and CODE-Space. Alt+Tab and Alt+F4 still work.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 type Hwnd = *mut core::ffi::c_void;
 
@@ -18,6 +18,19 @@ extern "system" {
     fn GetForegroundWindow() -> Hwnd;
     fn SetWindowsHookExW(id: i32, proc_: usize, hmod: Hwnd, thread: u32) -> Hwnd;
     fn CallNextHookEx(hook: Hwnd, code: i32, wparam: usize, lparam: isize) -> isize;
+    fn GetMessageW(msg: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
+}
+
+/// MSG, only as a buffer for GetMessageW.
+#[repr(C)]
+struct Msg {
+    hwnd: Hwnd,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    time: u32,
+    pt: [i32; 2],
+    private: u32,
 }
 
 #[link(name = "kernel32")]
@@ -74,7 +87,7 @@ const WM_SYSCHAR: u32 = 0x0106;
 const SC_KEYMENU: usize = 0xF100;
 
 static OLD_PROC: AtomicIsize = AtomicIsize::new(0);
-static mut HWND_MAIN: usize = 0;
+static HWND_MAIN: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
     if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU {
@@ -88,16 +101,26 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
 
 pub fn install(hwnd: *mut core::ffi::c_void) {
     unsafe {
-        HWND_MAIN = hwnd as usize;
+        HWND_MAIN.store(hwnd as usize, Ordering::Relaxed);
         let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
         OLD_PROC.store(old, Ordering::Relaxed);
-        // (runs on this thread's message loop, which minifb pumps every frame)
-        SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+    }
+    // The hook runs on a thread of its own with its own message loop. On the window's thread
+    // a slow frame (power on, loading a state, the exact core) can keep it from answering in
+    // time, and Windows then removes a low-level hook for good without a word: Alt+Esc
+    // switched windows again after that.
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if !STARTED.swap(true, Ordering::Relaxed) {
+        let _ = std::thread::Builder::new().name("keyboard hook".into()).spawn(|| unsafe {
+            SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+            let mut msg: Msg = std::mem::zeroed();
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+        });
     }
 }
 
 fn focused() -> bool {
-    unsafe { GetForegroundWindow() as usize == HWND_MAIN }
+    unsafe { GetForegroundWindow() as usize == HWND_MAIN.load(Ordering::Relaxed) }
 }
 
 /// (down now, pressed since last poll) for a virtual key, only while our window has focus.

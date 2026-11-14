@@ -61,6 +61,22 @@ pub struct MachineConfig {
     /// The 8087 microcode ROM file ("" = I8087_MICROCODE, else 8087mc.txt or 8087mc.bin in
     /// the ROM folder or in roms/).
     pub fpu_rom: String,
+    /// 2102 floppy firmware ("" = 300237-02/-01.bin in the ROM folder).
+    pub rom_2102: String,
+    /// 2101 firmware for the 20 MB box ("" = 300205-05.bin in the ROM folder).
+    pub rom_2101_20: String,
+    /// 2101 firmware for the 10 MB box ("" = 300205-06.bin in the ROM folder).
+    pub rom_2101_10: String,
+    /// "protocol": the 2102 answers from the protocol model even with its firmware there.
+    pub fd_level: String,
+    /// "protocol": the 2101 box answers from the protocol model even with its firmware there.
+    pub hd_level: String,
+}
+
+/// The drive firmware a machine will use: (2102, [2101 20 MB, 2101 10 MB]).
+pub struct DriveRoms {
+    pub fd2102: Option<PathBuf>,
+    pub hd2101: [Option<PathBuf>; 2],
 }
 
 impl MachineConfig {
@@ -74,6 +90,23 @@ impl MachineConfig {
         }
         else {
             PathBuf::from(self.rom_dir.trim())
+        }
+    }
+
+    /// The drive firmware files this profile uses (its own paths, else the ROM folder's),
+    /// none for a drive set to the protocol model.
+    pub fn drive_roms(&self, default_roms: &Path) -> DriveRoms {
+        let dir = self.rom_dir(default_roms);
+        let found = grid_core::roms::find(self.model(), &dir);
+        let pick = |own: &str, found: &Option<PathBuf>| some(own).or_else(|| found.clone());
+        DriveRoms {
+            fd2102: if self.fd_level == "protocol" { None } else { pick(&self.rom_2102, &found.fd2102) },
+            hd2101: if self.hd_level == "protocol" {
+                [None, None]
+            }
+            else {
+                [pick(&self.rom_2101_20, &found.hd2101[0]), pick(&self.rom_2101_10, &found.hd2101[1])]
+            },
         }
     }
 
@@ -142,6 +175,15 @@ impl MachineConfig {
         opt("--symbols", &self.symbols);
         if self.fpu_micro {
             opt("--fpu-rom", &self.fpu_rom);
+        }
+        opt("--rom-2102", &self.rom_2102);
+        opt("--rom-2101", &self.rom_2101_20);
+        opt("--rom-2101-10", &self.rom_2101_10);
+        if self.fd_level == "protocol" {
+            a.push("--2102-protocol".into());
+        }
+        if self.hd_level == "protocol" {
+            a.push("--2101-protocol".into());
         }
         if self.no_catch {
             a.push("--no-catch".into());
@@ -242,10 +284,11 @@ impl Session {
         m.board_mut().e0000_dma =
             roms.e0000_dma || (model.split_board() && !model.wide_screen() && (prom.is_some() || prom_even.is_some()));
         m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")?));
-        if let Some(p) = &roms.fd2102 {
+        let drive_roms = cfg.drive_roms(default_roms);
+        if let Some(p) = &drive_roms.fd2102 {
             m.board_mut().gpib.rom_2102 = Some(read(p, "2102 floppy firmware")?);
         }
-        for (i, p) in roms.hd2101.iter().enumerate() {
+        for (i, p) in drive_roms.hd2101.iter().enumerate() {
             if let Some(p) = p {
                 m.board_mut().gpib.rom_2101[i] = Some(read(p, "2101 firmware")?);
             }
@@ -392,6 +435,18 @@ impl Session {
             d.dirty = false;
         }
         log
+    }
+
+    /// Bring files added or changed in the PC folder into the folder drive while it runs.
+    /// Call it only when GRiD has not used the drive for a while.
+    pub fn sync_folder(&mut self) -> Vec<String> {
+        let Some(hd) = &mut self.hostdir else { return vec![] };
+        if !hd.changed_on_pc() {
+            return vec![];
+        }
+        let Some(i) = self.media.iter().position(|m| matches!(m, Media::Folder(_))) else { return vec![] };
+        let Some(d) = self.m.board_mut().gpib.drives.get_mut(i) else { return vec![] };
+        hd.sync_in(&mut d.image).into_iter().map(|l| format!("PC folder: {l}")).collect()
     }
 
     /// Write every changed disk, the folder and the bubble memory back.

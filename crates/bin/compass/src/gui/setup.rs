@@ -25,6 +25,58 @@ const MODELS: &[(&str, &str)] = &[
 struct ProfileFile {
     selected: usize,
     profiles: Vec<MachineConfig>,
+    /// Window and view settings, kept from one run to the next.
+    gui: GuiPrefs,
+}
+
+/// How many disk images the Recent lists keep.
+const RECENT: usize = 8;
+
+/// View settings and recent files (the "gui" part of compass-profiles.json).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuiPrefs {
+    /// Window size in points (0 = the first-run size).
+    pub window: [f32; 2],
+    pub maximized: bool,
+    /// Whole-pixel scaling instead of filling the window.
+    pub integer_scale: bool,
+    /// Lit pixel colour, 0xRRGGBB.
+    pub colour: u32,
+    pub show_status: bool,
+    pub show_toolbar: bool,
+    /// Floppy images inserted lately, newest first.
+    pub recent_floppies: Vec<String>,
+    /// Hard disk images used lately, newest first.
+    pub recent_hds: Vec<String>,
+}
+
+impl Default for GuiPrefs {
+    fn default() -> Self {
+        GuiPrefs {
+            window: [0.0, 0.0],
+            maximized: false,
+            integer_scale: false,
+            colour: crate::display::AMBER,
+            show_status: true,
+            show_toolbar: true,
+            recent_floppies: vec![],
+            recent_hds: vec![],
+        }
+    }
+}
+
+/// Put a path at the top of a recent list.
+pub fn push_recent(list: &mut Vec<String>, path: &str) {
+    if path.is_empty() {
+        return;
+    }
+    let full = std::fs::canonicalize(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
+    // canonicalize gives \\?\C:\... on Windows; keep the plain form.
+    let full = full.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(full);
+    list.retain(|p| p != &full);
+    list.insert(0, full);
+    list.truncate(RECENT);
 }
 
 pub struct SetupPage {
@@ -94,6 +146,25 @@ impl SetupPage {
         }
     }
 
+    /// The saved view settings.
+    pub fn prefs(&self) -> &GuiPrefs {
+        &self.data.gui
+    }
+
+    /// Change the saved view settings (saved with the profiles).
+    pub fn set_prefs(&mut self, p: GuiPrefs) {
+        if p != self.data.gui {
+            self.data.gui = p;
+            self.dirty = true;
+        }
+    }
+
+    /// The selected profile, to change (saved with the profiles).
+    pub fn current_mut(&mut self) -> &mut MachineConfig {
+        self.dirty = true;
+        &mut self.data.profiles[self.data.selected]
+    }
+
     pub fn current(&self) -> &MachineConfig {
         &self.data.profiles[self.data.selected]
     }
@@ -112,10 +183,16 @@ impl SetupPage {
 
 /// A path field with a Browse button.
 fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, filters: &[&str]) -> bool {
+    path_row_recent(ui, label, value, folder, filters, &[])
+}
+
+/// A path field with Browse, and a Recent menu when the list has entries.
+fn path_row_recent(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, filters: &[&str], recent: &[String]) -> bool {
     let mut changed = false;
     ui.label(label);
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - if value.is_empty() { 80.0 } else { 140.0 }).max(120.0);
+        let extra = if recent.is_empty() { 0.0 } else { 70.0 };
+        let w = (ui.available_width() - extra - if value.is_empty() { 80.0 } else { 140.0 }).max(120.0);
         changed |= ui.add(egui::TextEdit::singleline(value).desired_width(w)).changed();
         if ui.button("Browse").clicked() {
             let mut d = rfd::FileDialog::new();
@@ -127,6 +204,16 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, fi
                 *value = p.display().to_string();
                 changed = true;
             }
+        }
+        if !recent.is_empty() {
+            ui.menu_button("Recent", |ui| {
+                for p in recent {
+                    if ui.button(p).clicked() {
+                        *value = p.clone();
+                        changed = true;
+                    }
+                }
+            });
         }
         if !value.is_empty() && ui.button("Clear").clicked() {
             value.clear();
@@ -148,6 +235,8 @@ fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
 
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let default_roms = app.default_roms.clone();
+    let recent_hds = app.setup.data.gui.recent_hds.clone();
+    let recent_floppies = app.setup.data.gui.recent_floppies.clone();
     let mut power = false;
     egui::Panel::left("profiles").resizable(true).default_size(260.0).show_inside(ui, |ui| {
         ui.add_space(8.0);
@@ -222,6 +311,25 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     });
                     ui.label("CPU core");
                     ch |= ui.checkbox(&mut c.fast, "Fast (whole instructions, approximate timing)").changed();
+                    ui.label("8087");
+                    ch |= ui
+                        .checkbox(&mut c.fpu_micro, "Run on the 8087's own microcode ROM (you supply the ROM)")
+                        .on_hover_text("slower, closer to the real chip; see docs/8087-microcode.md. Off: the instruction-level 8087")
+                        .changed();
+                    if c.fpu_micro {
+                        ch |= path_row(ui, "Microcode ROM file (optional)", &mut c.fpu_rom, false, &["txt", "bin"]);
+                        match crate::session::fpu_microcode(c, &c.rom_dir(&default_roms)) {
+                            Some(Some(p)) if p.exists() => {
+                                ui.colored_label(egui::Color32::from_rgb(0x8F, 0xD1, 0x8F), format!("Microcode ROM: {}", p.display()));
+                            }
+                            Some(Some(p)) => {
+                                ui.colored_label(egui::Color32::from_rgb(0xFF, 0x8A, 0x70), format!("Not found: {}", p.display()));
+                            }
+                            _ => {
+                                ui.label(RichText::new("No 8087mc.txt or 8087mc.bin in the ROM folder; I8087_MICROCODE or roms/ is tried, else the instruction-level 8087 runs").weak());
+                            }
+                        }
+                    }
                     ch |= path_row(ui, "ROM folder", &mut c.rom_dir, true, &[]);
                     let roms = grid_core::roms::find(c.model(), &c.rom_dir(&default_roms));
                     let missing: Vec<String> = [&roms.prom_even, &roms.prom_odd, &roms.keyboard]
@@ -246,9 +354,9 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     None => &mut *a,
                 };
                 card(col2, "Drives (GPIB)", |ui| {
-                    ch |= path_row(ui, "2101 hard disk image", &mut c.hd, false, &["img", "IMG"]);
-                    ch |= path_row(ui, "2102 floppy image", &mut c.flop, false, &["img", "IMG"]);
-                    ch |= path_row(ui, "2101 floppy image", &mut c.flop2101, false, &["img", "IMG"]);
+                    ch |= path_row_recent(ui, "2101 hard disk image", &mut c.hd, false, &["img", "IMG"], &recent_hds);
+                    ch |= path_row_recent(ui, "2102 floppy image (.img or .IMD)", &mut c.flop, false, &["img", "IMG", "imd", "IMD"], &recent_floppies);
+                    ch |= path_row_recent(ui, "2101 floppy image (.img or .IMD)", &mut c.flop2101, false, &["img", "IMG", "imd", "IMD"], &recent_floppies);
                     ch |= path_row(ui, "PC folder as the 2101 floppy", &mut c.folder, true, &[]);
                     ch |= path_row(ui, "Bubble memory image (made if missing)", &mut c.bubble, false, &[]);
                     ui.label("Disks");
@@ -319,7 +427,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(m);
             }
             ui.add_space(10.0);
-            ui.label(RichText::new("Paths can be relative to the folder Compass-Emu was started in. Profiles are kept in compass-profiles.json next to compass.exe.").weak().small());
+            ui.label(RichText::new("Paths can be relative to the folder Compass-Emu was started in. Profiles are kept in compass-profiles.json next to compass.exe. Disk images and folders can also be dropped on this window.").weak().small());
             if !app.log.is_empty() {
                 ui.add_space(8.0);
                 ui.label(RichText::new("Messages").strong());

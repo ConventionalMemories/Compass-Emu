@@ -55,6 +55,12 @@ pub struct MachineConfig {
     pub symbols: String,
     /// Crash catcher off (it is on unless this is set).
     pub no_catch: bool,
+    /// Run the 8087 on its own microcode ROM (supplied by the user) instead of the
+    /// instruction-level model.
+    pub fpu_micro: bool,
+    /// The 8087 microcode ROM file ("" = I8087_MICROCODE, else 8087mc.txt or 8087mc.bin in
+    /// the ROM folder or in roms/).
+    pub fpu_rom: String,
 }
 
 impl MachineConfig {
@@ -124,6 +130,9 @@ impl MachineConfig {
         if self.fast {
             a.push("--fast".into());
         }
+        if self.fpu_micro && self.fpu_rom.trim().is_empty() {
+            a.push("--fpu-micro".into());
+        }
         let mut opt = |flag: &str, v: &str| {
             if !v.trim().is_empty() {
                 a.push(flag.to_string());
@@ -131,6 +140,9 @@ impl MachineConfig {
             }
         };
         opt("--symbols", &self.symbols);
+        if self.fpu_micro {
+            opt("--fpu-rom", &self.fpu_rom);
+        }
         if self.no_catch {
             a.push("--no-catch".into());
         }
@@ -164,6 +176,21 @@ fn read(path: &Path, what: &str) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|e| format!("cannot read {what} {}: {e}", path.display()))
 }
 
+/// With the microcode 8087 picked: Some(the ROM file to name, or None to leave
+/// I8087_MICROCODE and roms/ to the 8087 itself). None: the instruction-level 8087.
+pub fn fpu_microcode(cfg: &MachineConfig, rom_dir: &Path) -> Option<Option<PathBuf>> {
+    if !cfg.fpu_micro {
+        return None;
+    }
+    if let Some(p) = some(&cfg.fpu_rom) {
+        return Some(Some(p));
+    }
+    if std::env::var_os("I8087_MICROCODE").is_some() {
+        return Some(None);
+    }
+    Some(["8087mc.txt", "8087mc.bin"].iter().map(|n| rom_dir.join(n)).find(|p| p.exists()))
+}
+
 fn some(s: &str) -> Option<PathBuf> {
     let s = s.trim();
     (!s.is_empty()).then(|| PathBuf::from(s))
@@ -193,6 +220,24 @@ impl Session {
             )
         };
         let kbd = some(&cfg.kbd).unwrap_or(roms.keyboard.clone());
+        // The 8087 core is picked from the environment when the machine is made.
+        // The user's own I8087_MICROCODE (from before the first machine) is put back each time.
+        static USER_ROM: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+        let user_rom = USER_ROM.get_or_init(|| std::env::var_os("I8087_MICROCODE"));
+        match user_rom {
+            Some(v) => std::env::set_var("I8087_MICROCODE", v),
+            None => std::env::remove_var("I8087_MICROCODE"),
+        }
+        match fpu_microcode(cfg, &cfg.rom_dir(default_roms)) {
+            Some(rom) => {
+                std::env::set_var("FPU_CORE", "micro");
+                match rom {
+                    Some(rom) => std::env::set_var("I8087_MICROCODE", rom),
+                    None => notes.push("8087 microcode: no ROM file named or found in the ROM folder; looking in roms/ (see docs/8087-microcode.md)".into()),
+                }
+            }
+            None => std::env::remove_var("FPU_CORE"),
+        }
         let mut m = GridMachine::new(model, &even, &odd);
         m.board_mut().e0000_dma =
             roms.e0000_dma || (model.split_board() && !model.wide_screen() && (prom.is_some() || prom_even.is_some()));
@@ -209,6 +254,14 @@ impl Session {
         let mut media = vec![];
         for (kind, path) in [(DriveKind::Hdd2101, &cfg.hd), (DriveKind::Floppy2102, &cfg.flop), (DriveKind::Floppy2101, &cfg.flop2101)] {
             if let Some(p) = some(path) {
+                let p = if kind == DriveKind::Hdd2101 {
+                    p
+                }
+                else {
+                    let (p, note) = crate::imd::floppy_path(&p)?;
+                    notes.extend(note);
+                    p
+                };
                 let img = read(&p, "disk image")?;
                 m.board_mut().gpib.drives.push(Drive::new(kind, img));
                 media.push(Media::Image(p));
@@ -369,6 +422,16 @@ impl Session {
         if kind == DriveKind::Hdd2101 {
             return Err("the hard disk can only be changed with the machine off".into());
         }
+        let mut log = vec![];
+        let path = match path {
+            Some(p) => {
+                let (p, note) = crate::imd::floppy_path(p)?;
+                log.extend(note);
+                Some(p)
+            }
+            None => None,
+        };
+        let path = path.as_deref();
         let img = match path {
             Some(p) => read(p, "floppy image")?,
             None => vec![],
@@ -381,7 +444,7 @@ impl Session {
                 self.media.len() - 1
             }
         };
-        let mut log = self.save_drive(i);
+        log.extend(self.save_drive(i));
         if matches!(self.media[i], Media::Folder(_)) {
             self.hostdir = None;
             self.cfg.folder.clear();

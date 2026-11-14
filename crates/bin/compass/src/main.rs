@@ -25,6 +25,9 @@
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
 //!   --overlay                    start with the demo tools overlay on (F10)
 //!   --fast                       fast CPU core (whole instructions, approximate timing)
+//!   --fpu-micro                  8087 on its own microcode ROM (you supply it; see
+//!                                docs/8087-microcode.md): 8087mc.txt or .bin in the ROM folder
+//!   --fpu-rom F                  the same, with that microcode ROM file
 //!   --classic                    the plain window of 0.4 (no menus) instead of the GUI
 //!   --symbols D                  program symbols for the debugger: the project folder of a
 //!                                debug build (gridbuild.py debug saves NAME.pas.obj files there)
@@ -45,6 +48,7 @@ mod display;
 mod gui;
 mod headless;
 mod host;
+mod imd;
 mod mcp;
 mod runner;
 mod session;
@@ -53,11 +57,11 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.10.0";
+pub const VERSION: &str = "0.11.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -142,6 +146,11 @@ fn main() {
             "--gridlink-p2p" => cfg.gridlink_p2p = true,
             "--mute" => cfg.mute = true,
             "--fast" => cfg.fast = true,
+            "--fpu-micro" => cfg.fpu_micro = true,
+            "--fpu-rom" => {
+                cfg.fpu_rom = val();
+                cfg.fpu_micro = true;
+            }
             "--symbols" => cfg.symbols = val(),
             "--no-catch" => cfg.no_catch = true,
             "--overlay" => {

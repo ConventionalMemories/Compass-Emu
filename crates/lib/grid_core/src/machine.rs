@@ -218,8 +218,8 @@ impl GridMachine {
         let period = env_u32("GRID_REFRESH").unwrap_or(48);
         if period > 0 {
             cpu.set_option(CpuOption::ScheduleDramRefresh(true, period, period, true));
-            // the 113x (real 1137) fits best with 2
-            let wait = if model.wide_screen() { 2 } else { 4 };
+            // the 113x (real 1137) fits best with 3 (0.9.1 geometry)
+            let wait = if model.wide_screen() { 3 } else { 4 };
             cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(wait)));
         }
         // JMP SHORT quirk: on a real Compass a chain of JMP SHORTs runs like taken Jcc's (1101
@@ -227,6 +227,16 @@ impl GridMachine {
         // before suspending prefetch. JMP_EXTRA overrides it (0 = the plain 8086).
         marty_core::cpu_808x::JMP_SHORT_EXTRA
             .store(env_u32("JMP_EXTRA").unwrap_or(1), std::sync::atomic::Ordering::Relaxed);
+        // INT + IRET runs ~2-3 clocks longer on a real Compass than on the plain 8086, ~3 more
+        // on the 1137 (GRiDBench 2.2 c42, GRiDProbe 0.0.13 w16: INT 3 trap 55.7 / 58.7 clocks
+        // over a WAIT). INT_EXTRA overrides it.
+        let int_extra = if model.wide_screen() { 2 } else { 1 };
+        marty_core::cpu_808x::INT_EXTRA
+            .store(env_u32("INT_EXTRA").unwrap_or(int_extra), std::sync::atomic::Ordering::Relaxed);
+        // A WAIT with the 8087 idle takes 3.7 clocks on both machines (GRiDProbe w15), ~2 more
+        // than the plain 8086 core gives. WAIT_EXTRA overrides it.
+        marty_core::cpu_808x::WAIT_EXTRA
+            .store(env_u32("WAIT_EXTRA").unwrap_or(2), std::sync::atomic::Ordering::Relaxed);
         let size = if model.wide_screen() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_bytes();
         let mut m = GridMachine {
             cpu,

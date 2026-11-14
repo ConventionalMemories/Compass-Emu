@@ -734,9 +734,9 @@ impl I8087 {
         self.micro.is_some()
     }
 
-    /// One instruction on the microcode core. The busy time still comes from the
-    /// instruction-level core's tables: it runs the instruction first, with its writes to
-    /// memory dropped, and its results are thrown away.
+    /// One instruction on the microcode core. The instruction-level core runs it first, with
+    /// its writes to memory dropped and its results thrown away, for the number of bus words
+    /// (and as the fallback if the microcode model gives up).
     fn esc_micro(&mut self, mem: &mut dyn FpuMem, op: u8, modrm: u8, ea: Option<u32>) -> (u32, u32) {
         let reg = (modrm >> 3) & 7;
         let rm = (modrm & 7) as usize;
@@ -791,9 +791,11 @@ impl I8087 {
             }
         }
         self.push_blocked = false;
-        self.penalty = penalty;
         self.micro = Some(m);
-        timing
+        // the time is what the microcode did (see micro::KIND_CLOCKS); the bus words still
+        // come from the instruction-level core's dry run
+        let _ = penalty;
+        (micro::clocks(&res.unwrap(), 0xD8 | op, modrm), timing.1)
     }
 
     /// Execute an ESC instruction. `opcode` is D8-DF, `modrm` the ModR/M byte, `ea` the linear
@@ -833,7 +835,9 @@ impl I8087 {
             }
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
-        if !(op == 1 && ea.is_some() && reg >= 4) && !(op == 3 && ea.is_none() && reg == 4) {
+        // (FSTSW and FSAVE too: after them a real chip's FSTENV still shows the instruction
+        // before)
+        if !(op == 1 && ea.is_some() && reg >= 4) && !(op == 3 && ea.is_none() && reg == 4) && !(op == 5 && ea.is_some() && reg >= 6) {
             self.ip = ip;
             self.opcode = (((op as u16) << 8) | modrm as u16) & 0x7FF;
             if let Some(a) = ea {

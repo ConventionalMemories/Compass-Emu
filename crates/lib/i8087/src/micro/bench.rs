@@ -31,6 +31,9 @@ pub struct Test {
     pub loads: Vec<Vec<u8>>,
     pub mem: Vec<u8>,
     pub code: Vec<u8>,
+    /// FSTP ST(0) after the test in the timed loop, and in the loop it is compared with
+    pub pops: u8,
+    pub base: u8,
 }
 
 pub fn table(text: &str) -> Vec<Test> {
@@ -45,9 +48,16 @@ pub fn table(text: &str) -> Vec<Test> {
                 loads: if f[4] == "-" { Vec::new() } else { f[4].split(',').map(hex).collect() },
                 mem: hex(f[5]),
                 code: hex(f[6]),
+                pops: f[7].parse().unwrap(),
+                base: f[8].parse().unwrap(),
             }
         })
         .collect()
+}
+
+thread_local! {
+    /// Per instruction of the last test's code: busy clocks, memory form, what the microcode did.
+    static FEATURES: std::cell::RefCell<Vec<(u32, u8, u8, Option<super::core::Run>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 const SW_AT: u32 = 200;
@@ -70,7 +80,9 @@ pub fn run(f: &mut I8087, t: &Test, sw0: u16) -> String {
     let mut esc = |f: &mut I8087, m: &mut Ram, op: u8, modrm: u8, ea: Option<u32>| {
         now = now.max(f.busy_until()) + 10;
         f.esc(m, now, op, modrm, ea, 0x1234);
+        f.busy_until() - now
     };
+    FEATURES.with(|v| v.borrow_mut().clear());
     f.sw = (f.sw & !0x4700) | (sw0 & 0x4700);
     esc(f, &mut m, 0xDB, 0xE3, None); // FINIT
     esc(f, &mut m, 0xD9, 0x2E, Some(CW_AT)); // FLDCW
@@ -91,15 +103,18 @@ pub fn run(f: &mut I8087, t: &Test, sw0: u16) -> String {
             }
             0xD8..=0xDF => {
                 let modrm = c[i + 1];
-                if modrm >= 0xC0 {
-                    esc(f, &mut m, c[i], modrm, None);
+                f.micro_last = None;
+                let busy = if modrm >= 0xC0 {
                     i += 2;
+                    esc(f, &mut m, c[i - 2], modrm, None)
                 }
                 else {
                     assert_eq!(modrm & 0xC7, 0x47, "{}", t.id);
-                    esc(f, &mut m, c[i], modrm, Some(c[i + 2] as u32));
                     i += 3;
-                }
+                    esc(f, &mut m, c[i - 3], modrm, Some(c[i - 1] as u32))
+                };
+                let first = if modrm >= 0xC0 { c[i - 2] } else { c[i - 3] };
+                FEATURES.with(|v| v.borrow_mut().push((busy as u32, first, modrm, f.micro_last.map(|l| l.1))));
             }
             b => panic!("{}: byte {:02X} in the test code", t.id, b),
         }
@@ -156,7 +171,21 @@ fn bench_dump() {
         s += &run(&mut f, t, sw0);
         s.push('\n');
     }
-    std::fs::write(out, s).unwrap();
+    std::fs::write(&out, s).unwrap();
+    // the timing features of every test, time-only ones too: id, pops - base, then per
+    // instruction "busy mem kinds..." (kinds - when the microcode did not run it)
+    let mut s = String::new();
+    for t in &tests {
+        run(&mut f, t, sw0);
+        s += &format!("{} {}", t.id, t.pops as i32 - t.base as i32);
+        FEATURES.with(|v| {
+            for (busy, first, modrm, r) in v.borrow().iter() {
+                s += &format!(" | {} {:02X}{:02X} {}", busy, first, modrm, r.map_or("-".to_string(), |r| r.kinds.map(|k| k.to_string()).join(",")));
+            }
+        });
+        s.push('\n');
+    }
+    std::fs::write(format!("{out}.feat"), s).unwrap();
 }
 
 /// Lists micro-instructions FB_LIST=from-to (a tool for reading the ROM).

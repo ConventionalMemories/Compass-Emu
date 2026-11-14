@@ -10,15 +10,16 @@ it when asked to (see below); by default it uses the instruction-level core.
 
 Set the environment variable `FPU_CORE=micro` and supply the ROM (next section). The
 emulator prints "8087: running on the microcode ROM" when it found it. From then on every
-instruction that has a routine in the ROM runs there. Three things stay with the
+instruction that has a routine in the ROM runs there. Two things stay with the
 instruction-level core:
 
 - The control instructions (FINIT, FCLEX, FENI, FDISI, FLDCW, FSTCW, FSTSW, FSTENV,
   FLDENV). The chip does these in hardwired logic; the ROM has no routines for them.
 - FSAVE and FRSTOR. The ROM holds only their loops over the eight registers (entries 675
   and 695), the environment part is hardwired.
-- The time each instruction takes. The busy time still comes from the instruction-level
-  core's tables (see "Timing" below).
+The time an instruction takes comes from the microcode too (see "Timing" below), except
+for the control instructions, FSAVE and FRSTOR, which keep the instruction-level core's
+tables.
 
 If the microcode core meets a micro-instruction the model does not know, that instruction
 is done by the instruction-level core instead (`I8087::micro_faults` counts them; none are
@@ -114,68 +115,84 @@ Run the comparison with `I8087_MICROCODE=/path/8087mc.txt cargo test -p i8087 mi
 - FSQRT is computed bit by bit and rounded once (rounding and precision control); a
   denormal or (in projective mode) infinite operand is invalid.
 
-## Open questions for a real 8087
+## What a real 8087 answered
 
-The microcode reading and the old core differ here, and only a real chip can say:
+8087 Bench (a GRiD-OS test program, 2181 tests in two programs) was run on a real 1101 and
+a real 1137. Its reports are in `crates/lib/i8087/testdata/` (`bench-table.txt` holds the
+tests, `bench-real.txt` the real machines' lines) and the test `bench_real` runs every
+test through the microcode core and compares. Of 1588 real result lines all but 34 come out
+the same (`bench-known.txt` lists those). What the real chip said about the questions the
+microcode reading had left open:
 
-1. Masked overflow while chopping (RC = 11): infinity (microcode reading) or the largest
-   number?
-2. Masked overflow in round-down/round-up giving the largest number: are all 64 fraction
-   bits set even at 24/53-bit precision, and is O flagged?
-3. Underflow at 24/53-bit precision: is the denormal rounded again from the top of the
-   fraction?
-4. Adding a number 64 or more binary places smaller: which rounding bits does the chip keep
-   (assumed: the true guard/round/sticky)?
-5. Denormal operands in FADD/FSUB: the microcode turns them into unnormals with exponent 1
-   and the result stays an unnormal with exponent 1.
-6. FMUL/FDIV results that underflow: the microcode rounds to 64 bits first and then again
-   as a denormal (double rounding, one unit off now and then).
-7. A denormal short or long real as a memory operand of FADD/FSUB/FMUL/FDIV stays an
-   unnormal, and so does the result.
-8. FSCALE with 0 < |ST(1)| < 1 or |ST(1)| >= 2^15 (Intel: undefined): the microcode shifts
-   by a truncated count.
-9. FPREM by zero: the microcode has no test for it and runs the loop with a zero divisor.
-10. FBSTP of a NaN, infinity or too large a number: which bytes are under the FFFF?
-11. The constant ROM's own bits (arctangents and logarithms, 67 bits each): one FPTAN result
-    in 19 is a unit off with computed constants.
-12. Six of the 110 real FPATAN, F2XM1 and FYL2XP1 results are one unit off. FPATAN of
-    exactly 1/2 is the arctangent constant itself, so the chip's constant differs from the
-    computed one in its last bits (see 11); the others may be the same thing or control
-    word 6E44 (F2XM1, before the denominator's subtraction), a no-op in the model.
+1. Masked overflow while chopping gives infinity.
+2. Masked overflow and underflow in round-down and round-up set only the precision flag,
+   not O or U (micro-instruction E402 does nothing in those modes).
+3. A divisor that is not normalized (a denormal, an unnormal, a pseudo-zero) makes FDIV
+   invalid. FPREM by zero is invalid too.
+4. FSCALE adds the exponents in 17 bits. Bit 16 of the sum means underflow, otherwise bit
+   15 (or 7FFF) means overflow.
+5. The chip trusts the tag word and not the register's bits, and a result gets the tag of
+   the temporary register it came from.
+6. FBSTP of a NaN, infinity or too large a number stores the indefinite with FFFF in the
+   sign word.
+7. FLD m80 of a denormal already sets the D flag.
+8. The control word has 13 bits (FFFF reads back as 1FFF). The IR bit of the status word is
+   derived from the flags and masks, it is not stored. The B bit is set as long as an
+   unmasked exception is pending.
+9. FINIT and FSAVE keep the condition bits C3 to C0.
+10. FSTENV's instruction pointer points at the ESC byte (after a segment prefix), and
+    FSTSW and FSAVE do not change the pointers.
+11. Reserved opcodes alias their neighbours: DA C0-FF as D8, DB C0-C7 as D9, DF C8-CF as
+    D9 C8 (FXCH), DF D0-DF as DD D0-DF, D9 D8-DF pops only.
+12. The 8087's interrupt arrives on the 80130's IR6, not on NMI.
+
+Still open:
+
+- The constant ROM's own bits. Two arctangent and five logarithm constants were moved by
+  one or two units in the last place to match the real results (`fit_constants` shows the
+  search). Thirty transcendental lines still differ: most by one unit or in C1, a few far
+  out of the documented range (F2XM1 above 0.5, FPTAN and FPATAN outside their ranges).
+- Control word 6E44 (F2XM1, before the denominator's subtraction) is a no-op in the model.
+- FXAM of an empty register and the registers after power-on show what the chip's
+  register file happened to hold; the model has zeros there.
 
 ## Timing
 
-Not modelled yet: the switch keeps the instruction-level core's clock tables. A first look
-says the microcode can carry the timing. `timing_samples` (an ignored test) prints, for
-ordinary operands of every instruction, the table's clocks next to the number of
-micro-instructions of each kind that ran; a least-squares fit of one cost per kind gives
+The busy time of an instruction is a fixed part for its form plus a cost for every
+micro-instruction that ran, by kind (`micro::KIND_CLOCKS`, `micro::clocks`):
 
 | Kind | Clocks |
 | --- | --- |
-| register transfer | 0.6 |
-| shift | 1.5 |
-| add or subtract | 1.9 |
-| jump (taken or not) | 2.1 |
-| call / return | 1.2 / 1.9 |
-| one step of the multiply loop | 1.2 |
-| one step of the divide or square root loop | 2.0 |
-| word read / written on the bus | 2.3 / 3.8 |
-| fixed, per instruction | 3.2 |
+| register transfer | 1.21 |
+| immediate | 0.16 |
+| shift by a fixed count | 0.93 |
+| shift by a variable count | 0.77 |
+| add or subtract | 1.78 |
+| control | 0.61 |
+| jump taken | 2.18 |
+| jump not taken | 1.82 |
+| call | 2.20 |
+| return | 2.20 |
+| other | 0.71 |
+| one step of the multiply loop | 2.04 |
+| one step of the divide loop | 2.02 |
+| one step of the square root loop | 1.97 |
+| word read on the bus | 3.76 |
+| word written on the bus | 0.98 |
 
-and reproduces the tables within 7.5 % rms over about 100 instruction forms (FPREM left out: its time depends on the operands more than its table entry says). For
-FPTAN, FPATAN and F2XM1, whose table times were fitted to a real 1101 input by input, the
-microcode count follows the measured time with a correlation of 0.99 to 1.00. The costs
-themselves are not physical (a transfer cannot take 0.6 clocks).
+The costs and the fixed parts are a least-squares fit to the clocks 8087 Bench measured on
+a real 1101 for about 1950 tests. They are costs that add up right, not the chip's own
+cycle counts (the fixed part of a memory form is negative because its bus words are
+counted on top). Over the 2068 timed tests the emulator's mean error is 2.6 % (about 2.5
+clocks); with the instruction-level core's tables it was 40 %. The regression itself
+reaches 1.8 %: the rest is how the CPU's WAIT lines up with the end of the busy time.
 
-A second fit, straight to the real 1101's clocks for its 121 dumped FPATAN, F2XM1, FYL2X,
-FYL2XP1 and FSQRT inputs (`timing_real`, also ignored), does worse than the tables: 20
-clocks rms with free costs, 29 with whole clocks per kind (1 for most, 2 for an add, about
-2 a multiply or root step and 1 a divide step), against about 6 for the hand-fitted
-tables. So the count by kind is not the whole story: the time must also depend on what a
-micro-instruction does (how far a shift goes, which loop a step belongs to). Until that
-is understood the tables stay.
+The largest errors left are the control instructions (table times, a few clocks off),
+FCOMPP, the far out-of-range transcendental arguments and FBLD/FBSTP of some values.
 
 ## Not there yet
 
-FSAVE's and FRSTOR's register loops (the rest of both is hardwired), and clocks per
-micro-instruction (see "Timing").
+FSAVE's and FRSTOR's register loops (the rest of both is hardwired) and the control
+instructions' times still come from the instruction-level core. A WAIT while the 8087
+holds BUSY for good (an unmasked exception nobody clears) gives up after a guard count; the
+real machine hangs there until an interrupt handler clears the exception.

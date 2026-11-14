@@ -9,7 +9,9 @@
 //! 113x: a discrete P8254 on the 5 MHz CPU clock (photos of a 1137 and a 1139 board; no
 //! separate timer clock on the 1139). Real 1137 (GRiDProbe 0.0.7 timers): all three count at
 //! 5 MHz, the read-back command works (status bytes B4/B6), a counter stands still (reads
-//! FFFF) until a count is written. Timer 1 counts at full speed but only once timer 0 runs.
+//! FFFF) until a count is written, and a read of the odd port above a counter (09/0B/0D)
+//! steps its LSB/MSB flip-flop too (the board ignores A0; see board.rs). Timer 1 counts at
+//! full speed but only once timer 0 runs.
 //! How the board wires that is not known (a meter check of the 8254's CLK1/GATE1 pins would
 //! tell); this model gates timer 1 with "timer 0 has a count and is counting".
 //!

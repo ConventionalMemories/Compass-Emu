@@ -22,6 +22,10 @@ Each model now has the hardware its real boards carry (from photos of 1101,
   per read on the 113x, status B4 (mode 2) and B6 (mode 3), FFFF before
   loading, read-back ignored on the 1101. Before, every model had all timers at
   5 MHz and timer 1 frozen.
+- The 113x board ignores A0 at the 8254: a byte read at 09/0B/0D also steps
+  that counter's LSB/MSB flip-flop. With it, GRiDBench 2.2's port rows (u20-u27)
+  and timer rows (p30-p52) match the real 1137 (low byte of timers 1 and 2 on
+  every row, FFFF on unloaded counters); 0.9.1 gave counting timers there.
 - Interrupt controller per board: the 80130's quirks (non-specific EOI
   ignored, ports 4/6 not decoded, 0Eh reads FFh) now apply to the 110x and
   112x; the 113x's 8259A + 8254 take the non-specific EOI (assumed), mirror the
@@ -32,8 +36,9 @@ Each model now has the hardware its real boards carry (from photos of 1101,
 - The 8274 already counted from the 5 MHz CPU clock; the photos confirm it (no
   4.032 MHz crystal on any motherboard).
 - The 113x RAM/display timing, refresh and INT fits (from the real 1137) now
-  hang on `GridModel::board_113x()`, and stay as they were. GRiDBench 2.2 on
-  the 1101 and the 1137 gives the same results as 0.9.1.
+  hang on `GridModel::board_113x()`, and stay as they were. GRiDBench 2.2 gives
+  the same timing results as 0.9.1 on the 1101 and 1137; only the timer and
+  port rows changed.
 - gridfrag: FRAG_DUMP=address,length prints memory after the run.
 
 ## 0.9.1

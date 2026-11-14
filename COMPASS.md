@@ -190,7 +190,8 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
   timer 1 counts timer 0's output pulses (GRiD's 32-bit stopwatch chain), timer 2 at 5 MHz;
   they run from power-on, there is no read-back, 0Eh reads FFh. 113x, discrete 8254: all
   three at the 5 MHz CPU clock, read-back command (status B4/B6 as on the real 1137), a
-  counter stands at FFFF until a count is written, 0Eh reads the bus; timer 1 counts only
+  counter stands at FFFF until a count is written, 0Eh reads the bus, A0 is ignored (a read
+  at 09/0B/0D steps the counter's byte flip-flop, as GRiDBench's port rows show on a 1137); timer 1 counts only
   while timer 0 has a count (how the board gates it is not known). Timer 2 is the 8274's
   baud clock on every model, and the 8274 runs from the 5 MHz CPU clock (no 4.032 MHz
   crystal on any motherboard; that one is on the modem, for its TMS99532).

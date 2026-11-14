@@ -2,7 +2,10 @@
 //! status bar, plus the machine setup page, the media manager and the debugger workspace.
 
 mod debugger;
+mod led;
 mod media;
+mod osk;
+mod project;
 mod setup;
 
 use std::{
@@ -88,7 +91,18 @@ pub struct App {
     show_media: bool,
     show_keys: bool,
     show_about: bool,
+    /// The 2101 front panel window.
+    show_panel: bool,
+    /// The on-screen Compass keyboard.
+    osk: osk::Osk,
+    /// EL panel look: glow, pixel gaps and a short afterglow.
+    el_look: bool,
+    /// Afterglow brightness of each pixel (EL panel look).
+    el_glow: Vec<f32>,
+    tex_glow: Option<egui::TextureHandle>,
+    clipboard: Option<arboard::Clipboard>,
     media: media::MediaPage,
+    pub(crate) project: project::ProjectPage,
     dbg: debugger::DebugPage,
     /// Short message shown in the status bar for a few seconds.
     flash: Option<(String, Instant)>,
@@ -104,6 +118,10 @@ pub struct App {
     pub(crate) dbg_once_ir3: bool,
     /// Last time each GPIB drive was busy (activity lights).
     drive_seen: Vec<Instant>,
+    /// Last look at the PC folder for new files.
+    last_sync: Instant,
+    /// Last time GRiD used the PC folder drive.
+    folder_used: Instant,
     /// Lines of messages (what the console windows printed in 0.4).
     pub(crate) log: Vec<String>,
     #[cfg(windows)]
@@ -151,7 +169,14 @@ impl App {
             show_media: false,
             show_keys: false,
             show_about: false,
+            show_panel: false,
+            osk: osk::Osk::default(),
+            el_look: prefs.el_look,
+            el_glow: vec![],
+            tex_glow: None,
+            clipboard: None,
             media: media::MediaPage::default(),
+            project: project::ProjectPage::default(),
             dbg: debugger::DebugPage::default(),
             flash: None,
             snapshot: None,
@@ -161,6 +186,8 @@ impl App {
             mods: 0,
             fkeys: vec![],
             drive_seen: vec![],
+            last_sync: Instant::now(),
+            folder_used: Instant::now(),
             dbg_once_ir3: false,
             log: vec![],
             #[cfg(windows)]
@@ -266,6 +293,68 @@ impl App {
         match display::save_png(&name, &pix, w, h) {
             Ok(_) => self.say(format!("saved {name}")),
             Err(e) => self.say(e),
+        }
+    }
+
+    /// The system clipboard (kept open: on Linux a copy lasts only while it is).
+    fn clipboard(&mut self) -> Result<&mut arboard::Clipboard, arboard::Error> {
+        if self.clipboard.is_none() {
+            self.clipboard = Some(arboard::Clipboard::new()?);
+        }
+        Ok(self.clipboard.as_mut().unwrap())
+    }
+
+    /// Edit > Paste text: type the clipboard's text on the Compass keyboard.
+    fn paste(&mut self) {
+        let text = self.clipboard().and_then(|c| c.get_text());
+        let Some(r) = &mut self.run else { return };
+        match text {
+            Ok(t) => {
+                let skipped = r.paste_text(&t);
+                let n = r.pasting();
+                let chars = if n == 1 { "character" } else { "characters" };
+                if skipped > 0 {
+                    self.say(format!("typing {n} {chars} ({skipped} have no Compass key and are left out)"));
+                }
+                else {
+                    self.say(format!("typing {n} {chars}"));
+                }
+            }
+            Err(e) => self.say(format!("no text on the clipboard ({e})")),
+        }
+    }
+
+    /// Edit > Copy screen: the Compass screen to the clipboard as a picture.
+    fn copy_screen(&mut self) {
+        let Some(s) = &self.sess else { return };
+        let (w, h) = s.m.screen_size();
+        let buf = display::colorize(&s.m.render_display(), self.colour, display::DARK);
+        let bytes: Vec<u8> = buf.iter().flat_map(|&c| [(c >> 16) as u8, (c >> 8) as u8, c as u8, 0xFF]).collect();
+        let img = arboard::ImageData { width: w, height: h, bytes: bytes.into() };
+        match self.clipboard().and_then(|c| c.set_image(img)) {
+            Ok(_) => self.say(format!("screen copied ({w} x {h})")),
+            Err(e) => self.say(format!("could not copy the screen: {e}")),
+        }
+    }
+
+    fn set_rate(&mut self, rate: f64) {
+        if let (Some(s), Some(r)) = (&self.sess, &mut self.run) {
+            r.set_rate(&s.m, rate);
+        }
+    }
+
+    /// The speed slider (percent of a real Compass).
+    fn speed_slider(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = &self.run else { return };
+        let mut pct = (r.rate * 100.0).round();
+        let resp = ui
+            .add(egui::Slider::new(&mut pct, 10.0..=400.0).logarithmic(true).suffix("%").integer().text("speed"))
+            .on_hover_text("real-time speed, 100% = a real Compass (double-click: back to 100%)");
+        if resp.double_clicked() {
+            pct = 100.0;
+        }
+        if (pct / 100.0 - r.rate).abs() > 1e-6 {
+            self.set_rate(pct / 100.0);
         }
     }
 
@@ -470,6 +559,7 @@ impl App {
         p.colour = self.colour;
         p.show_status = self.show_status;
         p.show_toolbar = self.show_toolbar;
+        p.el_look = self.el_look;
         self.setup.set_prefs(p);
     }
 
@@ -486,6 +576,23 @@ impl App {
                 }
             });
         });
+    }
+
+    /// About once a second, while GRiD has left the PC folder drive alone for two seconds,
+    /// bring in files added or changed in the folder.
+    fn folder_sync(&mut self) {
+        let Some(s) = &mut self.sess else { return };
+        let Some(i) = s.media.iter().position(|m| matches!(m, Media::Folder(_))) else { return };
+        if s.m.board().gpib.drives.get(i).is_some_and(|d| d.busy()) {
+            self.folder_used = Instant::now();
+        }
+        if self.last_sync.elapsed() < Duration::from_secs(1) || self.folder_used.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_sync = Instant::now();
+        for l in s.sync_folder() {
+            self.say(l);
+        }
     }
 
     /// The keys of this frame to the Compass.
@@ -522,6 +629,13 @@ impl App {
         #[cfg(windows)]
         let _ = &self.mods;
         self.taps.clear();
+        // the on-screen keyboard
+        let om = self.osk.mods();
+        for (p, pm) in self.osk.taps.drain(..) {
+            tapped.push((p, pm | mods));
+        }
+        down.extend(self.osk.down.iter().copied());
+        mods |= om;
         r.set_keys(&mut s.m, &down, &tapped, mods);
     }
 
@@ -562,6 +676,7 @@ impl App {
                     if ui.checkbox(&mut turbo, "Turbo  (F12)").clicked() {
                         self.toggle_turbo();
                     }
+                    self.speed_slider(ui);
                     if let Some(s) = &mut self.sess {
                         let mut fast = s.m.is_fast();
                         if ui.checkbox(&mut fast, "Fast CPU core (approximate timing)").changed() {
@@ -586,6 +701,21 @@ impl App {
                 ui.separator();
                 if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui.add_enabled(on, egui::Button::new("Paste text")).on_hover_text("type the clipboard's text on the Compass keyboard").clicked() {
+                    self.paste();
+                }
+                let left = self.run.as_ref().map(|r| r.pasting()).unwrap_or(0);
+                let label = if left > 0 { format!("Stop pasting ({left} left)") } else { "Stop pasting".to_string() };
+                if ui.add_enabled(left > 0, egui::Button::new(label)).clicked() {
+                    if let Some(r) = &mut self.run {
+                        r.cancel_paste();
+                    }
+                }
+                if ui.add_enabled(on, egui::Button::new("Copy screen")).on_hover_text("the Compass screen to the clipboard as a picture").clicked() {
+                    self.copy_screen();
                 }
             });
             ui.menu_button("Media", |ui| {
@@ -620,6 +750,25 @@ impl App {
                     }
                 }
             });
+            ui.menu_button("Project", |ui| {
+                if ui.button("Project window...").clicked() {
+                    self.project.show = true;
+                }
+                if ui.button("Open project folder...").clicked() {
+                    project::pick_project(self);
+                }
+                ui.separator();
+                let busy = self.project.building();
+                if ui.add_enabled(!busy, egui::Button::new("Build")).clicked() {
+                    project::start(self, false, false);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Build and run")).clicked() {
+                    project::start(self, true, false);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Debug build")).clicked() {
+                    project::start(self, false, true);
+                }
+            });
             ui.menu_button("View", |ui| {
                 ui.radio_value(&mut self.fit, Fit::Fit, "Fill the window");
                 ui.radio_value(&mut self.fit, Fit::Integer, "Whole-pixel scaling");
@@ -627,8 +776,11 @@ impl App {
                 for (name, c) in COLOURS {
                     ui.radio_value(&mut self.colour, *c, *name);
                 }
+                ui.checkbox(&mut self.el_look, "EL panel look").on_hover_text("glow, gaps between the pixels and a short afterglow");
                 ui.separator();
                 ui.checkbox(&mut self.overlay, "Demo tools overlay  (F10)");
+                ui.checkbox(&mut self.osk.show, "Compass keyboard (on screen)");
+                ui.checkbox(&mut self.show_panel, "2101 front panel");
                 ui.checkbox(&mut self.show_toolbar, "Toolbar");
                 ui.checkbox(&mut self.show_status, "Status bar");
                 ui.separator();
@@ -692,7 +844,17 @@ impl App {
             if ui.button("Screenshot (F11)").clicked() {
                 self.screenshot();
             }
+            if ui.button("Paste").on_hover_text("Edit > Paste text").clicked() {
+                self.paste();
+            }
+            if ui.selectable_label(self.osk.show, "Keyboard").on_hover_text("the on-screen Compass keyboard").clicked() {
+                self.osk.show = !self.osk.show;
+            }
             ui.separator();
+            if !turbo {
+                self.speed_slider(ui);
+                ui.separator();
+            }
             if ui.selectable_label(self.show_media, "Media").clicked() {
                 self.show_media = !self.show_media;
             }
@@ -701,6 +863,11 @@ impl App {
             }
             if ui.selectable_label(self.overlay, "Overlay (F10)").clicked() {
                 self.overlay = !self.overlay;
+            }
+            ui.separator();
+            let busy = self.project.building();
+            if ui.add_enabled(!busy, egui::Button::new(if busy { "Building..." } else { "Build and run" })).on_hover_text("Project > Build and run").clicked() {
+                project::start(self, true, false);
             }
         });
     }
@@ -720,6 +887,12 @@ impl App {
             }
             else {
                 ui.label(format!("Speed {:.0}%", r.speed * 100.0));
+                if (r.rate - 1.0).abs() > 1e-6 && !r.turbo {
+                    ui.label(RichText::new(format!("(set to {:.0}%)", r.rate * 100.0)).weak());
+                }
+            }
+            if r.pasting() > 0 {
+                ui.label(RichText::new(format!("Pasting ({} left)", r.pasting())).color(Color32::from_rgb(0xFF, 0xC9, 0x4D)));
             }
             if r.turbo {
                 ui.label(RichText::new("Turbo").color(Color32::from_rgb(0xFF, 0xC9, 0x4D)));
@@ -752,10 +925,16 @@ impl App {
                     4.5,
                     if lit { Color32::from_rgb(0xFF, 0xB0, 0x00) } else { Color32::from_rgb(0x4A, 0x4A, 0x52) },
                 );
-                ui.label(if d.dirty { format!("{name} *") } else { name.to_string() });
+                let low = d.lle.is_some() || d.lle2101.is_some() || (d.kind == DriveKind::Floppy2101 && d.served);
+                let level = if low { "low level: the drive's own firmware runs" } else { "protocol model (no firmware)" };
+                ui.label(if d.dirty { format!("{name} *") } else { name.to_string() })
+                    .on_hover_text(format!("{level}{}", if d.dirty { "\n* = changes not written to the image yet" } else { "" }));
+                ui.label(RichText::new(if low { "LL" } else { "P" }).small().weak()).on_hover_text(level);
                 if let Some(t) = d.display() {
                     // The low-level 2101's four-character display.
-                    ui.label(RichText::new(format!("[{t}]")).monospace()).on_hover_text("2101 display");
+                    if led::display(ui, &t, 2.0).on_hover_text("2101 display (View > 2101 front panel for a bigger one)").clicked() {
+                        self.show_panel = true;
+                    }
                 }
             }
             if let Some(l) = &s.serial {
@@ -790,7 +969,19 @@ impl App {
         let Some(s) = &mut self.sess else { return false };
         let (w, h) = s.m.screen_size();
         let pix = s.m.render_display();
-        let mut buf = display::colorize(&pix, self.colour, display::DARK);
+        let mut buf = if self.el_look {
+            // EL panel look: a lit pixel fades out over a few frames instead of at once.
+            if self.el_glow.len() != pix.len() {
+                self.el_glow = vec![0.0; pix.len()];
+            }
+            for (g, &p) in self.el_glow.iter_mut().zip(pix.iter()) {
+                *g = if p != 0 { 1.0 } else { *g * 0.4 };
+            }
+            self.el_glow.iter().map(|&g| mix(display::DARK, self.colour, g)).collect()
+        }
+        else {
+            display::colorize(&pix, self.colour, display::DARK)
+        };
         let b = s.m.board();
         if self.overlay {
             display::draw_overlay(&mut buf, w, h, &b.marks, b.frame_clocks());
@@ -827,8 +1018,63 @@ impl App {
         if !self.fullscreen {
             ui.painter().rect_filled(rect.expand(10.0), 8.0, Color32::from_rgb(0x1A, 0x17, 0x12));
         }
-        ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+        if self.el_look {
+            self.el_overlay(ui, rect, w, h, k);
+        }
         resp.double_clicked()
+    }
+
+    /// EL panel look on top of the screen: a soft glow around lit pixels and dark gaps
+    /// between the pixels (when they are big enough to show).
+    fn el_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect, w: usize, h: usize, k: f32) {
+        let p = ui.painter_at(rect);
+        // glow: the afterglow image blurred (3 x 3 box, twice) and laid over softly
+        let mut g = self.el_glow.clone();
+        for _ in 0..2 {
+            g = blur(&g, w, h);
+        }
+        let (dr, dg, db) = rgb(display::DARK);
+        let (lr, lg, lb) = rgb(self.colour);
+        let img = egui::ColorImage::new(
+            [w, h],
+            g.iter()
+                .map(|&v| {
+                    let a = (v.min(1.0) * 110.0) as u8;
+                    let f = |d: u8, l: u8| (d as f32 + (l as f32 - d as f32) * 0.9) as u8;
+                    Color32::from_rgba_unmultiplied(f(dr, lr), f(dg, lg), f(db, lb), a)
+                })
+                .collect(),
+        );
+        let tex = match &mut self.tex_glow {
+            Some(t) if t.size() == [w, h] => {
+                t.set(img, egui::TextureOptions::LINEAR);
+                t.clone()
+            }
+            _ => {
+                let t = ui.ctx().load_texture("compass-glow", img, egui::TextureOptions::LINEAR);
+                self.tex_glow = Some(t.clone());
+                t
+            }
+        };
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        p.image(tex.id(), rect, uv, Color32::WHITE);
+        // gaps between the pixels, on whole screen pixels so they stay sharp
+        if k >= 2.5 {
+            let ppp = ui.ctx().pixels_per_point();
+            let t = ((k * ppp * 0.2).round().max(1.0)) / ppp;
+            let c = Color32::from_rgba_unmultiplied(0x0A, 0x05, 0x00, 200);
+            let snap = |v: f32| (v * ppp).round() / ppp;
+            for x in 1..w {
+                let x = snap(rect.left() + x as f32 * k);
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(x - t, rect.top()), egui::pos2(x, rect.bottom())), 0.0, c);
+            }
+            for y in 1..h {
+                let y = snap(rect.top() + y as f32 * k);
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), y - t), egui::pos2(rect.right(), y)), 0.0, c);
+            }
+        }
     }
 
     fn keys_window(&mut self, ctx: &egui::Context) {
@@ -878,6 +1124,44 @@ impl App {
         });
     }
 
+    /// The 2101 box's front: its LED display and the drive lights.
+    fn panel_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_panel;
+        egui::Window::new("2101 front panel").open(&mut open).resizable(false).show(ctx, |ui| {
+            let Some(s) = &self.sess else {
+                ui.label("Powered off");
+                return;
+            };
+            let drives = &s.m.board().gpib.drives;
+            let Some(hd) = drives.iter().find(|d| d.kind == DriveKind::Hdd2101 && !d.image.is_empty()) else {
+                ui.label("This machine has no 2101 hard disk.");
+                return;
+            };
+            match hd.display() {
+                Some(t) => {
+                    egui::Frame::new().fill(Color32::from_rgb(0x16, 0x15, 0x14)).inner_margin(14.0).corner_radius(6.0).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            led::display(ui, &t, 7.0);
+                            ui.add_space(24.0);
+                            ui.label(RichText::new("DISC SYSTEM 2101").color(Color32::from_rgb(0xD8, 0xD0, 0xB8)).strong());
+                        });
+                    });
+                }
+                None => {
+                    ui.label("The display only works with the low-level 2101 (its firmware ROM, see Machine setup > ROMs).");
+                }
+            }
+            ui.horizontal(|ui| {
+                for d in drives.iter().filter(|d| matches!(d.kind, DriveKind::Hdd2101 | DriveKind::Floppy2101)) {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 5.0, if d.busy() { Color32::from_rgb(0xFF, 0xB0, 0x00) } else { Color32::from_rgb(0x4A, 0x4A, 0x52) });
+                    ui.label(if d.kind == DriveKind::Hdd2101 { "hard disk" } else { "floppy" });
+                }
+            });
+        });
+        self.show_panel = open;
+    }
+
     fn about_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("About Compass-Emu").open(&mut self.show_about).resizable(false).show(ctx, |ui| {
             ui.heading(format!("Compass-Emu {VERSION}"));
@@ -892,6 +1176,41 @@ impl App {
 /// PC key (by position) -> (column, bit) in the Compass matrix; the same keys as the
 /// classic window.
 #[cfg_attr(windows, allow(dead_code))]
+fn rgb(c: u32) -> (u8, u8, u8) {
+    ((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+/// Colour `t` of the way from `a` to `b` (0xRRGGBB).
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let (ar, ag, ab) = rgb(a);
+    let (br, bg, bb) = rgb(b);
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u32;
+    f(ar, br) << 16 | f(ag, bg) << 8 | f(ab, bb)
+}
+
+/// 3 x 3 box blur.
+fn blur(src: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut row = vec![0.0f32; src.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let l = if x > 0 { src[i - 1] } else { 0.0 };
+            let r = if x + 1 < w { src[i + 1] } else { 0.0 };
+            row[i] = (l + src[i] + r) / 3.0;
+        }
+    }
+    let mut out = vec![0.0f32; src.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let u = if y > 0 { row[i - w] } else { 0.0 };
+            let d = if y + 1 < h { row[i + w] } else { 0.0 };
+            out[i] = (u + row[i] + d) / 3.0;
+        }
+    }
+    out
+}
+
 fn matrix_pos(k: Key) -> Option<(usize, u8)> {
     let c = match k {
         Key::A => 'a', Key::B => 'b', Key::C => 'c', Key::D => 'd', Key::E => 'e', Key::F => 'f',
@@ -964,6 +1283,7 @@ impl eframe::App for App {
         self.owns_keys = !ctx.egui_wants_keyboard_input();
         self.handle_drops();
         self.handle_fkeys();
+        project::poll(self);
         self.feed_keys();
         if let (Some(s), Some(r)) = (&mut self.sess, &mut self.run) {
             if let Some(msg) = r.run_frame(&mut s.m) {
@@ -983,6 +1303,7 @@ impl eframe::App for App {
             if let Some(s) = &mut self.sess {
                 s.pump_io();
             }
+            self.folder_sync();
         }
         let title = match &self.sess {
             Some(s) => format!("Compass-Emu {VERSION} - GRiD Compass {}", s.m.model.name()),
@@ -1042,6 +1363,18 @@ impl eframe::App for App {
         }
         self.keys_window(&ctx);
         self.about_window(&ctx);
+        if self.show_panel {
+            self.panel_window(&ctx);
+        }
+        if self.project.show {
+            project::window(self, &ctx);
+        }
+        if self.osk.show && self.sess.is_some() {
+            self.osk.window(&ctx);
+        }
+        if self.project.building() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if self.sess.is_some() {
             ctx.request_repaint();
         }

@@ -49,6 +49,13 @@ pub struct GuiPrefs {
     pub recent_floppies: Vec<String>,
     /// Hard disk images used lately, newest first.
     pub recent_hds: Vec<String>,
+    /// Project > the project folder being built.
+    pub project: String,
+    pub recent_projects: Vec<String>,
+    /// Development disk for builds ("" = the machine's hard disk).
+    pub build_disk: String,
+    /// View > EL panel look.
+    pub el_look: bool,
 }
 
 impl Default for GuiPrefs {
@@ -62,6 +69,10 @@ impl Default for GuiPrefs {
             show_toolbar: true,
             recent_floppies: vec![],
             recent_hds: vec![],
+            project: String::new(),
+            recent_projects: vec![],
+            build_disk: String::new(),
+            el_look: false,
         }
     }
 }
@@ -181,6 +192,103 @@ impl SetupPage {
     }
 }
 
+/// Emulation level choice for a drive. `lle` = its firmware is there.
+fn level_row(ui: &mut egui::Ui, label: &str, level: &mut String, lle: bool) -> bool {
+    let mut ch = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("{label}:"));
+        ch |= ui
+            .radio_value(level, String::new(), "Low level")
+            .on_hover_text("runs the drive's own firmware on its own CPU: real timing and behaviour (needs the firmware ROM)")
+            .changed();
+        ch |= ui.radio_value(level, "protocol".to_string(), "Protocol model").on_hover_text("answers GRiD's disk commands directly: no firmware needed").changed();
+    });
+    if level.is_empty() && !lle {
+        ui.label(RichText::new("  no firmware ROM: the protocol model runs (see ROMs below)").weak().small());
+    }
+    ch
+}
+
+const OK: egui::Color32 = egui::Color32::from_rgb(0x8F, 0xD1, 0x8F);
+const BAD: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x8A, 0x70);
+
+/// One ROM: its role, where it comes from (or that it is missing) and its own file field.
+fn rom_row(ui: &mut egui::Ui, role: &str, own: &mut String, used: Option<&Path>, needed: bool, missing_note: &str) -> bool {
+    ui.label(RichText::new(role).strong());
+    match used {
+        Some(p) if p.exists() => ui.colored_label(OK, format!("{}", p.display())),
+        Some(p) => ui.colored_label(BAD, format!("missing: {}", p.display())),
+        None if needed => ui.colored_label(BAD, missing_note),
+        None => ui.label(RichText::new(missing_note).weak()),
+    };
+    let ch = path_row_recent(ui, "", own, false, &[], &[]);
+    ui.end_row();
+    ch
+}
+
+/// The ROMs card: the ROM folder, every ROM the machine uses and where it was found, a file
+/// field for each, and Import.
+fn roms_card(ui: &mut egui::Ui, c: &mut MachineConfig, default_roms: &Path, import: &mut bool) -> bool {
+    let mut ch = false;
+    ui.horizontal(|ui| {
+        ui.label("ROMs are looked for in the ROM folder under their usual names; a file set below is used instead.");
+    });
+    ch |= path_row(ui, "ROM folder (empty = roms next to compass.exe)", &mut c.rom_dir, true, &[]);
+    ui.horizontal(|ui| {
+        if ui.button("Import ROMs...").on_hover_text("pick a folder (a MAME roms folder, your own dumps, zip files in it): every Compass ROM found there by its checksum is copied into the ROM folder under the right name").clicked() {
+            *import = true;
+        }
+        ui.label(RichText::new(format!("copies into {}", c.rom_dir(default_roms).display())).weak().small());
+    });
+    ui.add_space(4.0);
+    let dir = c.rom_dir(default_roms);
+    let found = grid_core::roms::find(c.model(), &dir);
+    let dr = c.drive_roms(default_roms);
+    egui::Grid::new("roms").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
+        // boot PROM: one combined file, else the even/odd pair from the folder
+        let prom_used: PathBuf = if !c.prom.trim().is_empty() {
+            PathBuf::from(c.prom.trim())
+        }
+        else if !found.prom_even.exists() {
+            found.prom_even.clone()
+        }
+        else {
+            found.prom_odd.clone()
+        };
+        ui.label(RichText::new("Boot PROM").strong());
+        if c.prom.trim().is_empty() && found.prom_even.exists() && found.prom_odd.exists() {
+            ui.colored_label(OK, format!("{} + {}", file_name(&found.prom_even), file_name(&found.prom_odd)));
+        }
+        else if prom_used.exists() {
+            ui.colored_label(OK, format!("{}", prom_used.display()));
+        }
+        else {
+            ui.colored_label(BAD, format!("missing: {}", prom_used.display()));
+        }
+        ch |= path_row_recent(ui, "", &mut c.prom, false, &[], &[]);
+        ui.end_row();
+        let kbd = if c.kbd.trim().is_empty() { found.keyboard.clone() } else { PathBuf::from(c.kbd.trim()) };
+        ch |= rom_row(ui, "Keyboard (8741)", &mut c.kbd, Some(&kbd), true, "");
+        let fd_note = if c.fd_level == "protocol" { "not used: protocol model chosen" } else { "not found: the protocol model runs (300237-02.bin)" };
+        let fd_used = if c.fd_level == "protocol" { None } else { dr.fd2102.clone() };
+        ch |= rom_row(ui, "2102 floppy firmware", &mut c.rom_2102, fd_used.as_deref(), false, fd_note);
+        let hd_note = |n: &str| if c.hd_level == "protocol" { "not used: protocol model chosen".to_string() } else { format!("not found ({n})") };
+        let (n20, n10) = (hd_note("300205-05.bin"), hd_note("300205-06.bin"));
+        let (h20, h10) = (dr.hd2101[0].clone(), dr.hd2101[1].clone());
+        ch |= rom_row(ui, "2101 firmware, 20 MB box", &mut c.rom_2101_20, h20.as_deref(), false, &n20);
+        ch |= rom_row(ui, "2101 firmware, 10 MB box", &mut c.rom_2101_10, h10.as_deref(), false, &n10);
+        let mc = crate::session::fpu_microcode(&MachineConfig { fpu_micro: true, ..c.clone() }, &dir).flatten();
+        let mc_note = if c.fpu_micro { "not found: the instruction-level 8087 runs (8087mc.txt)" } else { "optional, only for Computer > 8087 microcode (8087mc.txt)" };
+        ch |= rom_row(ui, "8087 microcode", &mut c.fpu_rom, mc.as_deref(), false, mc_note);
+    });
+    ui.label(RichText::new("The 2101 box takes the firmware that fits the hard disk image's size. The application ROM sockets are below.").weak().small());
+    ch
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+}
+
 /// A path field with a Browse button.
 fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, filters: &[&str]) -> bool {
     path_row_recent(ui, label, value, folder, filters, &[])
@@ -189,7 +297,9 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, fi
 /// A path field with Browse, and a Recent menu when the list has entries.
 fn path_row_recent(ui: &mut egui::Ui, label: &str, value: &mut String, folder: bool, filters: &[&str], recent: &[String]) -> bool {
     let mut changed = false;
-    ui.label(label);
+    if !label.is_empty() {
+        ui.label(label);
+    }
     ui.horizontal(|ui| {
         let extra = if recent.is_empty() { 0.0 } else { 70.0 };
         let w = (ui.available_width() - extra - if value.is_empty() { 80.0 } else { 140.0 }).max(120.0);
@@ -282,6 +392,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             let sel = sp.data.selected;
             let c = &mut sp.data.profiles[sel];
             let mut ch = false;
+            let mut import = false;
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label("Name");
@@ -316,38 +427,6 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                         .checkbox(&mut c.fpu_micro, "Run on the 8087's own microcode ROM (you supply the ROM)")
                         .on_hover_text("slower, closer to the real chip; see docs/8087-microcode.md. Off: the instruction-level 8087")
                         .changed();
-                    if c.fpu_micro {
-                        ch |= path_row(ui, "Microcode ROM file (optional)", &mut c.fpu_rom, false, &["txt", "bin"]);
-                        match crate::session::fpu_microcode(c, &c.rom_dir(&default_roms)) {
-                            Some(Some(p)) if p.exists() => {
-                                ui.colored_label(egui::Color32::from_rgb(0x8F, 0xD1, 0x8F), format!("Microcode ROM: {}", p.display()));
-                            }
-                            Some(Some(p)) => {
-                                ui.colored_label(egui::Color32::from_rgb(0xFF, 0x8A, 0x70), format!("Not found: {}", p.display()));
-                            }
-                            _ => {
-                                ui.label(RichText::new("No 8087mc.txt or 8087mc.bin in the ROM folder; I8087_MICROCODE or roms/ is tried, else the instruction-level 8087 runs").weak());
-                            }
-                        }
-                    }
-                    ch |= path_row(ui, "ROM folder", &mut c.rom_dir, true, &[]);
-                    let roms = grid_core::roms::find(c.model(), &c.rom_dir(&default_roms));
-                    let missing: Vec<String> = [&roms.prom_even, &roms.prom_odd, &roms.keyboard]
-                        .iter()
-                        .filter(|p| !p.exists())
-                        .map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
-                        .collect();
-                    if c.prom.is_empty() && c.prom_even.is_empty() && !missing.is_empty() {
-                        ui.colored_label(egui::Color32::from_rgb(0xFF, 0x8A, 0x70), format!("Missing in the ROM folder: {}", missing.join(", ")));
-                    }
-                    else if let Some(n) = &roms.note {
-                        ui.label(RichText::new(n).weak());
-                    }
-                    else {
-                        ui.colored_label(egui::Color32::from_rgb(0x8F, 0xD1, 0x8F), "Boot PROM and keyboard firmware found");
-                    }
-                    ch |= path_row(ui, "Boot PROM (one 16K file, optional)", &mut c.prom, false, &[]);
-                    ch |= path_row(ui, "Keyboard firmware (optional)", &mut c.kbd, false, &[]);
                 });
                 let col2 = match b {
                     Some(b) => b,
@@ -361,7 +440,15 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     ch |= path_row(ui, "Bubble memory image (made if missing)", &mut c.bubble, false, &[]);
                     ui.label("Disks");
                     ch |= ui.checkbox(&mut c.readonly, "Never write changes back to the image files").changed();
+                    // firmware there, whatever level is picked
+                    let dr = MachineConfig { hd_level: String::new(), fd_level: String::new(), ..c.clone() }.drive_roms(&default_roms);
+                    ch |= level_row(ui, "2101 box (hard disk + its floppy)", &mut c.hd_level, dr.hd2101.iter().any(|r| r.is_some()));
+                    ch |= level_row(ui, "2102 floppy", &mut c.fd_level, dr.fd2102.is_some());
                 });
+            });
+            ui.add_space(6.0);
+            card(ui, "ROMs", |ui| {
+                ch |= roms_card(ui, c, &default_roms, &mut import);
             });
             ui.add_space(6.0);
             ui.columns(cols, |cols| {
@@ -402,6 +489,13 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
             });
+            if import {
+                let dest = c.rom_dir(&default_roms);
+                if let Some(src) = rfd::FileDialog::new().set_title("Folder with the ROMs (a MAME roms folder, your dumps...)").pick_folder() {
+                    let log = crate::romimport::import(&src, &dest);
+                    sp.message = Some(log.join("\n"));
+                }
+            }
             if ch {
                 sp.dirty = true;
             }

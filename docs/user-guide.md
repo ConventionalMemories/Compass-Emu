@@ -13,7 +13,7 @@ switched to the 11xx or 113x build with gridmodel.py. Your MAME disk is never ch
 
 ## The window
 
-The emulator now has menus (Machine, Media, View, Debug, Help), a toolbar and a
+The emulator now has menus (Machine, Edit, Media, Project, View, Debug, Help), a toolbar and a
 status bar with the speed and a light for each drive.
 - Started from a .bat (or with machine options on the command line) the machine
 powers on right away. Started on its own (double-click compass.exe) it opens
@@ -46,6 +46,20 @@ beside the hard disk and floppy fields on the setup page.
 - .IMD floppy files (ImageDisk) work wherever a floppy image does: the
 emulator uses the .img with the same name beside it, and makes that .img
 from the .IMD the first time. Changes go to the .img; the .IMD stays as it was.
+- Edit: Paste text (types the clipboard's text on the Compass keyboard) and
+Copy screen (the Compass screen to the clipboard as a picture).
+- Project: build a GRiD program from a project folder on a development disk
+and run it, inside compass.exe (see Build in the window below).
+- View also has the EL panel look (glow, pixel gaps, afterglow), the on-screen
+Compass keyboard and the 2101 front panel (its LED display and drive lights;
+the small display in the status bar opens it too).
+- Toolbar: the speed slider (10 % to 400 % of a real Compass, double-click for
+100 %), Paste, the on-screen keyboard and Build and run.
+- Setup page, ROMs: every ROM the profile uses, the file found and a field to
+pick another; Import ROMs... copies GRiD ROMs from a folder or zip, known by
+checksum, under the names the emulator looks for. Drives: Low level (the
+drive's own firmware) or Protocol model for the 2101 box and the 2102. The
+status bar shows LL or P beside each drive.
 - Help > Keyboard map: which PC key is which Compass key.
 - Debug: the debugger workspace (see Demo tools) and a Chips window
 (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
@@ -102,6 +116,14 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            else I8087_MICROCODE or roms\. Without the ROM the instruction-level
            8087 runs. Also on the setup page (Computer, 8087).
 --fpu-rom F  the same, with that microcode ROM file.
+--rom-2102 F, --rom-2101 F (20 MB box), --rom-2101-10 F (10 MB box)
+           drive firmware files other than the ones in the ROM folder.
+--2101-protocol, --2102-protocol  the protocol model for that drive even when
+           its firmware is there.
+compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug] [--exact]
+           build a GRiD program (as Project > Build).
+compass import-roms SOURCE [ROMFOLDER]  copy GRiD ROMs found in a folder or zip
+           (known by checksum) into the ROM folder under the emulator's names.
 --classic  the plain window of 0.4 (no menus); --scale only applies there.
 --symbols  program symbols for the debugger: a debug build's project folder.
 --no-catch crash catcher off (see Program symbols and the crash catcher).
@@ -121,6 +143,24 @@ without it the protocol model answers as before.
 box), the 2101's own firmware. With it the 2101 runs low-level (see CHANGELOG
 0.8.0); without it the protocol model answers as before.
 ```
+
+## Build in the window
+
+Project > Project window: pick the project folder (NAME.pas, NAME.asm and the
+other sources, as for build.bat) and a development disk (empty = the machine's
+hard disk; the disk needs Pascal~Run~ and DevelopmentExecutive~Run~). Build,
+Build and run, Debug build. The build runs inside compass.exe (no Python) on a
+hidden Compass: an 1129, or an 1139 when the disk has the 113x build of
+GRiD-OS, with the fast core, while your machine keeps running. The first build
+of a disk boots it (about a minute) and keeps that state in states\ next to
+compass.exe; later builds take a few seconds. Results go to the project folder:
+NAME.run, NAME.lst (and NAME.asm.lst), screen.png, output\ for other new files;
+a debug build adds the .obj and .map files for Load program symbols. FATAL ERROR
+9010 or 9011 means the development disk is full.
+Build and run copies NAME~Run~ into the running machine's PC folder drive: files
+added or changed in the PC folder show up while the machine runs (once the GRiD
+has left the drive alone for two seconds). The same from a command prompt:
+compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug] [--exact]
 
 ## Build mode (replaces MAME for build.bat)
 
@@ -155,8 +195,11 @@ volume 'PC Folder' on the Floppy Disk device. Files in the folder are files on
 the drive, and sub-folders are subjects (one level deep, as on GRiD).
 The folder is read when the emulator starts. When you close the window, every
 file GRiD made or changed is written to the folder, and every file erased on
-GRiD is deleted from it. Changes made on the PC while the emulator runs are
-seen only at the next start.
+GRiD is deleted from it. Files added or changed on the PC while the emulator
+runs show up on the drive within a few seconds (once GRiD has left the drive
+alone for two seconds; a file GRiD changed too keeps GRiD's version). Files
+deleted on the PC stay on the drive until the next start. The plain window
+(--classic) reads the folder only at the start.
 Names: a PC file like "hello.pas~Text~" keeps its GRiD kind. A file without
 a kind, like "hello.pas", shows up as "hello.pas~Text~" with CR LF line
 ends, and goes back to "hello.pas". Characters Windows can't have in a file

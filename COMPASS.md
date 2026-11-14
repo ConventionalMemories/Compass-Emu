@@ -13,9 +13,15 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, drag and drop, recent disks, full screen and saved view settings, media
   manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
-  debugger workspace, chips window); machine building in `session.rs`, real-time pacing and
-  keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the fallback
-  when the GUI can't start).
+  debugger workspace, chips window, ROMs card and per-drive emulation level in `setup.rs`, the
+  2101 LED display in `led.rs`, the on-screen keyboard in `osk.rs`, the Project window in
+  `project.rs`); machine building in `session.rs`, real-time pacing, the speed setting, pasted
+  text and keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the
+  fallback when the GUI can't start).
+- Builds inside compass.exe (`src/build.rs`, `compass build`): the gridbuild.py flow on a hidden
+  1129/1139 with the fast core, booted state cached per disk under `states/`. ROM import by
+  CRC-32 (`src/romimport.rs`, `compass import-roms`). The PC folder drive takes in files added
+  or changed on the PC while running (`hostdir::HostDir::sync_in`).
 - ImageDisk floppies (`src/imd.rs`): an .IMD is used through the .img beside it, made from it
   when missing.
 - Debugger (`grid_core::debug`): breakpoints, watches, profiler, call stack (BP chain checked

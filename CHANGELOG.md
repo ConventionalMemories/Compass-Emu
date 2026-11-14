@@ -24,6 +24,52 @@ GUI for everyday use:
 - Help > Keyboard map lists every Compass key and its PC key, and the
   emulator keys.
 
+Machine setup, drives and keys:
+- ROMs card on the setup page, per profile: each ROM the machine uses (boot PROM,
+  keyboard 8741, 2102 firmware, 2101 firmware for the 20 MB and the 10 MB box,
+  8087 microcode) with the file found and a field to pick another file. "Import
+  ROMs..." takes a folder (zips inside it too), knows the GRiD ROMs by checksum
+  whatever their file names, and copies them into the profile's ROM folder under
+  the names the emulator looks for (a 16K boot PROM file is split into its even
+  and odd halves). Also `compass import-roms SOURCE [ROMFOLDER]`.
+- Emulation level per drive: Drives > "2101 box" and "2102 floppy" choose Low level
+  (the drive's own firmware runs) or Protocol model. The status bar shows LL or P
+  beside each drive; hover for the details. Also --2101-protocol, --2102-protocol,
+  --rom-2101, --rom-2101-10 and --rom-2102.
+- 2101 front panel: the box's 4-character LED display and its drive lights (View >
+  2101 front panel, or click the small display in the status bar). It shows what
+  the 2101 firmware writes to the display, so only with the low-level 2101.
+- Keys on Windows: a held key no longer goes on after it is let go (Windows key
+  repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
+  instead of switching windows (the keyboard hook now runs on its own thread, so
+  Windows no longer drops it when a frame is slow).
+
+Build and run in the window:
+- Project > Project window: pick a project folder (NAME.pas, NAME.asm, ...) and a
+  development disk (the machine's hard disk by default), then Build, Build and run
+  or Debug build. compass.exe builds by itself, no Python: on a hidden Compass
+  (1129, or 1139 for a 113x disk) with the fast core while your machine keeps
+  running. The first build of a disk boots it (about a minute) and keeps that
+  state, later builds take a few seconds. Results go to the project folder like
+  build.bat: NAME.run, NAME.lst, screen.png, output\. Also `compass build PROJECT
+  --disk DISK [--debug]`. The toolbar has a Build and run button.
+- Build and run copies NAME~Run~ into the running machine's PC folder drive.
+- PC folder drive: files added or changed on the PC show up while the machine
+  runs (checked each second, once the GRiD has left the drive alone for two
+  seconds). A file the GRiD changed too is left as the GRiD has it.
+
+Extras:
+- Edit > Paste text types the PC clipboard's text on the Compass keyboard (one key
+  at a time, about 14 a second; characters with no Compass key are left out).
+  Edit > Copy screen puts the Compass screen on the clipboard as a picture.
+- Speed slider (toolbar and Machine menu): 10 % to 400 % of a real Compass;
+  double-click it for 100 %.
+- On-screen Compass keyboard (View, or Keyboard on the toolbar): click a key to
+  type it, hold the mouse button to hold it; SHIFT, CTRL and CODE stay on for the
+  next key.
+- View > EL panel look: glow around lit pixels, dark gaps between pixels (at 3x and
+  more) and a short afterglow.
+
 8087:
 - 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
   you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the

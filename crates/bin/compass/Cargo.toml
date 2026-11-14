@@ -19,6 +19,9 @@ cpal = "0.15"
 serialport = { version = "4.7", default-features = false }
 serde_json = "1"
 base64 = "0.13"
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
+crc32fast = "1.4"
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

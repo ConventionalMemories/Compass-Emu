@@ -28,6 +28,9 @@
 //!   --fpu-micro                  8087 on its own microcode ROM (you supply it; see
 //!                                docs/8087-microcode.md): 8087mc.txt or .bin in the ROM folder
 //!   --fpu-rom F                  the same, with that microcode ROM file
+//!   --rom-2102 F                 2102 floppy firmware (default 300237-02.bin in the ROM folder)
+//!   --rom-2101 F / --rom-2101-10 F  2101 firmware for the 20 MB / 10 MB box (300205-05/-06.bin)
+//!   --2102-protocol / --2101-protocol  that drive answers from the protocol model (no firmware)
 //!   --classic                    the plain window of 0.4 (no menus) instead of the GUI
 //!   --symbols D                  program symbols for the debugger: the project folder of a
 //!                                debug build (gridbuild.py debug saves NAME.pas.obj files there)
@@ -43,12 +46,14 @@
 use std::path::PathBuf;
 
 use grid_core::{screen, GridModel};
+mod build;
 mod classic;
 mod display;
 mod gui;
 mod headless;
 mod host;
 mod imd;
+mod romimport;
 mod mcp;
 mod runner;
 mod session;
@@ -61,7 +66,7 @@ pub const VERSION: &str = "0.11.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -108,6 +113,38 @@ fn main() {
     if all.first().map(|a| a == "do").unwrap_or(false) {
         std::process::exit(headless::run(all[1..].to_vec(), default_path("")));
     }
+    if all.first().map(|a| a == "build").unwrap_or(false) {
+        // compass build PROJECT --disk DEV.img [--roms DIR] [--debug] [--exact]: the GUI's build.
+        let mut job = build::BuildJob { project: PathBuf::new(), disk: PathBuf::new(), roms: default_path(""), debug: false, exact: false };
+        let mut it = all.into_iter().skip(1);
+        while let Some(a) = it.next() {
+            match a.as_str() {
+                "--disk" => job.disk = it.next().unwrap_or_else(|| usage()).into(),
+                "--roms" => job.roms = it.next().unwrap_or_else(|| usage()).into(),
+                "--debug" => job.debug = true,
+                "--exact" => job.exact = true,
+                _ if a.starts_with("--") => usage(),
+                _ => job.project = a.into(),
+            }
+        }
+        let rx = build::spawn(job);
+        for msg in rx {
+            match msg {
+                build::BuildMsg::Line(l) => println!("{l}"),
+                build::BuildMsg::Done(r) => std::process::exit(if r.ok { 0 } else { 1 }),
+            }
+        }
+        return;
+    }
+    if all.first().map(|a| a == "import-roms").unwrap_or(false) {
+        // compass import-roms SRC [DEST]: copy the known ROMs found in SRC (folder or zip).
+        let Some(src) = all.get(1) else { usage() };
+        let dest = all.get(2).map(std::path::PathBuf::from).unwrap_or_else(|| default_path(""));
+        for l in romimport::import(std::path::Path::new(src), &dest) {
+            println!("{l}");
+        }
+        return;
+    }
     if all.first().map(|a| a == "mcp").unwrap_or(false) {
         std::process::exit(mcp::run(default_path("")));
     }
@@ -147,6 +184,11 @@ fn main() {
             "--mute" => cfg.mute = true,
             "--fast" => cfg.fast = true,
             "--fpu-micro" => cfg.fpu_micro = true,
+            "--rom-2102" => cfg.rom_2102 = val(),
+            "--rom-2101" => cfg.rom_2101_20 = val(),
+            "--rom-2101-10" => cfg.rom_2101_10 = val(),
+            "--2102-protocol" => cfg.fd_level = "protocol".into(),
+            "--2101-protocol" => cfg.hd_level = "protocol".into(),
             "--fpu-rom" => {
                 cfg.fpu_rom = val();
                 cfg.fpu_micro = true;

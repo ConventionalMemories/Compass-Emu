@@ -178,7 +178,11 @@ fn setup(rom: &MicroRom, r: &mut Rng, kinds: Kinds, cw: u16) -> (I8087, Micro808
         let v = value(r, kinds);
         tw |= tag_of(v) << (2 * i);
         match v {
-            None => new.st[i].tag = TAG_EMPTY,
+            None => {
+                // an empty register keeps bits (FXAM shows them): the same in both cores
+                new.st[i] = Reg::from_bits(old.st[i].to_bits());
+                new.st[i].tag = TAG_EMPTY;
+            }
             Some(b) => {
                 new.st[i] = Reg::from_bits(b);
                 old.st[i] = F80::from_bits(b);

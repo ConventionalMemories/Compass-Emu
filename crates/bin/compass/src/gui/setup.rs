@@ -372,6 +372,9 @@ fn addr_text(kind: &str, a: u8) -> String {
     }
 }
 
+const HD_PROTECT: &str = "GRiD can write to the hard disk as usual, but the changes are never saved to the image file (a hard disk has no write-protect tab)";
+const FD_PROTECT: &str = "the disk's write-protect tab: GRiD can read it but not change it (writes give error 106, as on a real disk); also while running, in the Media menu";
+
 /// The GPIB devices: one card per unit, with an Add menu.
 fn gpib_section(ui: &mut egui::Ui, c: &mut MachineConfig, dr: &DriveRoms, recent_hds: &[String], recent_floppies: &[String]) -> bool {
     let mut ch = false;
@@ -470,16 +473,20 @@ fn gpib_section(ui: &mut egui::Ui, c: &mut MachineConfig, dr: &DriveRoms, recent
                         "2101" => {
                             ui.columns(2, |cols| {
                                 ch |= path_row_recent(&mut cols[0], &format!("Hard disk image ({} {})", d.addr, grid_name(d.addr)), &mut d.hd, false, &["img", "IMG"], recent_hds);
+                                ch |= cols[0].checkbox(&mut d.hd_protect, "Write protect").on_hover_text(HD_PROTECT).changed();
                                 let note = if d.disk.is_empty() { ": drive there, no disk (insert one any time)" } else { "" };
                                 ch |= path_row_recent(&mut cols[1], &format!("Floppy disk ({} {}){note}", d.addr + 1, grid_name(d.addr + 1)), &mut d.disk, false, flop, recent_floppies);
+                                ch |= cols[1].checkbox(&mut d.disk_protect, "Write protect").on_hover_text(FD_PROTECT).changed();
                             });
                         }
                         "2102" => {
                             let note = if d.disk.is_empty() { ": drive there, no disk (insert one any time)" } else { "" };
                             ch |= path_row_recent(ui, &format!("Floppy disk{note}"), &mut d.disk, false, flop, recent_floppies);
+                            ch |= ui.checkbox(&mut d.disk_protect, "Write protect").on_hover_text(FD_PROTECT).changed();
                         }
                         _ => {
                             ch |= path_row(ui, "PC folder (its files show as a GRiD floppy disk)", &mut d.folder, true, &[]);
+                            ch |= ui.checkbox(&mut d.disk_protect, "Write protect").on_hover_text("GRiD can change the files, but nothing is written back to the PC folder").changed();
                             ui.label(RichText::new("Its own GPIB unit, so a 2101 next to it stays low level. Put it at 13 Extra Floppy Disk next to a 2101 at 4, or at 5 Floppy Disk in place of the 2101's floppy drive.").weak().small());
                         }
                     }
@@ -614,10 +621,10 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     Some(b) => b,
                     None => &mut *a,
                 };
-                card(col2, "Bubble memory and disk files", |ui| {
+                card(col2, "Bubble memory", |ui| {
                     ch |= path_row(ui, "Bubble memory image (made if missing)", &mut c.bubble, false, &[]);
-                    ui.label("Disk image files");
-                    ch |= ui.checkbox(&mut c.readonly, "Never write changes back to the image files").changed();
+                    ch |= ui.checkbox(&mut c.bubble_protect, "Write protect (never save the bubble image)").changed();
+                    ui.label(RichText::new("Disks: each GPIB unit below has its own write protect.").weak().small());
                 });
             });
             ui.add_space(8.0);

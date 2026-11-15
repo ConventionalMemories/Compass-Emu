@@ -51,8 +51,13 @@ Machine setup, drives and keys:
 - Keys on Windows: a held key no longer goes on after it is let go (Windows key
   repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
   instead of switching windows (the keyboard hook now runs on its own thread, so
-  Windows no longer drops it when a frame is slow, and the window itself refuses
-  Alt+Esc). Help > Keyboard map shows whether these guards are on.
+  Windows no longer drops it when a frame is slow, the window itself refuses
+  Alt+Esc, and while the window has focus Alt+Esc is registered as its hot key).
+  Help > Keyboard map shows whether these guards are on, how often each caught
+  Alt+Esc, and what the hook saw of the last Esc.
+- Write protect per drive instead of one switch for all disks (see The window).
+- Media manager: finds the root directory of a floppy even when it is not right
+  after the bitmap, and says so plainly when a disk has none.
 - Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
   PC keys > By position (US layout) for the old way.
 

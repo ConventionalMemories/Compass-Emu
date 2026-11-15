@@ -68,10 +68,15 @@ card has an on/off box (off: left out of the machine for now, settings
 kept), its GPIB address with GRiD-OS's name for it (4 Hard Disk + 5 Floppy
 Disk, 12 Extra Hard Disk + 13 Extra Floppy Disk, 6 Portable Floppy...), Low
 level (the unit's own firmware) or Protocol model, an optional firmware file
-of its own, and its disks. Two 2101 boxes can each have their own level. A
-floppy drive with no disk is still there, so GRiD-OS lists it and sees a
-disk inserted later. The status bar names each drive by its GRiD-OS name
-and shows LL or P beside it.
+of its own, and its disks, each with a Write protect box. Two 2101 boxes can
+each have their own level. A floppy drive with no disk is still there, so
+GRiD-OS lists it and sees a disk inserted later. The status bar names each
+drive by its GRiD-OS name and shows LL or P beside it (WP when protected).
+- Write protect, per drive (setup page, Media menu, media manager, also while
+running): a protected floppy acts like one with its write-protect tab on,
+GRiD can read it but its writes fail (error 106); a protected hard disk or
+PC folder takes GRiD's writes but they are never saved. The bubble has its
+own Write protect box. --readonly protects everything.
 - Help > Keyboard map: which PC key is which Compass key.
 - Debug: the debugger workspace (see Demo tools) and a Chips window
 (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
@@ -121,7 +126,8 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
 --gpib     one GPIB unit, as on the setup page (repeat for more; instead of
            --hd, --flop, --flop2101 and --folder): 2101, 2102 or folder, then
            addr=N (2101: 4 or 12, its floppy is at N+1), hd=, disk=, folder=,
-           rom= (its own firmware), protocol, off. Example: --gpib
+           rom= (its own firmware), protocol, protect-hd, protect-disk (write
+           protect), off. --bubble-protect: never save the bubble. Example: --gpib
            "2101|addr=4|hd=disk.img" --gpib "2101|addr=12|hd=old.img|protocol".
 --rom0 .. --rom3  a chip in application ROM socket 0-3 (Compass II models;
            see Application ROMs below).

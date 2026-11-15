@@ -786,6 +786,12 @@ impl App {
                             if ui.button("Take out").clicked() {
                                 self.insert_at(i, None);
                             }
+                            if let Some(s) = &mut self.sess {
+                                let mut wp = s.protected(i);
+                                if ui.checkbox(&mut wp, "Write protect").changed() {
+                                    s.set_protected(i, wp);
+                                }
+                            }
                         });
                     }
                     ui.separator();
@@ -978,6 +984,7 @@ impl App {
                 if d.image.is_empty() && d.kind == DriveKind::Hdd2101 {
                     continue;
                 }
+                let name = if s.protected(i) { format!("{name} WP") } else { name };
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                 ui.painter().circle_filled(
                     rect.center(),

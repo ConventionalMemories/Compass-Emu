@@ -138,6 +138,10 @@ pub struct Drive {
     /// Firmware for this drive's box instead of the bus-wide one (`rom_2102`, `rom_2101`).
     #[serde(skip)]
     pub rom: Option<Vec<u8>>,
+    /// Write protected: a floppy refuses writes (error 106, as with the tab on a real
+    /// disk); a hard disk takes them, and the frontend doesn't save them.
+    #[serde(default)]
+    pub write_protect: bool,
 }
 
 /// GPIBLOG set: print drive commands, SRQs, serial polls and ends of data on stderr.
@@ -256,6 +260,7 @@ impl Drive {
             kind,
             image,
             dirty: false,
+            write_protect: false,
             listening: false,
             talking: false,
             serial_polling: false,
@@ -424,6 +429,11 @@ impl Drive {
     }
 
     /// 7-byte error reply: error word, drive, page.
+    /// A write-protected floppy (a hard disk has no tab).
+    fn floppy_protected(&self) -> bool {
+        self.write_protect && self.kind != DriveKind::Hdd2101 && !self.image.is_empty()
+    }
+
     fn error_block(code: u16, page: u32) -> [u8; 7] {
         let mut b = [0u8; 7];
         b[0..2].copy_from_slice(&code.to_le_bytes());
@@ -543,6 +553,7 @@ impl Drive {
                         self.write_ctrl = self.rx[9];
                         self.state = DriveState::Writing;
                     }
+                    17 if self.floppy_protected() => self.tx.extend(Self::error_block(106, 0)),
                     17 => {
                         self.ra_cache.clear();
                         self.state = DriveState::Formatting;
@@ -554,6 +565,14 @@ impl Drive {
             DriveState::Writing => {
                 let off = self.sector as usize * SECTOR;
                 let end = (off + self.rx.len()).min(self.image.len());
+                if off < end && !matches!(self.write_ctrl, 1 | 2) && self.floppy_protected() {
+                    // the write-protect tab: nothing written, error 106 once the data is in
+                    self.state = DriveState::Idle;
+                    self.tx.extend(Self::error_block(106, self.sector));
+                    self.spoll = 0x0F;
+                    self.srq = true;
+                    return;
+                }
                 if off < end && !matches!(self.write_ctrl, 1 | 2) {
                     let n = end - off;
                     self.image[off..end].copy_from_slice(&self.rx[..n]);
@@ -890,6 +909,7 @@ impl Gpib {
         if self.drives[i].lle.is_some() {
             let d = &mut self.drives[i];
             let b = d.lle.as_mut().unwrap();
+            b.set_write_protect(d.write_protect);
             let ahead = b.ahead;
             return b.run(target / 1000 + ahead, &mut d.image, &mut d.dirty);
         }
@@ -898,6 +918,7 @@ impl Gpib {
         let mut empty = Vec::new();
         let mut nd = false;
         let b = hd_d.lle2101.as_mut().unwrap();
+        b.set_write_protect(fd_d.as_ref().is_some_and(|d| d.write_protect));
         let fbusy = b.fd_busy();
         let (fdi, fdd) = match fd_d {
             Some(d) => {

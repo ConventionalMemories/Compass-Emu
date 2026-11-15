@@ -192,14 +192,29 @@ impl Volume {
             }
             return Ok(Volume { img, n, root, bm });
         }
-        for p in 1..n {
+        let is_bitmap = |p: u32| {
             let pg = &img[p as usize * PAGE..(p as usize + 1) * PAGE];
-            if u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16) {
-                let root = p + n.div_ceil(BM_BITS);
-                return Ok(Volume { img, n, root, bm: p });
+            u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16)
+        };
+        // the usual place first, then anywhere
+        let Some(bm) = std::iter::once(BITMAP_FID).filter(|&p| p < n).chain(1..n).find(|&p| is_bitmap(p)) else {
+            return err("no bitmap found on the volume");
+        };
+        let mut v = Volume { img, n, root: bm + n.div_ceil(BM_BITS), bm };
+        if v.header(v.root).is_err() {
+            // The root directory is not right after the bitmap: look for it (a file header
+            // whose parent directory is itself).
+            if let Some(r) = (1..n).find(|&p| v.header(p).is_ok_and(|h| u16_at(&h, 100) as u32 == p)) {
+                v.root = r;
+            }
+            else {
+                return err(format!(
+                    "no root directory on the volume (bitmap at page {bm}, nothing valid at page {} or anywhere else; the disk may be damaged)",
+                    v.root
+                ));
             }
         }
-        err("no bitmap found on the volume")
+        Ok(v)
     }
 
     /// Root directory FID.

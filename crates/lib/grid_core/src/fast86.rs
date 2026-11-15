@@ -4,6 +4,10 @@
 //! 8086 suite checks (aliases, POP CS, SALC, SETMO, IDIV limits, REP + MUL/IDIV sign flip).
 //! Used by `GridMachine` when fast mode is on; never for timing measurements.
 
+/// Polls of TEST (5 clocks each) one pass of a WAIT makes before it starts over. No 8087
+/// instruction is busy that long; only a held BUSY gets there.
+const WAIT_POLLS: u32 = 4096;
+
 /// What the core needs from the machine around it.
 pub trait Bus86 {
     fn read8(&mut self, addr: u32) -> u8;
@@ -707,9 +711,14 @@ impl Fast86 {
             0x9B => {
                 // WAIT
                 let (mut n, start, min) = (0, self.clocks, b.wait_min());
-                while (b.fpu_busy(self.clocks) || self.clocks - start < min) && n < 2_000_000 {
+                while (b.fpu_busy(self.clocks) || self.clocks - start < min) && n < WAIT_POLLS {
                     self.clocks += 5;
                     n += 1;
+                }
+                if n == WAIT_POLLS && b.fpu_busy(self.clocks) {
+                    // BUSY held for good (an unmasked 8087 exception nobody cleared): the
+                    // 8086 stays in the WAIT. It takes interrupts there and returns to it.
+                    self.ip = c.start_ip;
                 }
             }
             0x9C => {

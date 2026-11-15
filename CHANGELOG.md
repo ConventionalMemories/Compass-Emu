@@ -4,6 +4,14 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
 
 ## Unreleased
 
+- Low-level 2101: floppies read again. A disk the emulator lays out itself (any track
+  the 2101 has not formatted) was built with interleave 3 by a formula that only works
+  for interleaves prime to 9, so every track lost its 4th sector (and got a 2nd copy of
+  its 2nd). Booting a GRiD-OS floppy from a 2101 gave "Cannot boot: Checksum error"
+  because the boot PROM reads pages 1-4. Sectors now go to the next free slot on a
+  collision (IDs 1 4 7 2 5 8 3 6 9, as the 2101's own format writes them); the 2102's
+  interleave 5 layout is unchanged. `lle_2101_floppy` now reads every sector of
+  cylinder 0, and the new ignored test `boot_from_2101_floppy` boots a floppy in a 2101.
 - 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
   you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
   arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals

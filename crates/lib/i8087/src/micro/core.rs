@@ -202,6 +202,8 @@ pub struct Micro8087 {
     alt_const: bool,
     pub log: [u128; 16],
     pub log_shift: u32,
+    /// the transcendentals' fraction constants: ln(2)/3, log2(e), 3 log2(e), sqrt(2)
+    pub fconst: [u64; 4],
 }
 
 /// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
@@ -249,6 +251,11 @@ const LOG: [u128; 16] = [
     0x5c5464ec5f4d74ca3,
     0x5c54c1400b92b919c,
 ];
+
+/// ln(2)/3, log2(e), 3 log2(e) and sqrt(2): the constants F2XM1, FYL2X and FYL2XP1 take
+/// from the constant ROM (computed, as above; `fit_constants` finds nothing better within
+/// 8 units).
+const FCONST: [u64; 4] = [0xEC98_1FF5_17BF_4CE5, 0xB8AA_3B29_5C17_F0BC, 0x8A7F_AC5F_0511_F48D, 0xB504_F333_F9DE_6484];
 
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
@@ -314,6 +321,7 @@ impl Micro8087 {
             round_next: false,
             kinds: [0; KINDS],
             alt_const: false,
+            fconst: FCONST,
             log: LOG,
             log_shift: 0,
         }
@@ -836,7 +844,9 @@ impl Micro8087 {
             0x6F48 => self.loop_mode = LOOP_QUOT,
             // before an addition in the CORDIC routines: the addition rounds its A side
             0x6C4A => self.round_next = true,
-            // F2XM1, before the denominator's subtraction; meaning unknown
+            // F2XM1, before the denominator's subtraction; meaning unknown. It is not a carry
+            // or a rounding of that subtraction: a unit either way there is the same as a
+            // unit on the log2(e) constant, and no such change matches more real results.
             0x6E44 => {}
             0x6B48 => {
                 self.loop_mode = LOOP_REM;
@@ -951,10 +961,10 @@ impl Micro8087 {
             0x1EB => 0xC90F_DAA2_2168_C235, // pi
             0x1EC => 0x9A20_9A84_FBCF_F799, // log10(2)
             0x1ED => 0xB172_17F7_D1CF_79AC, // ln(2)
-            0x1F0 if self.alt_const => 0xEC98_1FF5_17BF_4CE5, // ln(2)/3
-            0x1F0 => 0xB8AA_3B29_5C17_F0BC,                   // log2(e)
-            0x1F1 | 0x1F9 if self.alt_const => 0x8A7F_AC5F_0511_F48D, // 3 log2(e)
-            0x1F1 | 0x1F9 => 0xB504_F333_F9DE_6484,                   // sqrt(2)
+            0x1F0 if self.alt_const => self.fconst[0],
+            0x1F0 => self.fconst[1],
+            0x1F1 | 0x1F9 if self.alt_const => self.fconst[2],
+            0x1F1 | 0x1F9 => self.fconst[3],
             n => return Err(format!("fraction constant for opcode {:03X}", n)),
         })
     }

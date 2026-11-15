@@ -19,6 +19,9 @@ extern "system" {
     fn SetWindowsHookExW(id: i32, proc_: usize, hmod: Hwnd, thread: u32) -> Hwnd;
     fn CallNextHookEx(hook: Hwnd, code: i32, wparam: usize, lparam: isize) -> isize;
     fn GetMessageW(msg: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
+    fn RegisterHotKey(hwnd: Hwnd, id: i32, mods: u32, vk: u32) -> i32;
+    fn UnregisterHotKey(hwnd: Hwnd, id: i32) -> i32;
+    fn SetTimer(hwnd: Hwnd, id: usize, ms: u32, func: usize) -> usize;
 }
 
 /// MSG, only as a buffer for GetMessageW.
@@ -61,6 +64,11 @@ static SPACE: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)]
 unsafe extern "system" fn kbd_hook(code: i32, wparam: usize, lparam: isize) -> isize {
     if code == 0 && lparam != 0 {
         let k = &*(lparam as *const KbdLl);
+        HOOK_KEYS.fetch_add(1, Ordering::Relaxed);
+        if k.vk == VK_ESCAPE && wparam != 0x101 && wparam != 0x105 {
+            // what the hook saw of the last Esc press, for Help > Keyboard map
+            HOOK_ESC.store((k.flags as usize) << 16 | wparam << 1 | focused() as usize, Ordering::Relaxed);
+        }
         let st = match k.vk {
             VK_ESCAPE => Some(&ESC),
             VK_SPACE => Some(&SPACE),
@@ -99,6 +107,14 @@ static SUBCLASS_OK: AtomicBool = AtomicBool::new(false);
 /// How often each guard kept Alt+Esc from Windows: the hook, the window's own keys.
 static CAUGHT_HOOK: AtomicUsize = AtomicUsize::new(0);
 static CAUGHT_WINDOW: AtomicUsize = AtomicUsize::new(0);
+static CAUGHT_HOTKEY: AtomicUsize = AtomicUsize::new(0);
+/// Keys the hook saw at all, and the last Esc press it saw: flags << 16 | message << 1 | focused.
+static HOOK_KEYS: AtomicUsize = AtomicUsize::new(0);
+static HOOK_ESC: AtomicUsize = AtomicUsize::new(0);
+/// System keys (WM_SYSKEYDOWN) that reached the window.
+static WINDOW_SYSKEYS: AtomicUsize = AtomicUsize::new(0);
+/// Alt+Esc registered as this program's hot key (while the window has focus).
+static HOTKEY_ON: AtomicBool = AtomicBool::new(false);
 
 static OLD_PROC: AtomicIsize = AtomicIsize::new(0);
 static HWND_MAIN: AtomicUsize = AtomicUsize::new(0);
@@ -108,6 +124,9 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
         // (Alt+Esc reaches Windows as "next window" through the window's default handling
         // when the hook did not get to it first)
         return 0;
+    }
+    if msg == WM_SYSKEYDOWN {
+        WINDOW_SYSKEYS.fetch_add(1, Ordering::Relaxed);
     }
     if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && wparam == VK_ESCAPE as usize {
         // Alt+Esc as a key for this window: keep it from the default handling (which would
@@ -145,8 +164,36 @@ pub fn install(hwnd: *mut core::ffi::c_void) {
             if h.is_null() {
                 HOOK_ERR.store(GetLastError() as usize, Ordering::Relaxed);
             }
+            // Third guard: while the window has focus, Alt+Esc is this program's hot key, so
+            // Windows hands it to us instead of switching windows. Checked 10 times a second
+            // so other programs get Alt+Esc back as soon as the window loses focus.
+            const WM_TIMER: u32 = 0x0113;
+            const WM_HOTKEY: u32 = 0x0312;
+            const MOD_ALT: u32 = 0x0001;
+            const MOD_NOREPEAT: u32 = 0x4000;
+            SetTimer(std::ptr::null_mut(), 0, 100, 0);
             let mut msg: Msg = std::mem::zeroed();
-            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                match msg.message {
+                    WM_TIMER => {
+                        let want = focused();
+                        if want != HOTKEY_ON.load(Ordering::Relaxed) {
+                            let ok = if want { RegisterHotKey(std::ptr::null_mut(), 1, MOD_ALT | MOD_NOREPEAT, VK_ESCAPE) != 0 } else { UnregisterHotKey(std::ptr::null_mut(), 1) != 0 };
+                            if ok || !want {
+                                HOTKEY_ON.store(want, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    WM_HOTKEY => {
+                        if focused() {
+                            // a tap: down and pressed-since, let go at the next poll
+                            ESC[1].store(true, Ordering::Relaxed);
+                            CAUGHT_HOTKEY.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         });
     }
 }
@@ -243,9 +290,15 @@ pub fn status() -> String {
         }
     };
     let win = if SUBCLASS_OK.load(Ordering::Relaxed) { "window keys on" } else { "window keys off" };
+    let hot = if HOTKEY_ON.load(Ordering::Relaxed) { "hot key on" } else { "hot key off" };
+    let e = HOOK_ESC.load(Ordering::Relaxed);
+    let last = if e == 0 { "no Esc seen yet".to_string() } else { format!("last Esc: message {:X}, flags {:X}, focused {}", (e >> 1) & 0x7FFF, e >> 16, e & 1) };
     format!(
-        "Alt+Esc guards: {hook}, {win}; caught {} times by the hook, {} by the window",
+        "Alt+Esc guards: {hook}, {win}, {hot}; caught {} times by the hook, {} by the window, {} by the hot key. Hook saw {} keys ({last}); the window got {} system keys.",
         CAUGHT_HOOK.load(Ordering::Relaxed),
-        CAUGHT_WINDOW.load(Ordering::Relaxed)
+        CAUGHT_WINDOW.load(Ordering::Relaxed),
+        CAUGHT_HOTKEY.load(Ordering::Relaxed),
+        HOOK_KEYS.load(Ordering::Relaxed),
+        WINDOW_SYSKEYS.load(Ordering::Relaxed)
     )
 }

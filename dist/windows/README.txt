@@ -65,10 +65,15 @@ The window
     kept), its GPIB address with GRiD-OS's name for it (4 Hard Disk + 5 Floppy
     Disk, 12 Extra Hard Disk + 13 Extra Floppy Disk, 6 Portable Floppy...), Low
     level (the unit's own firmware) or Protocol model, an optional firmware file
-    of its own, and its disks. Two 2101 boxes can each have their own level. A
-    floppy drive with no disk is still there, so GRiD-OS lists it and sees a
-    disk inserted later. The status bar names each drive by its GRiD-OS name
-    and shows LL or P beside it.
+    of its own, and its disks, each with a Write protect box. Two 2101 boxes can
+    each have their own level. A floppy drive with no disk is still there, so
+    GRiD-OS lists it and sees a disk inserted later. The status bar names each
+    drive by its GRiD-OS name and shows LL or P beside it (WP when protected).
+  - Write protect, per drive (setup page, Media menu, media manager, also while
+    running): a protected floppy acts like one with its write-protect tab on,
+    GRiD can read it but its writes fail (error 106); a protected hard disk or
+    PC folder takes GRiD's writes but they are never saved. The bubble has its
+    own Write protect box. --readonly protects everything.
   - Help > Keyboard map: which PC key is which Compass key.
   - Debug: the debugger workspace (see Demo tools) and a Chips window
     (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
@@ -115,7 +120,8 @@ Command line
   --gpib     one GPIB unit, as on the setup page (repeat for more; instead of
              --hd, --flop, --flop2101 and --folder): 2101, 2102 or folder, then
              addr=N (2101: 4 or 12, its floppy is at N+1), hd=, disk=, folder=,
-             rom= (its own firmware), protocol, off. Example: --gpib
+             rom= (its own firmware), protocol, protect-hd, protect-disk (write
+             protect), off. --bubble-protect: never save the bubble. Example: --gpib
              "2101|addr=4|hd=disk.img" --gpib "2101|addr=12|hd=old.img|protocol".
   --rom0 .. --rom3  a chip in application ROM socket 0-3 (Compass II models;
              see Application ROMs below).
@@ -378,8 +384,13 @@ New in 0.11.0
   - Keys on Windows: a held key no longer goes on after it is let go (Windows key
     repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
     instead of switching windows (the keyboard hook now runs on its own thread, so
-    Windows no longer drops it when a frame is slow, and the window itself refuses
-    Alt+Esc). Help > Keyboard map shows whether these guards are on.
+    Windows no longer drops it when a frame is slow, the window itself refuses
+    Alt+Esc, and while the window has focus Alt+Esc is registered as its hot key).
+    Help > Keyboard map shows whether these guards are on, how often each caught
+    Alt+Esc, and what the hook saw of the last Esc.
+  - Write protect per drive instead of one switch for all disks (see The window).
+  - Media manager: finds the root directory of a floppy even when it is not right
+    after the bitmap, and says so plainly when a disk has none.
   - Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
     PC keys > By position (US layout) for the old way.
 

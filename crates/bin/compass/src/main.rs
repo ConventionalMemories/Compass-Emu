@@ -71,7 +71,7 @@ pub const VERSION: &str = "0.11.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]... [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]... [--bubble-protect] [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -182,6 +182,7 @@ fn main() {
             "--folder" => cfg.folder = val(),
             "--rom0" | "--rom1" | "--rom2" | "--rom3" => cfg.roms[(a.as_bytes()[5] - b'0') as usize] = val(),
             "--readonly" => cfg.readonly = true,
+            "--bubble-protect" => cfg.bubble_protect = true,
             "--bubble" => cfg.bubble = val(),
             "--serial" => cfg.serial = val(),
             "--gridlink" => cfg.gridlink = val(),

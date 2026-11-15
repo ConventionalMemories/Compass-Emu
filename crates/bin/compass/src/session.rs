@@ -48,7 +48,11 @@ pub struct MachineConfig {
     /// GRiDLink point-to-point cable (RTS looped to CTS) instead of multidrop.
     pub gridlink_p2p: bool,
     pub mute: bool,
+    /// --readonly: nothing is written back (the setup page turns it into each unit's write
+    /// protect and the bubble's).
     pub readonly: bool,
+    /// Never write the bubble memory back.
+    pub bubble_protect: bool,
     /// Fast CPU core (whole instructions, approximate timing).
     pub fast: bool,
     /// Program symbols: the project folder of a debug build (NAME.pas.obj files).
@@ -100,6 +104,11 @@ pub struct GpibDevice {
     pub folder: String,
     /// Firmware for this unit ("" = the profile's, from the ROMs card).
     pub rom: String,
+    /// Write protect of the 2101's hard disk (GRiD may write, nothing is saved).
+    pub hd_protect: bool,
+    /// Write protect of the floppy (2101 floppy, 2102: the tab, GRiD gets error 106) or the
+    /// PC folder (nothing written back to it).
+    pub disk_protect: bool,
 }
 
 impl Default for GpibDevice {
@@ -113,6 +122,8 @@ impl Default for GpibDevice {
             disk: String::new(),
             folder: String::new(),
             rom: String::new(),
+            hd_protect: false,
+            disk_protect: false,
         }
     }
 }
@@ -161,6 +172,12 @@ impl GpibDevice {
         if self.level == "protocol" {
             v.push("protocol".into());
         }
+        if self.hd_protect {
+            v.push("protect-hd".into());
+        }
+        if self.disk_protect {
+            v.push("protect-disk".into());
+        }
         for (k, val) in [("hd", &self.hd), ("disk", &self.disk), ("folder", &self.folder), ("rom", &self.rom)] {
             if !val.trim().is_empty() {
                 v.push(format!("{k}={}", val.trim()));
@@ -188,6 +205,8 @@ impl GpibDevice {
                 "rom" => d.rom = v.into(),
                 "protocol" => d.level = "protocol".into(),
                 "off" => d.enabled = false,
+                "protect-hd" => d.hd_protect = true,
+                "protect-disk" | "protect" => d.disk_protect = true,
                 "" => {}
                 other => return Err(format!("--gpib {spec}: unknown part {other}")),
             }
@@ -275,6 +294,14 @@ impl MachineConfig {
         if self.gpib.is_empty() {
             self.gpib = self.devices();
         }
+        if self.readonly {
+            for d in self.gpib.iter_mut() {
+                d.hd_protect = true;
+                d.disk_protect = true;
+            }
+            self.bubble_protect = true;
+            self.readonly = false;
+        }
         self.hd.clear();
         self.flop.clear();
         self.flop2101.clear();
@@ -359,6 +386,9 @@ impl MachineConfig {
         }
         if self.mute {
             a.push("--mute".into());
+        }
+        if self.bubble_protect {
+            a.push("--bubble-protect".into());
         }
         if self.readonly {
             a.push("--readonly".into());
@@ -555,6 +585,7 @@ impl Session {
                     let mut d = Drive::at(DriveKind::Hdd2101, dev.addr, img);
                     d.protocol = protocol;
                     d.rom = rom;
+                    d.write_protect = dev.hd_protect || cfg.readonly;
                     m.board_mut().gpib.drives.push(d);
                     media.push(med);
                     units.push((di, 0u8));
@@ -562,6 +593,7 @@ impl Session {
                         let (img, med) = floppy(&dev.disk, &mut notes)?;
                         let mut d = Drive::at(DriveKind::Floppy2101, dev.addr + 1, img);
                         d.protocol = protocol;
+                        d.write_protect = dev.disk_protect || cfg.readonly;
                         m.board_mut().gpib.drives.push(d);
                         media.push(med);
                         units.push((di, 1u8));
@@ -572,6 +604,7 @@ impl Session {
                     let mut d = Drive::at(DriveKind::Floppy2102, dev.addr, img);
                     d.protocol = protocol;
                     d.rom = rom;
+                    d.write_protect = dev.disk_protect || cfg.readonly;
                     m.board_mut().gpib.drives.push(d);
                     media.push(med);
                     units.push((di, 0u8));
@@ -586,7 +619,10 @@ impl Session {
                         dev.addr,
                         vol.pages() / 2
                     ));
-                    m.board_mut().gpib.drives.push(Drive::at(DriveKind::Floppy2101, dev.addr, vol.img));
+                    // (a protected folder takes GRiD's writes in memory and is never written back)
+                    let mut d = Drive::at(DriveKind::Floppy2101, dev.addr, vol.img);
+                    d.write_protect = false;
+                    m.board_mut().gpib.drives.push(d);
                     media.push(Media::Folder(dir));
                     units.push((di, 0u8));
                     hostdir = Some(hd);
@@ -678,7 +714,7 @@ impl Session {
     /// Write drive `i` back if GRiD changed it. Returns what was done.
     pub fn save_drive(&mut self, i: usize) -> Vec<String> {
         let mut log = vec![];
-        if self.cfg.readonly {
+        if self.cfg.readonly || self.protected(i) {
             return log;
         }
         let Some(d) = self.m.board().gpib.drives.get(i) else { return log };
@@ -706,6 +742,32 @@ impl Session {
         log
     }
 
+    /// Write protect of drive `i`, as its unit says.
+    pub fn protected(&self, i: usize) -> bool {
+        match self.units.get(i).and_then(|&(u, slot)| self.cfg.gpib.get(u).map(|d| (d, slot))) {
+            Some((d, slot)) => if d.kind == "2101" && slot == 0 { d.hd_protect } else { d.disk_protect },
+            None => self.m.board().gpib.drives.get(i).is_some_and(|d| d.write_protect),
+        }
+    }
+
+    /// Turn drive `i`'s write protect on or off while the machine runs.
+    pub fn set_protected(&mut self, i: usize, on: bool) {
+        if let Some(&(u, slot)) = self.units.get(i) {
+            if let Some(d) = self.cfg.gpib.get_mut(u) {
+                if d.kind == "2101" && slot == 0 {
+                    d.hd_protect = on;
+                }
+                else {
+                    d.disk_protect = on;
+                }
+            }
+        }
+        let folder = matches!(self.media.get(i), Some(Media::Folder(_)));
+        if let Some(d) = self.m.board_mut().gpib.drives.get_mut(i) {
+            d.write_protect = on && !folder;
+        }
+    }
+
     /// Bring files added or changed in the PC folder into the folder drive while it runs.
     /// Call it only when GRiD has not used the drive for a while.
     pub fn sync_folder(&mut self) -> Vec<String> {
@@ -724,7 +786,7 @@ impl Session {
         for i in 0..self.media.len() {
             log.extend(self.save_drive(i));
         }
-        if !self.cfg.readonly {
+        if !self.cfg.readonly && !self.cfg.bubble_protect {
             if let (Some(p), Some(bub)) = (some(&self.cfg.bubble), self.m.board_mut().bubble.as_mut()) {
                 if bub.dirty {
                     match fs::write(&p, &bub.image) {
@@ -923,6 +985,13 @@ mod tests {
         assert_eq!(again.spec(), d.spec());
         assert_eq!(GpibDevice::parse("2102").unwrap().addr, 6);
         assert_eq!(GpibDevice::parse("folder|folder=x").unwrap().addr, 13);
+        let p = GpibDevice::parse("2101|protect-hd|protect-disk").unwrap();
+        assert!(p.hd_protect && p.disk_protect);
+        assert_eq!(GpibDevice::parse(&p.spec()).unwrap().spec(), p.spec());
+        // --readonly turns into every unit's write protect
+        let mut c = MachineConfig { hd: "a.img".into(), flop: "b.img".into(), readonly: true, ..Default::default() };
+        c.normalize();
+        assert!(!c.readonly && c.bubble_protect && c.gpib.iter().all(|d| d.hd_protect && d.disk_protect));
         assert!(GpibDevice::parse("2103").is_err());
         assert!(GpibDevice::parse("2101|addr=x").is_err());
     }

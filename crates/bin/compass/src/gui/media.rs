@@ -170,6 +170,14 @@ fn drives(app: &mut App, ui: &mut egui::Ui) {
                                 action = Some(Box::new(move |app: &mut App| app.insert_at(i, None)));
                             }
                         }
+                        let mut wp = s.protected(i);
+                        if ui.checkbox(&mut wp, "Write protect").on_hover_text("floppy: the write-protect tab (GRiD gets error 106); hard disk and PC folder: changes are not saved").changed() {
+                            action = Some(Box::new(move |app: &mut App| {
+                                if let Some(s) = &mut app.sess {
+                                    s.set_protected(i, wp);
+                                }
+                            }));
+                        }
                         if d.dirty && ui.button("Write back").clicked() {
                             action = Some(Box::new(move |app: &mut App| {
                                 let log = app.sess.as_mut().map(|s| s.save_drive(i)).unwrap_or_default();

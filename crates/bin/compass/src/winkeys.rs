@@ -198,9 +198,18 @@ pub fn clear() {
 }
 
 /// Compass keys held now and tapped since the last poll, and the modifier bits.
-pub fn poll(down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &mut u8) {
+/// `printed`: keys by printed letter, so digits and punctuation come from typed text instead,
+/// unless Ctrl or Alt alone is held.
+pub fn poll(printed: bool, down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &mut u8) {
     use grid_core::keyboard;
+    let (ctrl, alt) = (vk(VK_CONTROL).0, vk(VK_MENU).0);
+    let text_keys = printed && !(ctrl ^ alt);
     for &(c, k) in KEYS {
+        if text_keys && !(c.is_ascii_lowercase() || " \r\t\x1b\x08\u{e000}\u{e001}\u{e002}\u{e003}".contains(c)) {
+            // still read it, so a press now does not count later
+            let _ = vk(k);
+            continue;
+        }
         let (d, t) = vk(k);
         if let Some((col, bit, _)) = keyboard::key_for_char(c) {
             if d {

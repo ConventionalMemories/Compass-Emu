@@ -32,17 +32,29 @@ Machine setup, drives and keys:
   whatever their file names, and copies them into the profile's ROM folder under
   the names the emulator looks for (a 16K boot PROM file is split into its even
   and odd halves). Also `compass import-roms SOURCE [ROMFOLDER]`.
-- Emulation level per drive: Drives > "2101 box" and "2102 floppy" choose Low level
-  (the drive's own firmware runs) or Protocol model. The status bar shows LL or P
-  beside each drive; hover for the details. Also --2101-protocol, --2102-protocol,
-  --rom-2101, --rom-2101-10 and --rom-2102.
-- 2101 front panel: the box's 4-character LED display and its drive lights (View >
-  2101 front panel, or click the small display in the status bar). It shows what
-  the 2101 firmware writes to the display, so only with the low-level 2101.
+- GPIB devices on the setup page: a card per unit (2101 Disc System, 2102 Floppy,
+  PC folder drive) with an on/off box, its GPIB address and GRiD-OS name (changeable),
+  Low level (the unit's own firmware runs) or Protocol model, its own firmware file if
+  wanted, and its disks. Two 2101 boxes (4 + 5 and 12 + 13), each at its own level.
+  A floppy drive with no disk is emulated too, so GRiD-OS lists it and a disk
+  inserted later is seen. The PC folder drive is a unit of its own (13 Extra Floppy
+  Disk next to a 2101), so the 2101 keeps its floppy drive and its firmware. The
+  status bar shows each drive's GRiD-OS name and LL or P; hover for the details.
+  Also --gpib, --folder-addr, --2101-protocol, --2102-protocol, --rom-2101,
+  --rom-2101-10 and --rom-2102. Older profiles turn into units by themselves.
+- Power on sits beside each profile (double-click a profile to power it on) and at
+  the top of the page.
+- 2101 front panel: the box's 4-character red LED display and its drive lights (View >
+  2101 front panel, or click the small display in the status bar), one per 2101 box.
+  It shows what the 2101 firmware writes to the display, so only with the low-level
+  2101.
 - Keys on Windows: a held key no longer goes on after it is let go (Windows key
   repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
   instead of switching windows (the keyboard hook now runs on its own thread, so
-  Windows no longer drops it when a frame is slow).
+  Windows no longer drops it when a frame is slow, and the window itself refuses
+  Alt+Esc). Help > Keyboard map shows whether these guards are on.
+- Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
+  PC keys > By position (US layout) for the old way.
 
 Build and run in the window:
 - Project > Project window: pick a project folder (NAME.pas, NAME.asm, ...) and a
@@ -64,9 +76,14 @@ Extras:
   Edit > Copy screen puts the Compass screen on the clipboard as a picture.
 - Speed slider (toolbar and Machine menu): 10 % to 400 % of a real Compass;
   double-click it for 100 %.
-- On-screen Compass keyboard (View, or Keyboard on the toolbar): click a key to
-  type it, hold the mouse button to hold it; SHIFT, CTRL and CODE stay on for the
-  next key.
+- On-screen Compass keyboard (View, or Keyboard on the toolbar), laid out and
+  coloured like the real one: click a key to type it, hold the mouse button to
+  hold it; SHIFT, CTRL and CODE stay on for the next key.
+- Saved states with pictures: Machine > Save state keeps the machine and a picture
+  of its screen with the profile; Machine > Saved states... shows them as
+  thumbnails to load (double-click) or delete. A state holds no disks.
+- The 8087 core switches while the machine runs (Machine > 8087 on its microcode
+  ROM), like the fast CPU core.
 - View > EL panel look: glow around lit pixels, dark gaps between pixels (at 3x and
   more) and a short afterglow.
 
@@ -219,20 +236,13 @@ Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
 ## 0.8.0
 
 - The 2101 hard disk box runs low-level when roms holds its firmware
-  (300205-05.bin for the 20 MB box, 300205-06.bin for the 10 MB one; 2101.bin
-  also works): the box's 8088 (4 MHz) runs the real ROM, with an 8291A GPIB
-  chip, the 74LS259 latch, a WD2797 floppy controller and a Xebec S1410 SASI
-  controller (the S1410 at command level, timed after its ROM and a real 2101
-  with an ST-225). The ROM is picked from the hard disk image size.
-- The 2101's 4-character display shows in the status bar and in the debugger.
-- The 2101 floppy goes through the box's firmware too: a format writes
-  interleave 3, and an empty slot gives error 128 as on the real box.
-- Disk timing fitted to GRiDBench 2.1b on a real 1101 + 2101 (ms, emulated vs
-  real): same page 17.0 / 19.0, sequential 23.8 / 21.1, random 55.8 / 53.5,
-  first/last 133.7 / 130.3, steps 117.8 / 122.5. The drive is taken as formatted
-  at interleave 4 (S1410_IL changes it; S1410_SEEK the seek curve).
-- GRID_2101=protocol uses the protocol-level model; it is also used when no
-  2101 ROM is there, or when a PC folder is the 2101 floppy.
+  (300205-05.bin 20 MB, 300205-06.bin 10 MB): the box's 8088 runs the real
+  ROM; the Xebec controller is modelled at command level, timed after a real
+  2101. Its 4-character display shows in the status bar.
+- The 2101 floppy goes through the firmware too; an empty slot gives error
+  128 as on the real box.
+- Disk speed fitted to GRiDBench on a real 1101 + 2101 (within about 10%).
+- GRID_2101=protocol uses the old protocol-level model instead.
 
 ## 0.7.0
 

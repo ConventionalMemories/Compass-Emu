@@ -35,10 +35,11 @@ fn build_disk(app: &App) -> String {
     if !p.is_empty() {
         return p.clone();
     }
-    match &app.sess {
-        Some(s) => s.cfg.hd.clone(),
-        None => app.setup.current().hd.clone(),
-    }
+    let cfg = match &app.sess {
+        Some(s) => &s.cfg,
+        None => app.setup.current(),
+    };
+    cfg.devices().into_iter().find(|d| d.enabled && d.kind == "2101" && !d.hd.trim().is_empty()).map(|d| d.hd).unwrap_or_default()
 }
 
 pub fn pick_project(app: &mut App) {

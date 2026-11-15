@@ -17,15 +17,19 @@ The emulator now has menus (Machine, Edit, Media, Project, View, Debug, Help), a
 status bar with the speed and a light for each drive.
 - Started from a .bat (or with machine options on the command line) the machine
 powers on right away. Started on its own (double-click compass.exe) it opens
-the machine setup page: pick a profile or make one (model, ROM folder, hard
-disk, floppies, PC folder, bubble, ROM sockets, serial port, sound), then
-Power on. Profiles are kept in compass-profiles.json next to compass.exe.
+the machine setup page: pick a profile or make one (model, ROM folder, GPIB
+devices, bubble, ROM sockets, serial port, sound), then Power on (the button
+beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe.
 "Save as shortcut" writes a .bat that starts that machine. Run a .bat once
 first so the ROMs are unpacked into compass-emu\roms.
-- Machine: power off (back to setup), restart, pause, turbo, the fast CPU core,
-quick save / quick load (kept in memory, disks included), save and load a
-state file (a state file holds no disks: keep them as they were).
-- Media: the media manager. Swap or take out floppies while the machine runs
+- Machine: power off (back to setup), restart, pause, turbo, the fast CPU core
+and the 8087 core (both switch while the machine runs), quick save / quick
+load (kept in memory, disks included), Save state and Saved states... (states
+with a picture of the screen, kept per profile in saved-states\ next to
+compass.exe), save and load a state file (a state holds no disks: keep them
+as they were).
+- Media: one entry per floppy drive (Insert, Recent, Take out) and the media
+manager. Swap or take out floppies while the machine runs
 (a changed disk is written back first), write changed disks back now,
 and a GRiD file browser for disk images: hard disk volumes, subjects and
 files with sizes and dates. Export files to the PC from any disk; import,
@@ -41,8 +45,8 @@ floppy drive (hold Shift for the 2101 floppy drive), a .state file loads
 that state. On the setup page a floppy image, a hard disk image (anything
 over 2 MB), a bubble image (name with "bubble") or a folder (PC folder
 drive) goes into the selected profile.
-- Recent disks: Media > Recent into the 2102 / 2101 drive, and a Recent menu
-beside the hard disk and floppy fields on the setup page.
+- Recent disks: Media > (a floppy drive) > Recent, and a Recent menu beside
+the hard disk and floppy fields on the setup page.
 - .IMD floppy files (ImageDisk) work wherever a floppy image does: the
 emulator uses the .img with the same name beside it, and makes that .img
 from the .IMD the first time. Changes go to the .img; the .IMD stays as it was.
@@ -57,9 +61,17 @@ the small display in the status bar opens it too).
 100 %), Paste, the on-screen keyboard and Build and run.
 - Setup page, ROMs: every ROM the profile uses, the file found and a field to
 pick another; Import ROMs... copies GRiD ROMs from a folder or zip, known by
-checksum, under the names the emulator looks for. Drives: Low level (the
-drive's own firmware) or Protocol model for the 2101 box and the 2102. The
-status bar shows LL or P beside each drive.
+checksum, under the names the emulator looks for.
+- Setup page, GPIB devices: one card per unit on the Compass's GPIB bus (2101
+Disc System, 2102 Floppy, PC folder drive), "+ Add device" for more. Each
+card has an on/off box (off: left out of the machine for now, settings
+kept), its GPIB address with GRiD-OS's name for it (4 Hard Disk + 5 Floppy
+Disk, 12 Extra Hard Disk + 13 Extra Floppy Disk, 6 Portable Floppy...), Low
+level (the unit's own firmware) or Protocol model, an optional firmware file
+of its own, and its disks. Two 2101 boxes can each have their own level. A
+floppy drive with no disk is still there, so GRiD-OS lists it and sees a
+disk inserted later. The status bar names each drive by its GRiD-OS name
+and shows LL or P beside it.
 - Help > Keyboard map: which PC key is which Compass key.
 - Debug: the debugger workspace (see Demo tools) and a Chips window
 (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
@@ -71,7 +83,12 @@ plain window of 0.4 opens instead; --classic asks for it on purpose.
 
 ## Using it
 
-The PC keys map to the Compass keys by position. Alt = CODE, Ctrl = CTRL.
+The PC keys go by the letter printed on them, so any layout (AZERTY,
+QWERTZ...) types what its keys say: letters by their letter, digits and
+punctuation by the character they type (AZERTY's & key types 1 only with
+Shift, as printed). View > PC keys > By position (US layout) puts every key
+back where it sits on a US keyboard. Alt = CODE, Ctrl = CTRL; with Ctrl or
+Alt held, digits and punctuation go by position.
 Quick taps are held at least 60 ms so the keyboard chip always sees them.
 The Compass keyboard takes at most 2 letter keys at once (3 freeze it, as on
 the real machine), so release keys when typing fast.
@@ -90,6 +107,7 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
             [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
             [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
+            [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]...
             [--classic] [--symbols DIR] [--no-catch]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
            1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
@@ -97,7 +115,14 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            GRiD-OS (the 1139 .bat makes that disk), the others the 11xx build.
 --prom     boot PROM as one 16K file (even/odd bytes interleaved), e.g. a dump
            from your own machine.
---folder   a folder on the PC as the GRiD "Floppy Disk" (see PC folder below).
+--folder   a folder on the PC as a GRiD drive (see PC folder below): the "Extra
+           Floppy Disk" (13) next to a 2101, else the "Floppy Disk" (5);
+           --folder-addr 5|6|13 picks the address.
+--gpib     one GPIB unit, as on the setup page (repeat for more; instead of
+           --hd, --flop, --flop2101 and --folder): 2101, 2102 or folder, then
+           addr=N (2101: 4 or 12, its floppy is at N+1), hd=, disk=, folder=,
+           rom= (its own firmware), protocol, off. Example: --gpib
+           "2101|addr=4|hd=disk.img" --gpib "2101|addr=12|hd=old.img|protocol".
 --rom0 .. --rom3  a chip in application ROM socket 0-3 (Compass II models;
            see Application ROMs below).
 --bubble   384K bubble image; made blank if the file doesn't exist (format it
@@ -140,7 +165,7 @@ Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when pre
 the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
 without it the protocol model answers as before.
 2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
-box), the 2101's own firmware. With it the 2101 runs low-level (see CHANGELOG
+box), the 2101's own firmware. With it the 2101 runs low-level (see New in
 0.8.0); without it the protocol model answers as before.
 ```
 

@@ -1135,6 +1135,7 @@ dependencies = [
  "eframe",
  "egui 0.34.2",
  "grid_core",
+ "i8087",
  "marty_core",
  "minifb",
  "png 0.17.16",

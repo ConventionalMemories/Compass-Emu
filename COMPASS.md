@@ -13,11 +13,20 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, drag and drop, recent disks, full screen and saved view settings, media
   manager with a GRiD file browser built on `grid_core::hostdir::Volume`,
-  debugger workspace, chips window, ROMs card and per-drive emulation level in `setup.rs`, the
+  debugger workspace, chips window, ROMs card and the GPIB devices cards in `setup.rs`, the
   2101 LED display in `led.rs`, the on-screen keyboard in `osk.rs`, the Project window in
-  `project.rs`); machine building in `session.rs`, real-time pacing, the speed setting, pasted
+  `project.rs`, saved states with thumbnails in `states.rs`); machine building in `session.rs`, real-time pacing, the speed setting, pasted
   text and keys in `runner.rs`; the minifb window of 0.4 is `classic.rs` (`--classic`, and the
   fallback when the GUI can't start).
+- GPIB units (`session::GpibDevice`, `--gpib`, the setup page's GPIB devices): each unit has
+  an address (`gpib::Drive::addr`; a 2101 answers on addr and addr+1, its DIP switch set to
+  match), an on/off flag, its own level (`Drive::protocol`) and optionally its own firmware
+  (`Drive::rom`). Two 2101 boxes each get their own low-level board. Empty floppy drives are
+  attached too, so GRiD-OS lists them. Old profiles (`hd`, `flop`, `flop2101`, `folder`)
+  turn into units through `MachineConfig::devices()`.
+- Keys by printed letter (default): letters by the layout's letter, digits and punctuation
+  from typed text as "exact" taps (`runner::EXACT`: pressed with the Compass key's own Shift,
+  whatever the PC's modifiers do). View > PC keys > By position for the US-position mapping.
 - Builds inside compass.exe (`src/build.rs`, `compass build`): the gridbuild.py flow on a hidden
   1129/1139 with the fast core, booted state cached per disk under `states/`. ROM import by
   CRC-32 (`src/romimport.rs`, `compass import-roms`). The PC folder drive takes in files added
@@ -108,7 +117,8 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
   cargo test --test lle2101`.
 - A PC folder as a GRiD drive (`--folder DIR`, `grid_core::hostdir`): at start the folder is
   built into a GRiD volume (files in the root, sub-folders as subjects, up to 32 MB with 4 MB
-  free) on the 2101 floppy address (GPIB 5); the volume is named after the folder. On quit,
+  free) as a GPIB unit of its own (13 Extra Floppy Disk next to a 2101, else 5 Floppy Disk;
+  `--folder-addr`); the volume is named after the folder. On quit,
   files GRiD made or changed are written to the folder and files GRiD erased are deleted
   there. Host files without a GRiD kind become `name~Text~` (LF line ends to CR LF) and keep
   their PC name; characters Windows can't store are written as %XX. The drive answers

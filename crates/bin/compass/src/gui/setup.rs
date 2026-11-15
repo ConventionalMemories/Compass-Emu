@@ -8,7 +8,7 @@ use grid_core::GridModel;
 use serde::{Deserialize, Serialize};
 
 use super::App;
-use crate::session::MachineConfig;
+use crate::session::{addr_choices, free_addr, grid_name, DriveRoms, GpibDevice, MachineConfig};
 
 const MODELS: &[(&str, &str)] = &[
     ("1101", "1101 (256K, 320 x 240)"),
@@ -56,6 +56,9 @@ pub struct GuiPrefs {
     pub build_disk: String,
     /// View > EL panel look.
     pub el_look: bool,
+    /// Keys by their position on a US keyboard (the older way) instead of by the letter
+    /// printed on the PC key.
+    pub keys_by_position: bool,
 }
 
 impl Default for GuiPrefs {
@@ -73,6 +76,7 @@ impl Default for GuiPrefs {
             recent_projects: vec![],
             build_disk: String::new(),
             el_look: false,
+            keys_by_position: false,
         }
     }
 }
@@ -192,23 +196,6 @@ impl SetupPage {
     }
 }
 
-/// Emulation level choice for a drive. `lle` = its firmware is there.
-fn level_row(ui: &mut egui::Ui, label: &str, level: &mut String, lle: bool) -> bool {
-    let mut ch = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.label(format!("{label}:"));
-        ch |= ui
-            .radio_value(level, String::new(), "Low level")
-            .on_hover_text("runs the drive's own firmware on its own CPU: real timing and behaviour (needs the firmware ROM)")
-            .changed();
-        ch |= ui.radio_value(level, "protocol".to_string(), "Protocol model").on_hover_text("answers GRiD's disk commands directly: no firmware needed").changed();
-    });
-    if level.is_empty() && !lle {
-        ui.label(RichText::new("  no firmware ROM: the protocol model runs (see ROMs below)").weak().small());
-    }
-    ch
-}
-
 const OK: egui::Color32 = egui::Color32::from_rgb(0x8F, 0xD1, 0x8F);
 const BAD: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x8A, 0x70);
 
@@ -269,19 +256,17 @@ fn roms_card(ui: &mut egui::Ui, c: &mut MachineConfig, default_roms: &Path, impo
         ui.end_row();
         let kbd = if c.kbd.trim().is_empty() { found.keyboard.clone() } else { PathBuf::from(c.kbd.trim()) };
         ch |= rom_row(ui, "Keyboard (8741)", &mut c.kbd, Some(&kbd), true, "");
-        let fd_note = if c.fd_level == "protocol" { "not used: protocol model chosen" } else { "not found: the protocol model runs (300237-02.bin)" };
-        let fd_used = if c.fd_level == "protocol" { None } else { dr.fd2102.clone() };
-        ch |= rom_row(ui, "2102 floppy firmware", &mut c.rom_2102, fd_used.as_deref(), false, fd_note);
-        let hd_note = |n: &str| if c.hd_level == "protocol" { "not used: protocol model chosen".to_string() } else { format!("not found ({n})") };
-        let (n20, n10) = (hd_note("300205-05.bin"), hd_note("300205-06.bin"));
+        let any = |k: &str| c.devices().iter().any(|d| d.enabled && d.kind == k && d.level != "protocol");
+        let fd_note = if any("2102") { "not found: the 2102 runs as the protocol model (300237-02.bin)" } else { "not found (300237-02.bin); only used by a low-level 2102" };
+        ch |= rom_row(ui, "2102 floppy firmware", &mut c.rom_2102, dr.fd2102.as_deref(), false, fd_note);
         let (h20, h10) = (dr.hd2101[0].clone(), dr.hd2101[1].clone());
-        ch |= rom_row(ui, "2101 firmware, 20 MB box", &mut c.rom_2101_20, h20.as_deref(), false, &n20);
-        ch |= rom_row(ui, "2101 firmware, 10 MB box", &mut c.rom_2101_10, h10.as_deref(), false, &n10);
+        ch |= rom_row(ui, "2101 firmware, 20 MB box", &mut c.rom_2101_20, h20.as_deref(), false, "not found (300205-05.bin)");
+        ch |= rom_row(ui, "2101 firmware, 10 MB box", &mut c.rom_2101_10, h10.as_deref(), false, "not found (300205-06.bin)");
         let mc = crate::session::fpu_microcode(&MachineConfig { fpu_micro: true, ..c.clone() }, &dir).flatten();
         let mc_note = if c.fpu_micro { "not found: the instruction-level 8087 runs (8087mc.txt)" } else { "optional, only for Computer > 8087 microcode (8087mc.txt)" };
         ch |= rom_row(ui, "8087 microcode", &mut c.fpu_rom, mc.as_deref(), false, mc_note);
     });
-    ui.label(RichText::new("The 2101 box takes the firmware that fits the hard disk image's size. The application ROM sockets are below.").weak().small());
+    ui.label(RichText::new("A 2101 box takes the firmware that fits its hard disk image's size; a unit under GPIB devices can name its own file instead.").weak().small());
     ch
 }
 
@@ -343,6 +328,174 @@ fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
+/// Which firmware a unit will run: (file, note). None: the protocol model runs.
+fn unit_firmware(d: &GpibDevice, dr: &DriveRoms) -> (Option<PathBuf>, String) {
+    if d.kind == "folder" {
+        return (None, "answers GRiD's disk commands directly".into());
+    }
+    if d.level == "protocol" {
+        return (None, "protocol model chosen".into());
+    }
+    if !d.rom.trim().is_empty() {
+        let p = PathBuf::from(d.rom.trim());
+        return if p.exists() { (Some(p.clone()), format!("firmware {}", file_name(&p))) } else { (None, format!("missing: {}", p.display())) };
+    }
+    if d.kind == "2102" {
+        return match &dr.fd2102 {
+            Some(p) if p.exists() => (Some(p.clone()), format!("firmware {} found", file_name(p))),
+            _ => (None, "no firmware (300237-02): protocol model runs".into()),
+        };
+    }
+    // 2101: the firmware that fits the hard disk's size
+    let pages = if d.hd.trim().is_empty() { 0 } else { std::fs::metadata(d.hd.trim()).map(|m| m.len() as usize / 512).unwrap_or(0) };
+    let ok = |p: &Option<PathBuf>| p.clone().filter(|p| p.exists());
+    let (r05, r06) = (ok(&dr.hd2101[0]), ok(&dr.hd2101[1]));
+    let pick = match pages {
+        41616 => r05,
+        20808 => r06,
+        0 => r05.or(r06),
+        _ => return (None, format!("{} KB hard disk fits no 2101 firmware: protocol model runs", pages / 2)),
+    };
+    match pick {
+        Some(p) => (Some(p.clone()), format!("firmware {} found", file_name(&p))),
+        None => (None, format!("no {} firmware: protocol model runs", if pages == 20808 { "300205-06" } else { "300205-05" })),
+    }
+}
+
+/// "4 Hard Disk + 5 Floppy Disk" for a 2101, "6 Portable Floppy" for the others.
+fn addr_text(kind: &str, a: u8) -> String {
+    if kind == "2101" {
+        format!("{a} {} + {} {}", grid_name(a), a + 1, grid_name(a + 1))
+    }
+    else {
+        format!("{a} {}", grid_name(a))
+    }
+}
+
+/// The GPIB devices: one card per unit, with an Add menu.
+fn gpib_section(ui: &mut egui::Ui, c: &mut MachineConfig, dr: &DriveRoms, recent_hds: &[String], recent_floppies: &[String]) -> bool {
+    let mut ch = false;
+    if c.gpib.is_empty() && !c.devices().is_empty() {
+        c.normalize();
+        ch = true;
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("GPIB devices").strong().size(16.0).color(egui::Color32::from_rgb(0xFF, 0xC9, 0x4D)));
+        ui.label(RichText::new("the units on the Compass's GPIB bus").weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("+ Add device", |ui| {
+                let used: Vec<u8> = c.gpib.iter().filter(|d| d.enabled).flat_map(|d| d.addrs()).collect();
+                for (kind, text) in [("2101", "2101 Disc System (hard disk + floppy)"), ("2102", "2102 Floppy"), ("folder", "PC folder drive")] {
+                    if ui.button(text).clicked() {
+                        c.gpib.push(GpibDevice::new(kind, free_addr(kind, &used)));
+                        ch = true;
+                        ui.close();
+                    }
+                }
+            });
+        });
+    });
+    for p in c.gpib_problems() {
+        ui.colored_label(BAD, p);
+    }
+    if c.gpib.is_empty() {
+        ui.label(RichText::new("No units: the Compass boots from its bubble memory or ROMs only. Add a 2101 for a hard disk.").weak());
+    }
+    let n2101 = c.gpib.iter().filter(|d| d.kind == "2101").count();
+    let mut remove = None;
+    for (i, d) in c.gpib.iter_mut().enumerate() {
+        ui.add_space(4.0);
+        egui::Frame::group(ui.style())
+            .inner_margin(10.0)
+            .fill(if d.enabled { ui.visuals().faint_bg_color } else { ui.visuals().extreme_bg_color })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ch |= ui.checkbox(&mut d.enabled, "").on_hover_text("on: part of the machine at the next Power on; off: left out, settings kept").changed();
+                    let title = if d.kind == "2101" && n2101 > 1 && d.addr != 4 { format!("{} (second box)", d.title()) } else { d.title().to_string() };
+                    ui.label(RichText::new(title).strong().size(14.0));
+                    if !d.enabled {
+                        ui.label(RichText::new("off for now").weak());
+                    }
+                    ui.add_space(8.0);
+                    ui.label("GPIB");
+                    egui::ComboBox::from_id_salt(("addr", i)).selected_text(addr_text(&d.kind, d.addr)).width(230.0).show_ui(ui, |ui| {
+                        let mut list = addr_choices(&d.kind).to_vec();
+                        if !list.contains(&d.addr) {
+                            list.push(d.addr);
+                        }
+                        for a in list {
+                            if ui.selectable_label(d.addr == a, addr_text(&d.kind, a)).clicked() {
+                                d.addr = a;
+                                ch = true;
+                            }
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+                ui.add_enabled_ui(d.enabled, |ui| {
+                    if d.kind != "folder" {
+                        let (fw, note) = unit_firmware(d, dr);
+                        ui.horizontal(|ui| {
+                            ui.label("Emulation");
+                            let mut low = d.level != "protocol";
+                            let a = ui.selectable_value(&mut low, true, "Low level").on_hover_text("runs the unit's own firmware on its own CPU: real timing and behaviour (needs the firmware ROM)");
+                            let b = ui.selectable_value(&mut low, false, "Protocol model").on_hover_text("answers GRiD's disk commands directly: no firmware needed");
+                            if a.changed() || b.changed() {
+                                d.level = if low { String::new() } else { "protocol".into() };
+                                ch = true;
+                            }
+                            ui.add_space(8.0);
+                            if fw.is_some() {
+                                ui.colored_label(OK, note);
+                            }
+                            else if d.level == "protocol" {
+                                ui.label(RichText::new(note).weak());
+                            }
+                            else {
+                                ui.colored_label(BAD, note);
+                            }
+                        });
+                        egui::CollapsingHeader::new(RichText::new("Own firmware file").small()).id_salt(("fw", i)).default_open(!d.rom.is_empty()).show(ui, |ui| {
+                            ch |= path_row(ui, "", &mut d.rom, false, &[]);
+                            ui.label(RichText::new("empty: the one from the ROMs card").weak().small());
+                        });
+                    }
+                    let flop = &["img", "IMG", "imd", "IMD"];
+                    match d.kind.as_str() {
+                        "2101" => {
+                            ui.columns(2, |cols| {
+                                ch |= path_row_recent(&mut cols[0], &format!("Hard disk image ({} {})", d.addr, grid_name(d.addr)), &mut d.hd, false, &["img", "IMG"], recent_hds);
+                                let note = if d.disk.is_empty() { ": drive there, no disk (insert one any time)" } else { "" };
+                                ch |= path_row_recent(&mut cols[1], &format!("Floppy disk ({} {}){note}", d.addr + 1, grid_name(d.addr + 1)), &mut d.disk, false, flop, recent_floppies);
+                            });
+                        }
+                        "2102" => {
+                            let note = if d.disk.is_empty() { ": drive there, no disk (insert one any time)" } else { "" };
+                            ch |= path_row_recent(ui, &format!("Floppy disk{note}"), &mut d.disk, false, flop, recent_floppies);
+                        }
+                        _ => {
+                            ch |= path_row(ui, "PC folder (its files show as a GRiD floppy disk)", &mut d.folder, true, &[]);
+                            ui.label(RichText::new("Its own GPIB unit, so a 2101 next to it stays low level. Put it at 13 Extra Floppy Disk next to a 2101 at 4, or at 5 Floppy Disk in place of the 2101's floppy drive.").weak().small());
+                        }
+                    }
+                });
+            });
+    }
+    if let Some(i) = remove {
+        c.gpib.remove(i);
+        ch = true;
+    }
+    if ch {
+        c.normalize();
+    }
+    ch
+}
+
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let default_roms = app.default_roms.clone();
     let recent_hds = app.setup.data.gui.recent_hds.clone();
@@ -354,11 +507,29 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         let sp = &mut app.setup;
         let mut pick = None;
+        let green = egui::Color32::from_rgb(0x2E, 0x7D, 0x32);
+        // the panel's own width (the rows must not widen a resizable panel)
+        let panel_w = ui.available_width();
         for (i, p) in sp.data.profiles.iter().enumerate() {
+            let sel = i == sp.data.selected;
             let text = format!("{}\n{}", if p.name.is_empty() { "(no name)" } else { &p.name }, p.summary());
-            if ui.selectable_label(i == sp.data.selected, text).clicked() {
-                pick = Some(i);
-            }
+            ui.horizontal(|ui| {
+                let bw = if sel { 92.0 } else { 30.0 };
+                let w = (panel_w - bw - ui.spacing().item_spacing.x - 2.0).max(80.0);
+                let r = ui.add(egui::Button::selectable(sel, RichText::new(text)).right_text("").min_size(egui::vec2(w, 38.0)).wrap_mode(egui::TextWrapMode::Wrap));
+                if r.clicked() {
+                    pick = Some(i);
+                }
+                if r.double_clicked() {
+                    pick = Some(i);
+                    power = true;
+                }
+                let b = if sel { egui::Button::new(RichText::new("▶ Power on").strong()).fill(green) } else { egui::Button::new("▶") };
+                if ui.add_sized([bw, 38.0], b).on_hover_text(format!("Power on {}", p.name)).clicked() {
+                    pick = Some(i);
+                    power = true;
+                }
+            });
         }
         if let Some(i) = pick {
             sp.data.selected = i;
@@ -385,6 +556,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 sp.dirty = true;
             }
         });
+        ui.add_space(6.0);
+        ui.label(RichText::new("Double-click a profile to power it on.").weak().small());
     });
     egui::CentralPanel::default().show_inside(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -394,9 +567,18 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             let mut ch = false;
             let mut import = false;
             ui.add_space(6.0);
+            let mut shortcut = false;
             ui.horizontal(|ui| {
                 ui.label("Name");
                 ch |= ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(320.0)).changed();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("▶ Power on").strong()).fill(egui::Color32::from_rgb(0x2E, 0x7D, 0x32))).clicked() {
+                        power = true;
+                    }
+                    if ui.button("Save as shortcut (.bat)...").clicked() {
+                        shortcut = true;
+                    }
+                });
             });
             ui.add_space(6.0);
             let wide = ui.available_width() > 900.0;
@@ -421,10 +603,10 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                     ui.label("CPU core");
-                    ch |= ui.checkbox(&mut c.fast, "Fast (whole instructions, approximate timing)").changed();
+                    ch |= ui.checkbox(&mut c.fast, "Fast (whole instructions, approximate timing; switchable while running)").changed();
                     ui.label("8087");
                     ch |= ui
-                        .checkbox(&mut c.fpu_micro, "Run on the 8087's own microcode ROM (you supply the ROM)")
+                        .checkbox(&mut c.fpu_micro, "Run on the 8087's own microcode ROM (you supply the ROM; switchable while running)")
                         .on_hover_text("slower, closer to the real chip; see docs/8087-microcode.md. Off: the instruction-level 8087")
                         .changed();
                 });
@@ -432,20 +614,15 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     Some(b) => b,
                     None => &mut *a,
                 };
-                card(col2, "Drives (GPIB)", |ui| {
-                    ch |= path_row_recent(ui, "2101 hard disk image", &mut c.hd, false, &["img", "IMG"], &recent_hds);
-                    ch |= path_row_recent(ui, "2102 floppy image (.img or .IMD)", &mut c.flop, false, &["img", "IMG", "imd", "IMD"], &recent_floppies);
-                    ch |= path_row_recent(ui, "2101 floppy image (.img or .IMD)", &mut c.flop2101, false, &["img", "IMG", "imd", "IMD"], &recent_floppies);
-                    ch |= path_row(ui, "PC folder as the 2101 floppy", &mut c.folder, true, &[]);
+                card(col2, "Bubble memory and disk files", |ui| {
                     ch |= path_row(ui, "Bubble memory image (made if missing)", &mut c.bubble, false, &[]);
-                    ui.label("Disks");
+                    ui.label("Disk image files");
                     ch |= ui.checkbox(&mut c.readonly, "Never write changes back to the image files").changed();
-                    // firmware there, whatever level is picked
-                    let dr = MachineConfig { hd_level: String::new(), fd_level: String::new(), ..c.clone() }.drive_roms(&default_roms);
-                    ch |= level_row(ui, "2101 box (hard disk + its floppy)", &mut c.hd_level, dr.hd2101.iter().any(|r| r.is_some()));
-                    ch |= level_row(ui, "2102 floppy", &mut c.fd_level, dr.fd2102.is_some());
                 });
             });
+            ui.add_space(8.0);
+            let dr = c.drive_roms(&default_roms);
+            ch |= gpib_section(ui, c, &dr, &recent_hds, &recent_floppies);
             ui.add_space(6.0);
             card(ui, "ROMs", |ui| {
                 ch |= roms_card(ui, c, &default_roms, &mut import);
@@ -499,24 +676,18 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             if ch {
                 sp.dirty = true;
             }
+            if shortcut {
+                let name = if c.name.is_empty() { "Compass".to_string() } else { c.name.clone() };
+                if let Some(p) = rfd::FileDialog::new().add_filter("Batch file", &["bat"]).set_file_name(format!("Start {name}.bat")).save_file() {
+                    let args: Vec<String> = c.args().iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
+                    let bat = format!("@echo off\r\nrem Compass-Emu machine \"{name}\"\r\ncd /d \"%~dp0\"\r\ncompass.exe {}\r\nif errorlevel 1 pause\r\n", args.join(" "));
+                    sp.message = Some(match std::fs::write(&p, bat) {
+                        Ok(_) => format!("wrote {}", p.display()),
+                        Err(e) => format!("{}: {e}", p.display()),
+                    });
+                }
+            }
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save as shortcut (.bat)").clicked() {
-                    let name = if c.name.is_empty() { "Compass".to_string() } else { c.name.clone() };
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Batch file", &["bat"]).set_file_name(format!("Start {name}.bat")).save_file() {
-                        let args: Vec<String> = c.args().iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
-                        let bat = format!("@echo off\r\nrem Compass-Emu machine \"{name}\"\r\ncd /d \"%~dp0\"\r\ncompass.exe {}\r\nif errorlevel 1 pause\r\n", args.join(" "));
-                        sp.message = Some(match std::fs::write(&p, bat) {
-                            Ok(_) => format!("wrote {}", p.display()),
-                            Err(e) => format!("{}: {e}", p.display()),
-                        });
-                    }
-                }
-                ui.add_space(12.0);
-                if ui.add(egui::Button::new(RichText::new("  Power on  ").strong()).fill(egui::Color32::from_rgb(0x8A, 0x63, 0x00))).clicked() {
-                    power = true;
-                }
-            });
             if let Some(m) = &sp.message {
                 ui.label(m);
             }

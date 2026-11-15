@@ -95,7 +95,7 @@ pub fn run(mut s: Session, scale: u32, overlay_on: bool) {
             }
         }
         #[cfg(windows)]
-        crate::winkeys::poll(&mut down, &mut tapped, &mut mods);
+        crate::winkeys::poll(false, &mut down, &mut tapped, &mut mods);
         let tapped: Vec<((usize, u8), u8)> = tapped.into_iter().map(|p| (p, mods)).collect();
         run.set_keys(&mut s.m, &down, &tapped, mods);
         if win.is_key_pressed(Key::F12, KeyRepeat::No) {

@@ -7,6 +7,7 @@ description = "Compass-Emu: GRiD Compass emulator with a window"
 
 [dependencies]
 grid_core = { path = "../../lib/grid_core" }
+i8087 = { path = "../../lib/i8087" }
 marty_core = { path = "../../lib/marty_core", default-features = false }
 minifb = "0.27"
 eframe = { workspace = true, default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }

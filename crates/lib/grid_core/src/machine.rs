@@ -500,6 +500,21 @@ impl GridMachine {
         self.cpu.bus().coprocessor().and_then(|c| c.as_any().downcast_ref::<crate::fpu::Fpu>()).map(|f| &f.0)
     }
 
+    /// The 8087 on its microcode ROM (Some) or on the instruction-level core (None), while
+    /// the machine runs: between two instructions, like the fast CPU core.
+    pub fn set_fpu_microcode(&mut self, rom: Option<i8087::micro::MicroRom>) {
+        if let Some(f) = self.fpu_mut() {
+            match rom {
+                Some(r) => f.use_microcode(r),
+                None => drop(f.take_microcode()),
+            }
+        }
+    }
+
+    pub fn fpu_microcode(&self) -> bool {
+        self.fpu().map(|f| f.microcode()).unwrap_or(false)
+    }
+
     pub fn fpu_mut(&mut self) -> Option<&mut i8087::I8087> {
         self.cpu.bus_mut().coprocessor_mut().and_then(|c| c.as_any_mut().downcast_mut::<crate::fpu::Fpu>()).map(|f| &mut f.0)
     }
@@ -643,7 +658,10 @@ impl GridMachine {
         }
         m.cpu.bus_mut().install_external(Box::new(st.board));
         if let (Some(f), Some(saved)) = (m.fpu_mut(), st.fpu) {
+            // the microcode core (not in the state) stays as the new machine set it up
+            let micro = f.take_microcode();
             *f = saved;
+            f.put_microcode(micro);
         }
         m.set_exact_regs(&st.regs, st.ip, st.flags, st.clocks);
         m.instructions = st.instructions;

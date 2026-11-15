@@ -67,9 +67,21 @@ impl Disk {
         if cyl >= CYLS || (first + SPT) * PAGE > image.len() {
             return Vec::new();
         }
+        // Logical sector in each rotation slot: place sector s `il` slots after sector s-1,
+        // moving on to the next free slot when that one is taken (interleave 3 on 9 sectors
+        // gives IDs 1 4 7 2 5 8 3 6 9). With an interleave prime to 9 nothing collides.
+        let mut order = [usize::MAX; SPT];
+        let mut slot = (head as usize * self.skew as usize) % SPT;
+        for s in 0..SPT {
+            while order[slot] != usize::MAX {
+                slot = (slot + 1) % SPT;
+            }
+            order[slot] = s;
+            slot = (slot + self.il.max(1) as usize) % SPT;
+        }
         let mut v = Vec::with_capacity(SPT);
         for slot in 0..SPT as u32 {
-            let s = (0..SPT as u32).find(|&s| (s * self.il + head as u32 * self.skew) % SPT as u32 == slot).unwrap_or(slot);
+            let s = order[slot as usize] as u32;
             let r = s as u8 + 1 + if head == 1 && !self.ibm { SPT as u8 } else { 0 };
             let id_pos = FIRST_ID + SEC_LEN * slot as u16;
             v.push(SecLayout {
@@ -900,5 +912,33 @@ impl Wd2797 {
     fn finish_at(&mut self, t: u64) {
         self.st = St::Finish;
         self.next = t;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(il: u32, skew: u32, head: u8) -> Vec<u8> {
+        let d = Disk { layouts: Vec::new(), ibm: false, il, skew };
+        let img = vec![0u8; 720 * PAGE];
+        d.standard(&img, 0, head).iter().map(|s| s.id[2]).collect()
+    }
+
+    #[test]
+    fn standard_layout_has_every_sector() {
+        // The 2101's own format: interleave 3, no skew.
+        assert_eq!(ids(3, 0, 0), [1, 4, 7, 2, 5, 8, 3, 6, 9]);
+        assert_eq!(ids(3, 0, 1), [10, 13, 16, 11, 14, 17, 12, 15, 18]);
+        // The 2102 default (interleave 5, side 1 shifted 7) stays as it was.
+        assert_eq!(ids(5, 7, 0), [1, 3, 5, 7, 9, 2, 4, 6, 8]);
+        for il in 1..=8 {
+            for head in 0..2 {
+                let mut v = ids(il, 7, head);
+                v.sort();
+                let first = 1 + head * 9;
+                assert_eq!(v, (first..first + 9).collect::<Vec<_>>(), "il {il} head {head}");
+            }
+        }
     }
 }

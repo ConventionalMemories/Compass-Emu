@@ -31,6 +31,11 @@
 //!   --rom-2102 F                 2102 floppy firmware (default 300237-02.bin in the ROM folder)
 //!   --rom-2101 F / --rom-2101-10 F  2101 firmware for the 20 MB / 10 MB box (300205-05/-06.bin)
 //!   --2102-protocol / --2101-protocol  that drive answers from the protocol model (no firmware)
+//!   --gpib UNIT|key=value...  one GPIB unit (2101, 2102 or folder), as the setup page has them:
+//!     addr=N (GRiD-OS: 4 Hard Disk, 5 Floppy Disk, 6 Portable Floppy, 12 Extra Hard Disk,
+//!     13 Extra Floppy Disk; a 2101 also answers on N+1), hd=, disk=, folder=, rom=, protocol, off.
+//!     Given at least once, it replaces --hd, --flop, --flop2101 and --folder.
+//!   --folder-addr N  GPIB address of the --folder drive (default 13 with a 2101, else 5)
 //!   --classic                    the plain window of 0.4 (no menus) instead of the GUI
 //!   --symbols D                  program symbols for the debugger: the project folder of a
 //!                                debug build (gridbuild.py debug saves NAME.pas.obj files there)
@@ -66,7 +71,7 @@ pub const VERSION: &str = "0.11.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]... [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -189,6 +194,14 @@ fn main() {
             "--rom-2101-10" => cfg.rom_2101_10 = val(),
             "--2102-protocol" => cfg.fd_level = "protocol".into(),
             "--2101-protocol" => cfg.hd_level = "protocol".into(),
+            "--gpib" => match session::GpibDevice::parse(&val()) {
+                Ok(d) => cfg.gpib.push(d),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1)
+                }
+            },
+            "--folder-addr" => cfg.folder_addr = val().parse().unwrap_or_else(|_| usage()),
             "--fpu-rom" => {
                 cfg.fpu_rom = val();
                 cfg.fpu_micro = true;

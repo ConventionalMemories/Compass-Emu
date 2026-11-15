@@ -306,6 +306,11 @@ impl Bus86 for Ctx<'_, '_> {
 }
 
 impl Box2101 {
+    /// Set the DIP switches to GPIB address `addr` (hard disk; the floppy answers on addr + 1).
+    pub fn set_address(&mut self, addr: u8) {
+        self.hw.dip = addr & 0x1F;
+    }
+
     /// A 2101 with firmware `rom` (8 KB).
     pub fn new(rom: Vec<u8>) -> Box2101 {
         let mut fdc = Wd2797::new();

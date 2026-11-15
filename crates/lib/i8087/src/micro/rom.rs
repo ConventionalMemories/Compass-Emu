@@ -59,14 +59,17 @@ impl MicroRom {
     }
 
     /// The ROM named by the I8087_MICROCODE environment variable, or `roms/8087mc.txt` /
-    /// `roms/8087mc.bin` under the current directory. None if there is none.
+    /// `roms/8087mc.bin` under the current directory or beside the program. None if there is none.
     pub fn find() -> Option<MicroRom> {
         if let Ok(p) = std::env::var("I8087_MICROCODE") {
             return MicroRom::load(std::path::Path::new(&p)).ok();
         }
-        for p in ["roms/8087mc.txt", "roms/8087mc.bin"] {
-            if let Ok(r) = MicroRom::load(std::path::Path::new(p)) {
-                return Some(r);
+        let exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf()));
+        for dir in [Some(std::path::PathBuf::from(".")), exe].into_iter().flatten() {
+            for p in ["roms/8087mc.txt", "roms/8087mc.bin"] {
+                if let Ok(r) = MicroRom::load(&dir.join(p)) {
+                    return Some(r);
+                }
             }
         }
         None

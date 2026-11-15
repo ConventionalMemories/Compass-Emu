@@ -70,6 +70,7 @@ fn fixed_clocks(first: u8, modrm: u8) -> f32 {
         0xD8F0 => 9.2,
         0xD8F8 => 9.4,
         0xD9C0 => 10.9,
+        0xD9D0 => 4.5,
         0xD9E1 => 8.6,
         0xD9E4 => 9.1,
         0xD9E5 => 8.7,
@@ -100,4 +101,21 @@ fn fixed_clocks(first: u8, modrm: u8) -> f32 {
 pub fn clocks(run: &core::Run, first: u8, modrm: u8) -> u32 {
     let c: f32 = run.kinds.iter().zip(KIND_CLOCKS).map(|(n, c)| *n as f32 * c).sum::<f32>() + fixed_clocks(first, modrm);
     c.round().max(2.0) as u32
+}
+
+/// Clocks to add to the instruction-level core's table time of an instruction the chip does
+/// in hardwired logic (the control instructions, FSAVE and FRSTOR), from 8087 Bench group M
+/// on a real 1101. `op` is the low three bits of the first byte, `reg` the middle field of
+/// the second.
+pub fn control_fit(op: u8, reg: u8, mem: bool) -> i32 {
+    match (mem, op, reg) {
+        (true, 1, 4) => -6,  // FLDENV
+        (true, 1, 5) => -10, // FLDCW
+        (true, 1, 6) => -3,  // FSTENV
+        (true, 1, 7) => -3,  // FSTCW
+        (true, 5, 4) => 7,   // FRSTOR
+        (true, 5, 6) => 8,   // FSAVE
+        (true, 5, 7) => -3,  // FSTSW
+        _ => 0,
+    }
 }

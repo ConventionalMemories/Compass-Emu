@@ -36,6 +36,7 @@ struct Msg {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Hwnd;
+    fn GetLastError() -> u32;
 }
 
 const WH_KEYBOARD_LL: i32 = 13;
@@ -73,6 +74,7 @@ unsafe extern "system" fn kbd_hook(code: i32, wparam: usize, lparam: isize) -> i
                 st[0].store(!up, Ordering::Relaxed);
                 if !up {
                     st[1].store(true, Ordering::Relaxed);
+                    CAUGHT_HOOK.fetch_add(1, Ordering::Relaxed);
                 }
                 return 1;
             }
@@ -85,12 +87,35 @@ const GWLP_WNDPROC: i32 = -4;
 const WM_SYSCOMMAND: u32 = 0x0112;
 const WM_SYSCHAR: u32 = 0x0106;
 const SC_KEYMENU: usize = 0xF100;
+const SC_NEXTWINDOW: usize = 0xF040;
+const SC_PREVWINDOW: usize = 0xF050;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
+
+/// What the keyboard help managed to set up (Help > Keyboard map shows it).
+static HOOK_OK: AtomicBool = AtomicBool::new(false);
+static HOOK_ERR: AtomicUsize = AtomicUsize::new(0);
+static SUBCLASS_OK: AtomicBool = AtomicBool::new(false);
+/// How often each guard kept Alt+Esc from Windows: the hook, the window's own keys.
+static CAUGHT_HOOK: AtomicUsize = AtomicUsize::new(0);
+static CAUGHT_WINDOW: AtomicUsize = AtomicUsize::new(0);
 
 static OLD_PROC: AtomicIsize = AtomicIsize::new(0);
 static HWND_MAIN: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
-    if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU {
+    if msg == WM_SYSCOMMAND && matches!(wparam & 0xFFF0, SC_KEYMENU | SC_NEXTWINDOW | SC_PREVWINDOW) {
+        // (Alt+Esc reaches Windows as "next window" through the window's default handling
+        // when the hook did not get to it first)
+        return 0;
+    }
+    if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && wparam == VK_ESCAPE as usize {
+        // Alt+Esc as a key for this window: keep it from the default handling (which would
+        // switch windows) and give it to the Compass as CODE-Esc.
+        if msg == WM_SYSKEYDOWN {
+            ESC[1].store(true, Ordering::Relaxed);
+            CAUGHT_WINDOW.fetch_add(1, Ordering::Relaxed);
+        }
         return 0;
     }
     if msg == WM_SYSCHAR {
@@ -102,8 +127,11 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
 pub fn install(hwnd: *mut core::ffi::c_void) {
     unsafe {
         HWND_MAIN.store(hwnd as usize, Ordering::Relaxed);
-        let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
-        OLD_PROC.store(old, Ordering::Relaxed);
+        if OLD_PROC.load(Ordering::Relaxed) == 0 {
+            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
+            OLD_PROC.store(old, Ordering::Relaxed);
+            SUBCLASS_OK.store(old != 0, Ordering::Relaxed);
+        }
     }
     // The hook runs on a thread of its own with its own message loop. On the window's thread
     // a slow frame (power on, loading a state, the exact core) can keep it from answering in
@@ -112,7 +140,11 @@ pub fn install(hwnd: *mut core::ffi::c_void) {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if !STARTED.swap(true, Ordering::Relaxed) {
         let _ = std::thread::Builder::new().name("keyboard hook".into()).spawn(|| unsafe {
-            SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+            let h = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+            HOOK_OK.store(!h.is_null(), Ordering::Relaxed);
+            if h.is_null() {
+                HOOK_ERR.store(GetLastError() as usize, Ordering::Relaxed);
+            }
             let mut msg: Msg = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
         });
@@ -188,4 +220,23 @@ pub fn poll(down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &m
     if vk(VK_MENU).0 {
         *mods |= keyboard::MOD_CODE;
     }
+}
+
+/// One line on the Alt+Esc guards, for Help > Keyboard map.
+pub fn status() -> String {
+    let hook = if HOOK_OK.load(Ordering::Relaxed) {
+        "keyboard hook on".to_string()
+    }
+    else {
+        match HOOK_ERR.load(Ordering::Relaxed) {
+            0 => "keyboard hook not started".to_string(),
+            e => format!("keyboard hook failed (error {e})"),
+        }
+    };
+    let win = if SUBCLASS_OK.load(Ordering::Relaxed) { "window keys on" } else { "window keys off" };
+    format!(
+        "Alt+Esc guards: {hook}, {win}; caught {} times by the hook, {} by the window",
+        CAUGHT_HOOK.load(Ordering::Relaxed),
+        CAUGHT_WINDOW.load(Ordering::Relaxed)
+    )
 }

@@ -19,7 +19,7 @@ compilers and the programs written for it, and fast enough to use as a build mac
 |---|---|
 | Models | 1101, 1109 (original board); 1121, 1129, 1131, 1137, 1139 (Compass II split board, 512 x 256 screen on the 113x), each with its own timer and interrupt chips and sound wiring |
 | CPU | 8086 with prefetch queue and bus timing, plus a fast whole-instruction core for builds |
-| FPU | 8087 with bit-exact 80-bit results; FPTAN follows the chip's own method |
+| FPU | 8087 with bit-exact 80-bit results; runs the chip's own microcode when you supply the ROM file (see [docs/8087-microcode.md](docs/8087-microcode.md)), an instruction-level model otherwise |
 | Storage | 2101 hard disk and floppy, 2102 portable floppy, bubble memory, application ROM sockets, a PC folder as a GRiD drive |
 | I/O | 8741 keyboard controller running GRiD's firmware, 8274 serial (TCP, COM port, or a null-modem link between two emulators), sound DAC, DTMF, real-time clock |
 | Window | Menus, machine setup with saved profiles, media manager (floppy swapping, GRiD file browser with import/export), quick save and state files |
@@ -29,7 +29,7 @@ compilers and the programs written for it, and fast enough to use as a build mac
 Accuracy, measured with GRiDBench on a real 1101 with a 2101 and a 2102:
 
 - Plain 8086 code and memory access: within about 2% on average.
-- 8087 instruction times: mostly within 5%.
+- 8087 instruction times: mostly within 5%; on the microcode about 2% on average (8087 Bench, 2068 tests on a real 1101 and 1137).
 - 2101 page reads: same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0 (130.3).
 - 2102 page reads: within about 10% for most patterns.
 

@@ -289,6 +289,19 @@ impl GridMachine {
             let wait = if model.board_113x() { 3 } else { 4 };
             cpu.set_option(CpuOption::DramRefreshAdjust(env_u32("GRID_REFRESH_WAIT").unwrap_or(wait)));
         }
+        // The refresh runs in step with the display (patent: the display's own fetches refresh
+        // the DRAM, so its timing comes from the same counters as the frame): the steals keep
+        // their place in every frame. A free-running 48-clock refresh drifts 4 clocks a frame
+        // against the 82276-clock frame, and its beat with the display slots made a polling
+        // loop's turns a frame vary by up to +-1.5 with the loop's start (8087 Bench picked
+        // n = 250 for t044/t048/u024 and its timed loop overran a frame: a time one frame
+        // short). Same steal rate, so the GRiDBench gap rows are unchanged (1101 1.22% rms).
+        // GRID_REFRESH_FRAME=clocks overrides the period it locks to (0 = free running).
+        let frame = if model.board_113x() { screen::DisplayTiming::wide() } else { screen::DisplayTiming::default() }.frame_clocks();
+        marty_core::cpu_808x::REFRESH_FRAME.store(
+            env_u32("GRID_REFRESH_FRAME").unwrap_or(frame as u32),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // JMP SHORT quirk: on a real Compass a chain of JMP SHORTs runs like taken Jcc's (1101
         // and 1137 GRiDBench 2.2 j01-j05, c55, c58, c59), as if the jump spent one more clock
         // before suspending prefetch. JMP_EXTRA overrides it (0 = the plain 8086).

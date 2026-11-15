@@ -4,18 +4,18 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
 
 ## Unreleased
 
-- The 8087 runs on its microcode whenever the ROM file is there (`roms/8087mc.txt` in the
-  current folder or beside the program, or `I8087_MICROCODE`); no switch needed.
-  `FPU_CORE=table` keeps the instruction-level core. Without the file nothing changes.
-- A WAIT hangs like the real machine while the 8087 holds BUSY for an unmasked exception
-  nobody clears (it gave up after a guard count before). The 8086 stays in the WAIT and
-  still takes interrupts. 8087 Bench 0.0.3's risky part now stops at y005 in the emulator
-  as on the real 1101.
-- Microcode 8087: FLDCW, FSTCW, FSTSW, FSTENV, FLDENV, FSAVE, FRSTOR and FNOP take the
-  real 1101's time within about 1.5 clocks (were 3 to 10 off). Timing checked against the
-  real 1137 too: 2.3 % mean error, the 1101 2.0 %.
-- 8087 registers hold a real 1101's power-on pattern instead of zeros: FXAM of an empty
-  register answers 4700 as on the real machines.
+- Timing: the DRAM refresh steal now keeps its place in every display frame instead of
+  running free every 48 clocks. The free-running steal drifted 4 clocks a frame against
+  the 1101's 82276-clock frame, and its beat with the display slots made a polling loop's
+  turns per frame vary by up to 1.5 with the moment the loop started. 8087 Bench, which
+  sizes its timing loops from one such reading, then picked 250 turns for a few tests
+  (t044, t048, u024, d002 on the 1101), the loop ran past a frame and the time came out
+  one frame short (negative clocks). On the real board the display's own fetches refresh
+  the DRAM, so the refresh runs off the same counters as the frame. Same number of steals,
+  so the GRiDBench gap rows stay where they were (1101 1.22 %, 1139 1.36 % rms); 8087
+  Bench 1 and 2 on the 1101 and 1137 now give no negative times (1101 bench 1 mean error
+  2.6 % -> 1.9 %, the others unchanged). `GRID_REFRESH_FRAME=0` brings back the free-running
+  refresh.
 - Low-level 2101: floppies read again. A disk the emulator lays out itself (any track
   the 2101 has not formatted) was built with interleave 3 by a formula that only works
   for interleaves prime to 9, so every track lost its 4th sector (and got a 2nd copy of

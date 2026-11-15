@@ -1121,6 +1121,8 @@ impl App {
             ui.add_space(4.0);
             ui.label(RichText::new("The Compass has no [ ] \\ ` keys and no keypad, so those PC keys do nothing. The Compass keyboard reads at most two keys at a time, besides SHIFT, CTRL and CODE.").weak());
             ui.label(RichText::new("Keys go to the Compass while no text field has the focus; click the screen to give them back.").weak());
+            #[cfg(windows)]
+            ui.label(RichText::new(crate::winkeys::status()).weak());
         });
     }
 

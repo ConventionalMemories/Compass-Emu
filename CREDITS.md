@@ -6,6 +6,10 @@ Compass-Emu is by Conventional Memories (C.M._), built on MartyPC by Daniel Bals
 the Compass-specific code was written by Claude (Anthropic) under C.M._'s direction; see
 "How this was made" and "Sources" in [README.md](README.md) for the full list of sources.
 
+Special thanks to vklachkov, JDat and usernameak. Their MAME work, reverse engineering and
+schematics of the GRiD Compass and its drives made this emulator possible to build and to
+check.
+
 Thanks to Ken Shirriff for his articles on the 8087, the granite project for the 8087
 microcode dump, the MAME developers for the GRiD Compass drivers, and the SingleStepTests
 project for the 8086 test suite.

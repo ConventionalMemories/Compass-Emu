@@ -1,5 +1,5 @@
 //! Host side of the Compass's sound and serial port: audio output through cpal, and the
-//! 8274's channel A to a TCP socket or a real serial port.
+//! 8274's channel A to a TCP socket or a real serial port, and the internal modem's phone line.
 
 use std::{
     collections::VecDeque,
@@ -290,9 +290,233 @@ impl GridLink {
     }
 }
 
+/// The internal modem's phone line: the far ends are TCP connections carrying the raw data
+/// bytes (see docs/modem.md). Dialing connects to the number's address from the phone book;
+/// an incoming connection on the listen address rings the Compass. Connecting = the far end
+/// answered, closing = it hung up.
+pub struct ModemLine {
+    listener: Option<TcpListener>,
+    book: Vec<(String, String)>,
+    stream: Option<TcpStream>,
+    /// An incoming caller waiting for the Compass to answer.
+    caller: Option<TcpStream>,
+    connecting: Option<std::sync::mpsc::Receiver<Option<TcpStream>>>,
+    /// What happened last (for the status line).
+    pub last: String,
+}
+
+impl ModemLine {
+    /// `listen`: "" or tcp:PORT / tcp:HOST:PORT. `book`: NUMBER=HOST:PORT entries separated by
+    /// commas or semicolons; NUMBER * matches any number.
+    pub fn open(listen: &str, book: &str) -> Result<ModemLine, String> {
+        let listener = match listen.trim() {
+            "" => None,
+            l => {
+                let p = l.strip_prefix("tcp:").ok_or_else(|| format!("listen address {l}: use tcp:PORT or tcp:HOST:PORT"))?;
+                let (host, p) = p.rsplit_once(':').unwrap_or(("127.0.0.1", p));
+                let port: u16 = p.parse().map_err(|_| format!("bad TCP port {p}"))?;
+                let l = TcpListener::bind((host, port)).map_err(|e| format!("cannot listen on {host}:{port}: {e}"))?;
+                l.set_nonblocking(true).map_err(|e| e.to_string())?;
+                Some(l)
+            }
+        };
+        let mut entries = vec![];
+        for e in book.split([',', ';']).map(str::trim).filter(|e| !e.is_empty()) {
+            let (n, a) = e.split_once('=').ok_or_else(|| format!("phone book entry {e}: use NUMBER=HOST:PORT"))?;
+            let a = a.trim();
+            if !a.contains(':') {
+                return Err(format!("phone book entry {e}: the address needs a port (HOST:PORT)"));
+            }
+            entries.push((normalize_number(n), a.to_string()));
+        }
+        Ok(ModemLine { listener, book: entries, stream: None, caller: None, connecting: None, last: String::new() })
+    }
+
+    /// The address a dialed number reaches.
+    pub fn lookup(&self, number: &str) -> Option<String> {
+        let n = normalize_number(number);
+        if let Some((_, a)) = self.book.iter().find(|(k, _)| *k == n) {
+            return Some(a.clone());
+        }
+        // 127*0*0*1*2323 = 127.0.0.1:2323
+        let parts: Vec<&str> = n.split('*').collect();
+        if parts.len() == 5 && parts.iter().all(|p| !p.is_empty() && p.parse::<u16>().is_ok()) {
+            return Some(format!("{}.{}.{}.{}:{}", parts[0], parts[1], parts[2], parts[3], parts[4]));
+        }
+        self.book.iter().find(|(k, _)| k == "*").map(|(_, a)| a.clone())
+    }
+
+    /// Follow the Compass's line events and move data both ways. `now` = modem time (CPU clocks).
+    pub fn pump(&mut self, line: &mut grid_core::modem::Line, now: f64) {
+        use grid_core::modem::LineEvent;
+        while let Some(ev) = line.events.pop_front() {
+            match ev {
+                LineEvent::Dial(number) => match self.lookup(&number) {
+                    Some(addr) => {
+                        self.last = format!("dialing {number} ({addr})");
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            use std::net::ToSocketAddrs;
+                            let s = addr.to_socket_addrs().ok().and_then(|mut a| a.next()).and_then(|sa| {
+                                TcpStream::connect_timeout(&sa, std::time::Duration::from_secs(5)).ok()
+                            });
+                            let _ = tx.send(s);
+                        });
+                        self.connecting = Some(rx);
+                    }
+                    None => {
+                        self.last = format!("{number}: not in the phone book");
+                        line.call_failed();
+                    }
+                },
+                LineEvent::Answer => {
+                    if let Some(s) = self.caller.take() {
+                        self.stream = Some(s);
+                        self.last = "answered".into();
+                    }
+                }
+                LineEvent::HangUp => {
+                    self.stream = None;
+                    self.caller = None;
+                    self.connecting = None;
+                    self.last = "hung up".into();
+                }
+            }
+        }
+        if let Some(rx) = &self.connecting {
+            if let Ok(r) = rx.try_recv() {
+                self.connecting = None;
+                match r {
+                    Some(s) => {
+                        let _ = s.set_nonblocking(true);
+                        let _ = s.set_nodelay(true);
+                        self.stream = Some(s);
+                        line.answered(now);
+                        self.last = "connected".into();
+                    }
+                    None => {
+                        self.last = "no answer".into();
+                        line.call_failed();
+                    }
+                }
+            }
+        }
+        if let Some(l) = &self.listener {
+            if let Ok((s, peer)) = l.accept() {
+                if self.stream.is_none() && self.caller.is_none() && self.connecting.is_none() && line.incoming_call(now) {
+                    let _ = s.set_nonblocking(true);
+                    let _ = s.set_nodelay(true);
+                    self.caller = Some(s);
+                    self.last = format!("ringing ({peer})");
+                }
+                // else: busy, the connection is closed
+            }
+        }
+        if let Some(c) = &self.caller {
+            let mut b = [0u8; 1];
+            let gone = match c.peek(&mut b) {
+                Ok(0) => true,
+                Ok(_) => false,
+                Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+            };
+            if gone {
+                self.caller = None;
+                line.remote_hangup();
+                self.last = "caller hung up".into();
+            }
+        }
+        let mut drop = false;
+        if let Some(s) = &mut self.stream {
+            if !line.tx_out.is_empty() {
+                let out: Vec<u8> = line.tx_out.drain(..).collect();
+                if s.write_all(&out).is_err() {
+                    drop = true;
+                }
+            }
+            let mut buf = [0u8; 512];
+            match s.read(&mut buf) {
+                Ok(0) => drop = true,
+                Ok(n) => line.rx_in.extend(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => drop = true,
+            }
+        }
+        else {
+            line.tx_out.clear();
+        }
+        if drop {
+            self.stream = None;
+            line.remote_hangup();
+            self.last = "far end hung up".into();
+        }
+    }
+}
+
+/// A dialed number as the phone book compares it: digits, * and # only.
+fn normalize_number(n: &str) -> String {
+    n.chars().filter(|c| c.is_ascii_digit() || *c == '*' || *c == '#').collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modem_phone_book() {
+        let ml = ModemLine::open("", "5551234=10.0.0.1:2400, *=127.0.0.1:2323").unwrap();
+        assert_eq!(ml.lookup("555-1234").as_deref(), Some("10.0.0.1:2400"));
+        assert_eq!(ml.lookup("911").as_deref(), Some("127.0.0.1:2323"));
+        assert_eq!(ml.lookup("192*168*1*20*2400").as_deref(), Some("192.168.1.20:2400"));
+        assert!(ModemLine::open("", "555=nohost").is_err());
+    }
+
+    #[test]
+    fn modem_line_calls_and_rings() {
+        use grid_core::modem::{CallState, Line, LineEvent};
+        let wait = |f: &mut dyn FnMut() -> bool| {
+            for _ in 0..500 {
+                if f() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        };
+        // the Compass dials a server
+        let server = TcpListener::bind("127.0.0.1:23991").unwrap();
+        let mut ml = ModemLine::open("", "555=127.0.0.1:23991").unwrap();
+        let mut line = Line::default();
+        line.call = CallState::Calling;
+        line.events.push_back(LineEvent::Dial("555".into()));
+        assert!(wait(&mut || {
+            ml.pump(&mut line, 0.0);
+            line.connected()
+        }));
+        let (mut peer, _) = server.accept().unwrap();
+        line.tx_out.extend(b"ATZ");
+        ml.pump(&mut line, 0.0);
+        let mut buf = [0u8; 3];
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ATZ");
+        peer.write_all(b"OK").unwrap();
+        assert!(wait(&mut || {
+            ml.pump(&mut line, 0.0);
+            line.rx_in.len() == 2
+        }));
+        drop(peer);
+        assert!(wait(&mut || {
+            ml.pump(&mut line, 0.0);
+            !line.connected()
+        }));
+        // a server calls the Compass
+        let mut ml = ModemLine::open("tcp:23992", "").unwrap();
+        let mut line = Line::default();
+        let _caller = TcpStream::connect("127.0.0.1:23992").unwrap();
+        assert!(wait(&mut || {
+            ml.pump(&mut line, 0.0);
+            matches!(line.call, CallState::Ringing { .. })
+        }));
+    }
 
     #[test]
     fn two_emulators_link() {

@@ -1,4 +1,4 @@
-//! Compass-Emu 0.9.0: a GRiD Compass in a window.
+//! Compass-Emu 0.12.0: a GRiD Compass in a window.
 //!
 //! compass [options]
 //!   --model M                    1101 (default), 1109, 1121, 1129, 1131, 1137 or 1139
@@ -20,6 +20,13 @@
 //!   --gridlink S                 GRiDLink cable on the same port (8274 SDLC frames over TCP, see
 //!                                docs/gridlink.md): tcp:PORT, tcp:HOST:PORT or connect:[HOST:]PORT
 //!   --gridlink-p2p               GRiDLink point-to-point cable (RTS looped to CTS); default multidrop
+//!   --modem-listen S             internal modem: a TCP connection to tcp:PORT / tcp:HOST:PORT rings
+//!                                the Compass (see docs/modem.md)
+//!   --modem-dial NUMBER=HOST:PORT  internal modem phone book entry (repeat, or separate with commas;
+//!                                * = any other number)
+//!   --modem-answer-300           a caller the Compass answers connects at 300 baud (default 1200)
+//!   --rom-modem F                internal modem 8749 firmware (default 16020-007.bin in the ROM folder)
+//!   --no-modem                   leave the modem MCU out even with its firmware there
 //!   --mute                       no sound
 //!   --readonly                   never write disk changes back to the image files
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
@@ -67,11 +74,11 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.11.0";
+pub const VERSION: &str = "0.12.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]... [--bubble-protect] [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--modem-listen tcp:PORT] [--modem-dial NUMBER=HOST:PORT] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]... [--bubble-protect] [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -187,6 +194,19 @@ fn main() {
             "--serial" => cfg.serial = val(),
             "--gridlink" => cfg.gridlink = val(),
             "--gridlink-p2p" => cfg.gridlink_p2p = true,
+            "--modem-listen" => cfg.modem_listen = val(),
+            "--modem-dial" => {
+                let v = val();
+                if cfg.modem_dial.is_empty() {
+                    cfg.modem_dial = v;
+                }
+                else {
+                    cfg.modem_dial = format!("{},{v}", cfg.modem_dial);
+                }
+            }
+            "--modem-answer-300" => cfg.modem_answer_300 = true,
+            "--no-modem" => cfg.modem_off = true,
+            "--rom-modem" => cfg.rom_modem = val(),
             "--mute" => cfg.mute = true,
             "--fast" => cfg.fast = true,
             "--fpu-micro" => cfg.fpu_micro = true,

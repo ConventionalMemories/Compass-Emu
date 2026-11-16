@@ -18,7 +18,7 @@ status bar with the speed and a light for each drive.
 - Started from a .bat (or with machine options on the command line) the machine
 powers on right away. Started on its own (double-click compass.exe) it opens
 the machine setup page: pick a profile or make one (model, ROM folder, GPIB
-devices, bubble, ROM sockets, serial port, sound), then Power on (the button
+devices, bubble, ROM sockets, serial port, modem phone line, sound), then Power on (the button
 beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe.
 "Save as shortcut" writes a .bat that starts that machine. Run a .bat once
 first so the ROMs are unpacked into compass-emu\roms.
@@ -110,6 +110,8 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
             [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
             [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
             [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
+            [--modem-dial NUMBER=HOST:PORT]... [--modem-listen tcp:PORT]
+            [--modem-answer-300] [--rom-modem F] [--no-modem]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
             [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
             [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]...
@@ -141,6 +143,14 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            waits on 127.0.0.1:2400 for a GRiDLink server program, connect:HOST:PORT
            connects to one. See GRiDLink below.
 --gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
+--modem-dial  internal modem phone book entry: NUMBER=HOST:PORT, the address a
+           dialed number reaches (repeat it, or separate entries with commas;
+           *=HOST:PORT for any other number). See The internal modem below.
+--modem-listen  tcp:2400 (or tcp:0.0.0.0:2400 for other PCs): a TCP connection
+           to that port rings the Compass's modem.
+--modem-answer-300  a caller the Compass answers connects at 300 baud (default 1200).
+--rom-modem F  the modem's 8749 firmware, another file than roms\16020-007.bin.
+--no-modem  leave the modem's microcontroller out even with its firmware there.
 --mute     no sound.
 --fast     start with the fast CPU core (whole instructions, approximate timing).
 --fpu-micro  run the 8087 on its own microcode ROM, a file you supply (see
@@ -174,6 +184,9 @@ without it the protocol model answers as before.
 2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
 box), the 2101's own firmware. With it the 2101 runs low-level (see New in
 0.8.0); without it the protocol model answers as before.
+Internal modem: roms\16020-007.bin, the modem's 8749 firmware (2 KB). Not in the
+MAME sets: copy it in by hand (Import ROMs... finds it under any name). Without
+it the modem has no microcontroller and Modem~Device~ can't start.
 ```
 
 ## Build in the window
@@ -347,6 +360,71 @@ included yet. Without a server the Compass's GRiDLink~Device~ just waits
 for the server's poll. The machine setup page has the same two settings.
 Keep the emulator at real speed while linked: GRiDLink's timeouts run in
 emulated time, and turbo shortens them for the program at the other end.
+
+## The internal modem
+
+Every model except the 1137 has an internal modem (300 and 1200 baud). The
+emulator runs the modem's own firmware, so GRiDTerm, PhoneLink and other
+programs that use Modem~Device~ dial, answer and connect as on a real Compass.
+The phone line is TCP: a number the Compass dials connects to an address on
+the PC or the network, and a connection to a port on this PC rings the
+Compass. Once the modems have connected, the connection carries the plain
+data bytes both ways, nothing added.
+
+1. Put the modem firmware in compass-emu\roms as 16020-007.bin (or use
+Import ROMs... on the setup page). The ROMs card shows "Internal modem
+(8749)" with the file it found.
+2. Machine setup, Serial and sound card, "Internal modem phone line":
+- Phone book: which address each number reaches, for example
+```
+     5551234=127.0.0.1:2400, *=myserver.example:2400
+ * stands for any number not listed. A number written as an address
+ with * between the parts dials it directly: 127*0*0*1*2400 reaches
+ 127.0.0.1:2400. Spaces and dashes in numbers don't matter.
+```
+- Incoming calls: tcp:2400 makes a connection to port 2400 on this PC
+```
+ ring the Compass (tcp:0.0.0.0:2400 lets other PCs call too).
+```
+- "Callers connect at 300 baud": the speed of a caller the Compass
+```
+ answers (else 1200).
+```
+On the command line: --modem-dial 5551234=127.0.0.1:2400 --modem-listen tcp:2400
+3. Something has to answer at the other end: your own server program (it
+only has to accept TCP connections and send and receive bytes), another
+Compass-Emu (below), or for a first test a terminal program such as
+PuTTY waiting for a "Raw" connection on that port.
+
+Calling out with GRiDTerm: start GRiDTerm (Programs, GRiDTerm, kind Run
+Terminal), type the phone number in the form and confirm with CODE-RETURN
+(Alt+Enter). You hear the touch-tone digits; the call goes out when the
+modem starts its connect handshake, so the far end sees the connection a
+moment after the last digit. The far modem answers at the speed GRiDTerm
+asked for (Baud rate 300 or 1200 in the form), and after a few seconds
+GRiDTerm is online. Pulse dialing works too. Closing the connection at the
+far end is a hang-up: the Compass reports carrier lost after the modem's own
+carrier-loss delay (a fraction of a second with GRiD-OS's setting). Hanging up on the Compass closes the
+connection.
+
+Calling the Compass: connect to the listen port. The Compass rings (2 s on,
+4 s off) until a program answers; while it rings the modem takes a moment
+to go off-hook (it waits for the ring burst to end, as the real one does).
+Bytes sent before the answer wait until the modems have connected. A second
+caller while the line is in use is turned away (the connection closes).
+
+Two Compasses through the modem: give one --modem-listen tcp:2400 and the
+other --modem-dial *=127.0.0.1:2400 (separate disk images), then dial any
+number on the second one and answer on the first.
+
+Good to know:
+- Data bits and parity: the far end is set to 8 data bits, no parity. When
+the Compass program uses 7 bits with parity (GRiDTerm's default), the far
+end gets the parity bit as bit 7 of each byte, as a real terminal set to
+8N1 would; strip it there if needed.
+- Keep turbo off during calls: the modems' timing runs in emulated time.
+- The modem's speed is real: 300 or 1200 baud, so 30 or 120 bytes a second.
+- docs\modem.md (in the source) has how it works inside and the tests.
 
 ## Two Compasses on a null-modem cable
 

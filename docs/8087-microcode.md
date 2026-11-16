@@ -8,8 +8,10 @@ it when asked to (see below); by default it uses the instruction-level core.
 
 ## Running the emulator on the microcode
 
-Set the environment variable `FPU_CORE=micro` and supply the ROM (next section). The
-emulator prints "8087: running on the microcode ROM" when it found it. From then on every
+Supply the ROM (next section) and the emulator uses it: it prints "8087: running on the
+microcode ROM" at start. Without the file it prints that it found none and runs the
+instruction-level core, as before. `FPU_CORE=table` keeps the instruction-level core even
+with the ROM present (for comparing the two). With the microcode every
 instruction that has a routine in the ROM runs there. Two things stay with the
 instruction-level core:
 
@@ -27,11 +29,12 @@ known).
 
 ## The ROM is not included
 
-Compass-Emu does not ship the microcode. The tests (and later the emulator) read it from a
-file you supply:
+Compass-Emu does not ship the microcode. The emulator and the tests read it from a file you
+supply:
 
 - the environment variable `I8087_MICROCODE` = path to the file, or
-- `roms/8087mc.txt` (or `roms/8087mc.bin`) under the current directory.
+- `roms/8087mc.txt` (or `roms/8087mc.bin`) under the current directory or beside the
+  program.
 
 The text form is the one the "Opcode Collective" dump uses (`tools/8087mc/bin/8087mc.txt` in
 github.com/a-mcego/granite): one line per word, 16 columns for bits A..P, a letter for 1 and a
@@ -150,11 +153,20 @@ Still open:
 
 - The constant ROM's own bits. Two arctangent and five logarithm constants were moved by
   one or two units in the last place to match the real results (`fit_constants` shows the
-  search). Thirty transcendental lines still differ: most by one unit or in C1, a few far
-  out of the documented range (F2XM1 above 0.5, FPTAN and FPATAN outside their ranges).
+  search; `FB_FIT=frac` tries ln(2)/3, log2(e), 3 log2(e) and sqrt(2) too and finds nothing
+  better). Thirty transcendental lines still differ. About twenty are FYL2X, FYL2XP1 and
+  F2XM1 results where the value before rounding is a fraction of a unit off: the same
+  result with the other rounding direction in C1, or one unit apart. F2XM1 comes out one
+  unit low five times, the logarithms a fraction high. The rest are arguments far outside
+  the documented range (F2XM1 above 0.5 or of a NaN, FYL2XP1 of 1 and of -0.5, FPATAN of
+  0/0), where the result depends on register widths the model does not have right.
 - Control word 6E44 (F2XM1, before the denominator's subtraction) is a no-op in the model.
-- FXAM of an empty register and the registers after power-on show what the chip's
-  register file happened to hold; the model has zeros there.
+  It is not a carry or a rounding of that subtraction: a unit either way there is the same
+  as a unit on log2(e), and neither matches more real results.
+- The registers after power-on hold what a real 1101's held (all eight
+  FCA9AFEAA3BE028FA027), so FXAM of an empty register answers 4700 as on both real
+  machines. A real 1137's eight registers differ from each other; the model uses the
+  1101's pattern on every model.
 
 ## Timing
 
@@ -163,36 +175,65 @@ micro-instruction that ran, by kind (`micro::KIND_CLOCKS`, `micro::clocks`):
 
 | Kind | Clocks |
 | --- | --- |
-| register transfer | 1.21 |
-| immediate | 0.16 |
-| shift by a fixed count | 0.93 |
-| shift by a variable count | 0.77 |
-| add or subtract | 1.78 |
-| control | 0.61 |
-| jump taken | 2.18 |
-| jump not taken | 1.82 |
-| call | 2.20 |
-| return | 2.20 |
-| other | 0.71 |
-| one step of the multiply loop | 2.04 |
-| one step of the divide loop | 2.02 |
-| one step of the square root loop | 1.97 |
-| word read on the bus | 3.76 |
-| word written on the bus | 0.98 |
+| register transfer | 0.94 |
+| immediate | 0.57 |
+| shift by a fixed count | 1.07 |
+| shift by a variable count | 0.48 |
+| add or subtract | 2.05 |
+| control | 1.06 |
+| jump taken | 2.10 |
+| jump not taken | 1.90 |
+| call | 2.08 |
+| return | 2.08 |
+| other | 0.95 |
+| one step of the multiply loop | 1.98 |
+| one step of the divide loop | 1.99 |
+| one step of the square root loop | 1.94 |
+| word read on the bus | 4.46 |
+| word written on the bus | 1.13 |
+| one step of FPREM's loop | 1.97 |
+| one step of the transcendentals' quotient loop | 1.98 |
+| bit a variable shift moves its operand by | 0.02 |
+| the same for a shift by the CORDIC loop counter | 0.07 |
 
 The costs and the fixed parts are a least-squares fit to the clocks 8087 Bench measured on
-a real 1101 for about 1950 tests. They are costs that add up right, not the chip's own
-cycle counts (the fixed part of a memory form is negative because its bus words are
-counted on top). Over the 2068 timed tests the emulator's mean error is 2.6 % (about 2.5
-clocks); with the instruction-level core's tables it was 40 %. The regression itself
-reaches 1.8 %: the rest is how the CPU's WAIT lines up with the end of the busy time.
+a real 1101 for about 2070 tests, reweighted so that a few odd tests do not steer it. They
+are costs that add up right, not the chip's own cycle counts (the fixed part of a memory
+form is negative because its bus words are counted on top). Over the timed tests the
+emulator's mean error is 1.45 % against the real 1101 (about 1.5 clocks); with the
+instruction-level core's tables it was 40 %. What is left is mostly how the CPU's WAIT
+lines up with the end of the busy time.
 
-The largest errors left are the control instructions (table times, a few clocks off),
-FCOMPP, the far out-of-range transcendental arguments and FBLD/FBSTP of some values.
+The control instructions are hardwired in the chip, and FSAVE and FRSTOR mostly so, so
+their times stay table times, corrected by a few clocks each to the real 1101 (`micro::control_fit`); they
+are within about 1.5 clocks now. The largest errors left are FCOMPP, the far out-of-range
+transcendental arguments and FBLD/FBSTP of some values.
 
-## Not there yet
+## WAIT while BUSY is held
 
-FSAVE's and FRSTOR's register loops (the rest of both is hardwired) and the control
-instructions' times still come from the instruction-level core. A WAIT while the 8087
-holds BUSY for good (an unmasked exception nobody clears) gives up after a guard count; the
-real machine hangs there until an interrupt handler clears the exception.
+With an unmasked exception pending and interrupts enabled in the control word, the 8087
+keeps BUSY active until the exception is cleared. A WAIT then never ends: the 8086 stays
+in the instruction, takes interrupts there and returns to it. Both CPU cores do the same
+now (after 4096 polls of TEST the WAIT starts over at its own address), so a program that
+hangs on the real machine hangs in the emulator: 8087 Bench 0.0.3's risky part stops at
+y005, as it did on the real 1101.
+
+## FSAVE and FRSTOR
+
+The environment part of both is hardwired in the chip; the eight registers go through two
+microcode loops (FSAVE at 695, FRSTOR at 675), and the microcode core runs those from the
+ROM, with the bus words handed to it and taken from it one by one. The results are the
+same as the instruction-level core's. The time is still one measured figure per
+instruction: a single real pair cannot say how it splits over the loop's steps.
+
+## The constant ROM and 8087 Bench 3
+
+The transcendentals' constants (16 arctangents, 16 logarithms, 4 fractions) are computed,
+not read from a chip, so their last bits are guesses; the thirty lines above hang on them.
+8087 Bench 0.0.5 has a third program whose 1584 tests each lean on one constant: FYL2X
+with 17 values of x that each use a single logarithm constant, F2XM1 around
+log2(1 + 2^-n), FPATAN of 2^-n and FPTAN around atan 2^-n, each a few units either side.
+`probe_uses` (FB_USES) lists which constants a test touches and `probe_sensitivity`
+(FB_SENS) how many of the tests change when a constant moves by a unit: every logarithm
+constant from 2 to 15 moves 3 to 50 results, the arctangents fewer (some only show a move
+of two units). Once a real machine has run it, `fit_constants` can pin the bits down.

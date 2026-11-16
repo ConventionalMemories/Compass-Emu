@@ -89,6 +89,10 @@ use crate::{
 };
 use marty_common::syntax_token::*;
 
+/// DRAM refresh locked to the display frame (a GRiD Compass board quirk): when not 0, the
+/// refresh steals are spread evenly over every REFRESH_FRAME CPU clocks, counted from clock 0,
+/// (frame / refresh period of them) instead of running free every period clocks.
+pub static REFRESH_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Extra clocks a JMP SHORT spends before it suspends prefetching (a machine quirk fitted to a
 /// real GRiD Compass; 0 = the plain 8086 of the SingleStepTests).
 pub static JMP_SHORT_EXTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

@@ -25,7 +25,8 @@
 //! IO ports 00h/02h: interrupt controller (80130 on the 110x/112x, 8259A on the 113x);
 //! 08h-0Eh: timers (80130, or an 8254 on the 113x; see timers.rs).
 //! IRQ wiring (MAME): IR0 serial, IR1 bubble, IR2 modem, IR3 vsync, IR4 keyboard, IR5 GPIB,
-//! IR6 8087, IR7 ring.
+//! IR6 8087, IR7 ring. (GRiD-OS numbers these differently: the PROM's interruptTable maps its
+//! interrupt IDs 0-7 = 8087, GPIB, keyboard, vsync, modem, bubble, serial, ring to IR 6,5,4,3,2,1,0,7.)
 
 use std::any::Any;
 
@@ -137,6 +138,12 @@ pub struct GridBoard {
     pub rom_slots: [Vec<u8>; 4],
     /// Socket registers: DFE08/0A/0C/0E quarter codes (slot | wait code << 2, bit 7 =
     /// 32K part), DFEA2 32K mode, DFEA8 enable.
+    /// Internal modem board's 8749 + line (LLE; None = no modem firmware: the 8255 then
+    /// only drives the DTMF chip and Modem~Device~ finds no MCU).
+    #[serde(default)]
+    pub modem: Option<crate::modem::Modem>,
+    #[serde(default)]
+    modem_irq: bool,
     #[serde(default)]
     rom_quarter: [u8; 4],
     #[serde(default)]
@@ -201,6 +208,8 @@ impl GridBoard {
             marks: Default::default(),
             debug: Default::default(),
             rom_slots: Default::default(),
+            modem: None,
+            modem_irq: false,
             rom_quarter: [0; 4],
             rom_32k: 0,
             rom_enable: 0,
@@ -338,6 +347,23 @@ impl GridBoard {
             self.gpib.advance(now);
             self.sync_gpib_int();
             self.kbd_at(0);
+            self.modem_at(0);
+        }
+    }
+
+    /// Run the modem MCU up to the current time and follow its IRQ line (IR2).
+    fn modem_at(&mut self, cycles: u32) {
+        let t = self.clocks + cycles as u64;
+        if let Some(m) = &mut self.modem {
+            m.run_to(t);
+            let l = m.irq();
+            if l && !self.modem_irq {
+                self.pic.request_interrupt(IR_MODEM);
+            }
+            else if !l && self.modem_irq {
+                self.pic.clear_interrupt(IR_MODEM);
+            }
+            self.modem_irq = l;
         }
     }
 
@@ -527,7 +553,17 @@ impl ExternalBoard for GridBoard {
             }
             // The modem board's 8255. The 1137 has no modem and no 8255: FFh as elsewhere (so
             // Modem~Device~ finds no modem, as on the real machine).
-            0xDFEC0..=0xDFECF if address & 1 == 0 && self.model.has_modem() => self.sound.read_8255((address >> 1) & 3),
+            0xDFEC0..=0xDFECF if address & 1 == 0 && self.model.has_modem() => {
+                if self.modem.is_some() {
+                    self.modem_at(_cycles);
+                    let v = self.modem.as_mut().unwrap().read((address >> 1) & 3);
+                    self.modem_at(_cycles);
+                    v
+                }
+                else {
+                    self.sound.read_8255((address >> 1) & 3)
+                }
+            }
             0xDFE00..=0xDFFFF => {
                 self.log(address, false, 0xFF);
                 0xFF
@@ -581,6 +617,11 @@ impl ExternalBoard for GridBoard {
             0xDFEC0..=0xDFECF if address & 1 == 0 && self.model.has_modem() => {
                 let now = self.clocks + _cycles as u64;
                 self.sound.write_8255((address >> 1) & 3, data, now);
+                if self.modem.is_some() {
+                    self.modem_at(_cycles);
+                    self.modem.as_mut().unwrap().write((address >> 1) & 3, data);
+                    self.modem_at(_cycles);
+                }
             }
             // 1137: the DACs and the MK5089 are on the motherboard, but how the MK5089 is
             // driven is not known (no 8255; SoundTest on a real 1137 would tell). ASSUMED: a

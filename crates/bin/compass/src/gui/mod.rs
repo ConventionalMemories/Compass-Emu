@@ -3,10 +3,12 @@
 
 mod debugger;
 mod led;
+mod library;
 mod media;
 mod osk;
 mod project;
 mod setup;
+mod states;
 
 use std::{
     collections::HashSet,
@@ -89,6 +91,8 @@ pub struct App {
     show_debugger: bool,
     show_chips: bool,
     show_media: bool,
+    states: states::SavedStates,
+    library: library::Library,
     show_keys: bool,
     show_about: bool,
     /// The 2101 front panel window.
@@ -97,6 +101,10 @@ pub struct App {
     osk: osk::Osk,
     /// EL panel look: glow, pixel gaps and a short afterglow.
     el_look: bool,
+    /// Keys by US position instead of by the printed letter.
+    by_position: bool,
+    /// Characters typed this frame (keys by printed letter: digits and punctuation).
+    text_taps: Vec<char>,
     /// Afterglow brightness of each pixel (EL panel look).
     el_glow: Vec<f32>,
     tex_glow: Option<egui::TextureHandle>,
@@ -167,11 +175,15 @@ impl App {
             show_debugger: false,
             show_chips: false,
             show_media: false,
+            states: Default::default(),
+            library: Default::default(),
             show_keys: false,
             show_about: false,
             show_panel: false,
             osk: osk::Osk::default(),
             el_look: prefs.el_look,
+            by_position: prefs.keys_by_position,
+            text_taps: vec![],
             el_glow: vec![],
             tex_glow: None,
             clipboard: None,
@@ -215,9 +227,10 @@ impl App {
     pub(crate) fn power_on(&mut self, cfg: MachineConfig) {
         self.power_off();
         let mut p = self.setup.prefs().clone();
-        setup::push_recent(&mut p.recent_hds, &cfg.hd);
-        setup::push_recent(&mut p.recent_floppies, &cfg.flop2101);
-        setup::push_recent(&mut p.recent_floppies, &cfg.flop);
+        for d in cfg.devices().iter().filter(|d| d.enabled) {
+            setup::push_recent(&mut p.recent_hds, &d.hd);
+            setup::push_recent(&mut p.recent_floppies, &d.disk);
+        }
         self.setup.set_prefs(p);
         match Session::build(&cfg, &self.default_roms) {
             Ok(s) => {
@@ -427,13 +440,22 @@ impl App {
     }
 
     pub(crate) fn insert_floppy(&mut self, kind: DriveKind, path: Option<PathBuf>) {
+        let Some(s) = &self.sess else { return };
+        match s.floppy_drive(kind) {
+            Some(i) => self.insert_at(i, path),
+            None => self.say(format!("this machine has no {} drive (add it on the setup page)", if kind == DriveKind::Floppy2102 { "2102 floppy" } else { "2101 floppy" })),
+        }
+    }
+
+    /// Put a floppy image into GPIB drive `i` (None = take the disk out).
+    pub(crate) fn insert_at(&mut self, i: usize, path: Option<PathBuf>) {
         if let (Some(p), true) = (&path, self.sess.is_some()) {
             let mut pr = self.setup.prefs().clone();
             setup::push_recent(&mut pr.recent_floppies, &p.display().to_string());
             self.setup.set_prefs(pr);
         }
         let Some(s) = &mut self.sess else { return };
-        match s.insert_floppy(kind, path.as_deref()) {
+        match s.insert_floppy_at(i, path.as_deref()) {
             Ok(log) => {
                 for l in log {
                     self.say(l);
@@ -444,14 +466,27 @@ impl App {
         self.resync();
     }
 
-    fn pick_floppy(&mut self, kind: DriveKind) {
+    pub(crate) fn pick_floppy(&mut self, i: usize) {
         let p = rfd::FileDialog::new().add_filter("GRiD floppy image", &["img", "IMG", "imd", "IMD"]).pick_file();
         if p.is_some() {
-            self.insert_floppy(kind, p);
+            self.insert_at(i, p);
         }
         else {
             self.resync();
         }
+    }
+
+    /// The machine's floppy drives (not the PC folder): (drive index, "5 Floppy Disk").
+    pub(crate) fn floppy_drives(&self) -> Vec<(usize, String)> {
+        let Some(s) = &self.sess else { return vec![] };
+        let d = &s.m.board().gpib.drives;
+        (0..d.len())
+            .filter(|&i| d[i].kind != DriveKind::Hdd2101 && !matches!(s.media.get(i), Some(Media::Folder(_))))
+            .map(|i| {
+                let a = d[i].address();
+                (i, format!("{a} {}", crate::session::grid_name(a)))
+            })
+            .collect()
     }
 
     /// Files dropped on the window: floppy images go into the 2102 floppy drive (the 2101's
@@ -467,10 +502,10 @@ impl App {
                     self.say("a PC folder drive can only be set with the machine off (Machine > Power off)");
                 }
                 else {
-                    let c = self.setup.current_mut();
-                    c.folder = text.clone();
-                    c.flop2101.clear();
-                    self.say(format!("PC folder {text} set as the 2101 floppy of this profile"));
+                    let d = self.setup.current_mut().device_mut("folder");
+                    d.folder = text.clone();
+                    let name = crate::session::grid_name(d.addr);
+                    self.say(format!("PC folder {text} set as this profile's PC folder drive ({name})"));
                 }
                 continue;
             }
@@ -497,7 +532,7 @@ impl App {
                     self.say("the hard disk can only be changed with the machine off (Machine > Power off)");
                 }
                 else {
-                    self.setup.current_mut().hd = text.clone();
+                    self.setup.current_mut().device_mut("2101").hd = text.clone();
                     let mut pr = self.setup.prefs().clone();
                     setup::push_recent(&mut pr.recent_hds, &text);
                     self.setup.set_prefs(pr);
@@ -510,14 +545,7 @@ impl App {
                     self.insert_floppy(kind, Some(p.clone()));
                 }
                 else {
-                    let c = self.setup.current_mut();
-                    if shift {
-                        c.flop2101 = text.clone();
-                        c.folder.clear();
-                    }
-                    else {
-                        c.flop = text.clone();
-                    }
+                    self.setup.current_mut().device_mut(if shift { "2101" } else { "2102" }).disk = text.clone();
                     let mut pr = self.setup.prefs().clone();
                     setup::push_recent(&mut pr.recent_floppies, &text);
                     self.setup.set_prefs(pr);
@@ -560,18 +588,19 @@ impl App {
         p.show_status = self.show_status;
         p.show_toolbar = self.show_toolbar;
         p.el_look = self.el_look;
+        p.keys_by_position = self.by_position;
         self.setup.set_prefs(p);
     }
 
     /// A Recent submenu that inserts the picked floppy image into a drive.
-    fn recent_floppy_menu(&mut self, ui: &mut egui::Ui, kind: DriveKind, label: &str) {
+    fn recent_floppy_menu(&mut self, ui: &mut egui::Ui, i: usize, label: &str) {
         let list = self.setup.prefs().recent_floppies.clone();
         ui.add_enabled_ui(!list.is_empty(), |ui| {
             ui.menu_button(label, |ui| {
                 for p in list {
                     let short = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
                     if ui.button(short).on_hover_text(&p).clicked() {
-                        self.insert_floppy(kind, Some(PathBuf::from(&p)));
+                        self.insert_at(i, Some(PathBuf::from(&p)));
                     }
                 }
             });
@@ -608,7 +637,7 @@ impl App {
             #[cfg(windows)]
             {
                 let mut t = vec![];
-                crate::winkeys::poll(&mut down, &mut t, &mut mods);
+                crate::winkeys::poll(!self.by_position, &mut down, &mut t, &mut mods);
                 tapped = t.into_iter().map(|p| (p, mods)).collect();
             }
             #[cfg(not(windows))]
@@ -629,6 +658,13 @@ impl App {
         #[cfg(windows)]
         let _ = &self.mods;
         self.taps.clear();
+        // keys by printed letter: a typed character goes in as the Compass key that makes it,
+        // with that key's own Shift (whatever Shift/AltGr the PC needed for it)
+        for c in self.text_taps.drain(..) {
+            if let Some((col, bit, shift)) = keyboard::key_for_char(c) {
+                tapped.push(((col, bit), crate::runner::EXACT | if shift { keyboard::MOD_SHIFT } else { 0 }));
+            }
+        }
         // the on-screen keyboard
         let om = self.osk.mods();
         for (p, pm) in self.osk.taps.drain(..) {
@@ -683,6 +719,11 @@ impl App {
                             s.m.set_fast(fast);
                             s.cfg.fast = fast;
                         }
+                        let mut micro = s.m.fpu_microcode();
+                        if ui.checkbox(&mut micro, "8087 on its microcode ROM").on_hover_text("off: the instruction-level 8087; the switch happens between two instructions").changed() {
+                            let r = s.set_fpu_micro(micro, &self.default_roms);
+                            self.say(r.unwrap_or_else(|e| e));
+                        }
                     }
                     ui.separator();
                     if ui.button("Quick save").clicked() {
@@ -690,6 +731,13 @@ impl App {
                     }
                     if ui.add_enabled(self.snapshot.is_some(), egui::Button::new("Quick load")).clicked() {
                         self.quick_load();
+                    }
+                    ui.separator();
+                    if ui.button("Save state").on_hover_text("the machine and a picture of its screen, kept with this profile").clicked() {
+                        self.save_state_slot();
+                    }
+                    if ui.button("Saved states...").clicked() {
+                        self.states.show = true;
                     }
                     if ui.button("Save state to a file...").clicked() {
                         self.save_state_file();
@@ -722,21 +770,35 @@ impl App {
                 if ui.button("Media manager...").clicked() {
                     self.show_media = true;
                 }
+                if ui.button("Floppy library...").on_hover_text("every floppy in a folder with its volume name; double-click to insert").clicked() {
+                    self.library.show = true;
+                }
                 if on {
                     ui.separator();
-                    self.recent_floppy_menu(ui, DriveKind::Floppy2102, "Recent into the 2102 drive");
-                    if ui.button("Insert 2102 floppy...").clicked() {
-                        self.pick_floppy(DriveKind::Floppy2102);
+                    let drives = self.floppy_drives();
+                    if drives.is_empty() {
+                        ui.label(RichText::new("no floppy drives (add one on the setup page)").weak());
                     }
-                    if ui.button("Take out 2102 floppy").clicked() {
-                        self.insert_floppy(DriveKind::Floppy2102, None);
-                    }
-                    self.recent_floppy_menu(ui, DriveKind::Floppy2101, "Recent into the 2101 drive");
-                    if ui.button("Insert 2101 floppy...").clicked() {
-                        self.pick_floppy(DriveKind::Floppy2101);
-                    }
-                    if ui.button("Take out 2101 floppy").clicked() {
-                        self.insert_floppy(DriveKind::Floppy2101, None);
+                    for (i, name) in drives {
+                        let what = match self.sess.as_ref().and_then(|s| s.media.get(i)) {
+                            Some(Media::Image(p)) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                            _ => "empty".into(),
+                        };
+                        ui.menu_button(format!("{name}: {what}"), |ui| {
+                            if ui.button("Insert...").clicked() {
+                                self.pick_floppy(i);
+                            }
+                            self.recent_floppy_menu(ui, i, "Recent");
+                            if ui.button("Take out").clicked() {
+                                self.insert_at(i, None);
+                            }
+                            if let Some(s) = &mut self.sess {
+                                let mut wp = s.protected(i);
+                                if ui.checkbox(&mut wp, "Write protect").changed() {
+                                    s.set_protected(i, wp);
+                                }
+                            }
+                        });
                     }
                     ui.separator();
                     if ui.button("Write changed disks back now").clicked() {
@@ -780,6 +842,11 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.overlay, "Demo tools overlay  (F10)");
                 ui.checkbox(&mut self.osk.show, "Compass keyboard (on screen)");
+                ui.menu_button("PC keys", |ui| {
+                    ui.radio_value(&mut self.by_position, false, "By the printed letter (any layout)")
+                        .on_hover_text("letters by the letter on the key, digits and punctuation by the character they type (AZERTY, QWERTZ...)");
+                    ui.radio_value(&mut self.by_position, true, "By position (US layout)").on_hover_text("every key by where it sits on a US keyboard, whatever is printed on it");
+                });
                 ui.checkbox(&mut self.show_panel, "2101 front panel");
                 ui.checkbox(&mut self.show_toolbar, "Toolbar");
                 ui.checkbox(&mut self.show_status, "Status bar");
@@ -900,6 +967,9 @@ impl App {
             if s.m.is_fast() {
                 ui.label("Fast core");
             }
+            if s.m.fpu_microcode() {
+                ui.label("8087 microcode");
+            }
             ui.label(format!("{:.0} fps", r.fps));
             ui.separator();
             let now = Instant::now();
@@ -910,15 +980,17 @@ impl App {
                     self.drive_seen[i] = now;
                 }
                 let lit = now.duration_since(self.drive_seen[i]) < Duration::from_millis(120);
+                let a = d.address();
                 let name = match (d.kind, &s.media[i]) {
-                    (_, Media::Folder(_)) => "PC folder",
-                    (DriveKind::Hdd2101, _) => "2101 HD",
-                    (DriveKind::Floppy2101, _) => "2101 floppy",
-                    (DriveKind::Floppy2102, _) => "2102 floppy",
+                    (_, Media::Folder(_)) => format!("PC folder ({a})"),
+                    (DriveKind::Hdd2101, _) => format!("{a} {}", crate::session::grid_name(a)),
+                    (_, Media::Empty) => format!("{a} {} (empty)", crate::session::grid_name(a)),
+                    _ => format!("{a} {}", crate::session::grid_name(a)),
                 };
-                if d.image.is_empty() {
+                if d.image.is_empty() && d.kind == DriveKind::Hdd2101 {
                     continue;
                 }
+                let name = if s.protected(i) { format!("{name} WP") } else { name };
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                 ui.painter().circle_filled(
                     rect.center(),
@@ -927,7 +999,7 @@ impl App {
                 );
                 let low = d.lle.is_some() || d.lle2101.is_some() || (d.kind == DriveKind::Floppy2101 && d.served);
                 let level = if low { "low level: the drive's own firmware runs" } else { "protocol model (no firmware)" };
-                ui.label(if d.dirty { format!("{name} *") } else { name.to_string() })
+                ui.label(if d.dirty { format!("{name} *") } else { name.clone() })
                     .on_hover_text(format!("{level}{}", if d.dirty { "\n* = changes not written to the image yet" } else { "" }));
                 ui.label(RichText::new(if low { "LL" } else { "P" }).small().weak()).on_hover_text(level);
                 if let Some(t) = d.display() {
@@ -1079,7 +1151,14 @@ impl App {
 
     fn keys_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("Keyboard map").open(&mut self.show_keys).resizable(false).show(ctx, |ui| {
-            ui.label("PC keys work by position (as on a US keyboard), not by the letter your layout prints.");
+            let by_position = self.by_position;
+            ui.label(if by_position {
+                "PC keys work by position (as on a US keyboard), not by the letter your layout prints."
+            }
+            else {
+                "PC keys work by the letter printed on them: letters by their letter, digits and punctuation by the character they type (any layout). With Ctrl or Alt held, digits and punctuation go by position."
+            });
+            ui.label(RichText::new("View > PC keys switches between the two.").weak());
             ui.add_space(4.0);
             ui.columns(2, |cols| {
                 cols[0].label(RichText::new("Compass key").strong());
@@ -1121,6 +1200,8 @@ impl App {
             ui.add_space(4.0);
             ui.label(RichText::new("The Compass has no [ ] \\ ` keys and no keypad, so those PC keys do nothing. The Compass keyboard reads at most two keys at a time, besides SHIFT, CTRL and CODE.").weak());
             ui.label(RichText::new("Keys go to the Compass while no text field has the focus; click the screen to give them back.").weak());
+            #[cfg(windows)]
+            ui.label(RichText::new(crate::winkeys::status()).weak());
         });
     }
 
@@ -1133,31 +1214,41 @@ impl App {
                 return;
             };
             let drives = &s.m.board().gpib.drives;
-            let Some(hd) = drives.iter().find(|d| d.kind == DriveKind::Hdd2101 && !d.image.is_empty()) else {
-                ui.label("This machine has no 2101 hard disk.");
+            let boxes: Vec<_> = drives.iter().filter(|d| d.kind == DriveKind::Hdd2101).collect();
+            if boxes.is_empty() {
+                ui.label("This machine has no 2101 Disc System.");
                 return;
-            };
-            match hd.display() {
-                Some(t) => {
-                    egui::Frame::new().fill(Color32::from_rgb(0x16, 0x15, 0x14)).inner_margin(14.0).corner_radius(6.0).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            led::display(ui, &t, 7.0);
-                            ui.add_space(24.0);
-                            ui.label(RichText::new("DISC SYSTEM 2101").color(Color32::from_rgb(0xD8, 0xD0, 0xB8)).strong());
-                        });
-                    });
-                }
-                None => {
-                    ui.label("The display only works with the low-level 2101 (its firmware ROM, see Machine setup > ROMs).");
-                }
             }
-            ui.horizontal(|ui| {
-                for d in drives.iter().filter(|d| matches!(d.kind, DriveKind::Hdd2101 | DriveKind::Floppy2101)) {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 5.0, if d.busy() { Color32::from_rgb(0xFF, 0xB0, 0x00) } else { Color32::from_rgb(0x4A, 0x4A, 0x52) });
-                    ui.label(if d.kind == DriveKind::Hdd2101 { "hard disk" } else { "floppy" });
+            for (n, hd) in boxes.iter().enumerate() {
+                if n > 0 {
+                    ui.add_space(8.0);
                 }
-            });
+                let a = hd.address();
+                ui.label(RichText::new(format!("GPIB {a} {} + {} {}", crate::session::grid_name(a), a + 1, crate::session::grid_name(a + 1))).weak());
+                match hd.display() {
+                    Some(t) => {
+                        egui::Frame::new().fill(Color32::from_rgb(0x16, 0x15, 0x14)).inner_margin(14.0).corner_radius(6.0).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                led::display(ui, &t, 7.0);
+                                ui.add_space(24.0);
+                                ui.label(RichText::new("DISC SYSTEM 2101").color(Color32::from_rgb(0xD8, 0xD0, 0xB8)).strong());
+                            });
+                        });
+                    }
+                    None => {
+                        ui.label("No display: this box runs as the protocol model (low level needs its firmware ROM, see Machine setup).");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    let flop = drives.iter().find(|d| d.kind == DriveKind::Floppy2101 && d.address() == a + 1);
+                    for (d, label) in [(Some(*hd), "hard disk"), (flop, "floppy")] {
+                        let Some(d) = d else { continue };
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 5.0, if d.busy() { Color32::from_rgb(0xFF, 0xB0, 0x00) } else { Color32::from_rgb(0x4A, 0x4A, 0x52) });
+                        ui.label(label);
+                    }
+                });
+            }
         });
         self.show_panel = open;
     }
@@ -1211,6 +1302,17 @@ fn blur(src: &[f32], w: usize, h: usize) -> Vec<f32> {
     out
 }
 
+/// Keys that go in by the key itself when keys go by printed letter: letters (by their
+/// layout letter), space, Return, Tab, Esc, Backspace and the arrows.
+fn printed_key(k: Key) -> bool {
+    use Key::*;
+    matches!(
+        k,
+        A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P | Q | R | S | T | U | V | W | X | Y | Z | Space | Enter | Tab | Escape | Backspace | ArrowLeft | ArrowRight | ArrowUp | ArrowDown
+    )
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn matrix_pos(k: Key) -> Option<(usize, u8)> {
     let c = match k {
         Key::A => 'a', Key::B => 'b', Key::C => 'c', Key::D => 'd', Key::E => 'e', Key::F => 'f',
@@ -1252,7 +1354,13 @@ impl eframe::App for App {
                         continue;
                     }
                     if owns {
-                        let k = physical_key.unwrap_or(*key);
+                        let k = if self.by_position { physical_key.unwrap_or(*key) } else { *key };
+                        // by printed letter: digits and punctuation come as typed text,
+                        // unless Ctrl or Code (Alt) alone is held (no text then)
+                        let text_key = !self.by_position && !printed_key(k) && !(modifiers.ctrl ^ modifiers.alt);
+                        if text_key {
+                            continue;
+                        }
                         if *pressed {
                             if self.keys_down.insert(k) {
                                 let m = *modifiers;
@@ -1266,7 +1374,12 @@ impl eframe::App for App {
                         continue;
                     }
                 }
-                egui::Event::Text(_) if owns => continue,
+                egui::Event::Text(t) if owns => {
+                    if !self.by_position {
+                        self.text_taps.extend(t.chars().filter(|c| !c.is_alphabetic() && *c != ' '));
+                    }
+                    continue;
+                }
                 egui::Event::WindowFocused(false) => self.keys_down.clear(),
                 _ => {}
             }
@@ -1360,6 +1473,12 @@ impl eframe::App for App {
         }
         if self.show_chips {
             debugger::chips_window(self, &ctx);
+        }
+        if self.library.show {
+            self.library_window(&ctx);
+        }
+        if self.states.show && self.sess.is_some() {
+            self.states_window(&ctx);
         }
         self.keys_window(&ctx);
         self.about_window(&ctx);

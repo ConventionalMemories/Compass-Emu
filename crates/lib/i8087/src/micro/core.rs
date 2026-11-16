@@ -86,7 +86,7 @@ pub struct Run {
     pub kinds: [u32; KINDS],
 }
 
-pub const KINDS: usize = 16;
+pub const KINDS: usize = 20;
 pub const K_MOVE: usize = 0;
 pub const K_IMM: usize = 1;
 pub const K_SHIFT: usize = 2;
@@ -103,7 +103,15 @@ pub const K_DIV_STEP: usize = 12;
 pub const K_SQRT_STEP: usize = 13;
 pub const K_READ: usize = 14;
 pub const K_WRITE: usize = 15;
-pub const KIND_NAMES: [&str; KINDS] = ["move", "immediate", "shift", "variable shift", "add", "control", "jump taken", "jump not taken", "call", "return", "other", "multiply step", "divide step", "root step", "word read", "word written"];
+/// one step of FPREM's loop
+pub const K_REM_STEP: usize = 16;
+/// one step of the transcendentals' quotient loop
+pub const K_QUOT_STEP: usize = 17;
+/// bits a variable shift moved its operand by (the shift itself counts as K_SHIFT_VAR)
+pub const K_SHIFT_DIST: usize = 18;
+/// the same for a shift by the CORDIC loop counter
+pub const K_SHIFT_INDEX: usize = 19;
+pub const KIND_NAMES: [&str; KINDS] = ["move", "immediate", "shift", "variable shift", "add", "control", "jump taken", "jump not taken", "call", "return", "other", "multiply step", "divide step", "root step", "word read", "word written", "remainder step", "quotient step", "shift distance", "shift by index"];
 
 // Positions in the 68-bit adder / sum register value: three rounding bits (guard, round,
 // sticky) below the 64-bit fraction, and one bit above it.
@@ -187,7 +195,7 @@ pub struct Micro8087 {
     overflow: bool,
     stack: Vec<u16>,
     /// memory operand as the bus interface delivers it: 16-bit words, lowest first
-    bus_in: [u16; 5],
+    bus_in: Vec<u16>,
     bus_next: usize,
     bus_out: Vec<u16>,
     /// what the exponent converter was last given, and how it reads it
@@ -202,6 +210,8 @@ pub struct Micro8087 {
     alt_const: bool,
     pub log: [u128; 16],
     pub log_shift: u32,
+    /// the transcendentals' fraction constants: ln(2)/3, log2(e), 3 log2(e), sqrt(2)
+    pub fconst: [u64; 4],
 }
 
 /// atan(2^-n) * 2^(n+67): the CORDIC constants, 67 bits each (computed, not read from the
@@ -249,6 +259,15 @@ const LOG: [u128; 16] = [
     0x5c5464ec5f4d74ca3,
     0x5c54c1400b92b919c,
 ];
+
+/// ln(2)/3, log2(e), 3 log2(e) and sqrt(2): the constants F2XM1, FYL2X and FYL2XP1 take
+/// from the constant ROM (computed, as above; `fit_constants` finds nothing better within
+/// 8 units).
+const FCONST: [u64; 4] = [0xEC98_1FF5_17BF_4CE5, 0xB8AA_3B29_5C17_F0BC, 0x8A7F_AC5F_0511_F48D, 0xB504_F333_F9DE_6484];
+
+/// Where the register loops of FRSTOR and FSAVE start in the ROM.
+const FRSTOR_LOOP: u16 = 675;
+const FSAVE_LOOP: u16 = 695;
 
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
@@ -303,7 +322,7 @@ impl Micro8087 {
             exc: 0,
             overflow: false,
             stack: Vec::new(),
-            bus_in: [0; 5],
+            bus_in: vec![0; 5],
             bus_next: 0,
             bus_out: Vec::new(),
             conv_fmt: Fmt::X80,
@@ -314,6 +333,7 @@ impl Micro8087 {
             round_next: false,
             kinds: [0; KINDS],
             alt_const: false,
+            fconst: FCONST,
             log: LOG,
             log_shift: 0,
         }
@@ -452,13 +472,14 @@ impl Micro8087 {
         self.conv_fmt = Fmt::X80;
         self.loop_mode = 0;
         if let Some((m, a)) = mem.as_mut() {
+            self.bus_in.clear();
             for i in 0..5 {
                 let lo = m.read_u8(*a + 2 * i as u32) as u16;
                 let hi = m.read_u8(*a + 2 * i as u32 + 1) as u16;
-                self.bus_in[i] = lo | hi << 8;
+                self.bus_in.push(lo | hi << 8);
             }
         }
-        let r = self.run(op, modrm);
+        let r = self.run(op, modrm, None);
         if let Some((m, a)) = mem.as_mut() {
             for (i, w) in self.bus_out.iter().enumerate() {
                 m.write_u8(*a + 2 * i as u32, *w as u8);
@@ -468,8 +489,33 @@ impl Micro8087 {
         r
     }
 
-    fn run(&mut self, op: u8, modrm: u8) -> Result<Run, Fault> {
-        let start = entry(op & 7, modrm).ok_or(Fault { addr: 0, word: 0, what: format!("no microcode entry for {:02X} {:02X}", 0xD8 | op, modrm) })?;
+    /// The register loops of FSAVE (`restore` false) and FRSTOR: the eight registers from
+    /// ST(0) on, 80 bytes at `a`. The 14 bytes of environment before them, and FSAVE's
+    /// FINIT at the end, are hardwired in the chip and the caller's business. FRSTOR keeps
+    /// each register's tag (the caller has set them from the new tag word).
+    pub fn exec_state(&mut self, restore: bool, mem: &mut dyn crate::FpuMem, a: u32) -> Result<Run, Fault> {
+        self.bus_next = 0;
+        self.bus_out.clear();
+        self.bus_in.clear();
+        self.conv_fmt = Fmt::X80;
+        self.loop_mode = 0;
+        if restore {
+            for i in 0..40 {
+                let lo = mem.read_u8(a + 2 * i) as u16;
+                let hi = mem.read_u8(a + 2 * i + 1) as u16;
+                self.bus_in.push(lo | hi << 8);
+            }
+        }
+        let r = self.run(5, if restore { 0x20 } else { 0x30 }, Some(if restore { FRSTOR_LOOP } else { FSAVE_LOOP }));
+        for (i, w) in self.bus_out.iter().enumerate() {
+            mem.write_u8(a + 2 * i as u32, *w as u8);
+            mem.write_u8(a + 2 * i as u32 + 1, (*w >> 8) as u8);
+        }
+        r
+    }
+
+    fn run(&mut self, op: u8, modrm: u8, at: Option<u16>) -> Result<Run, Fault> {
+        let start = at.or_else(|| entry(op & 7, modrm)).ok_or(Fault { addr: 0, word: 0, what: format!("no microcode entry for {:02X} {:02X}", 0xD8 | op, modrm) })?;
         self.opcode = ((op as u16 & 7) << 8) | modrm as u16;
         self.top0 = self.top;
         self.swap = false;
@@ -836,7 +882,9 @@ impl Micro8087 {
             0x6F48 => self.loop_mode = LOOP_QUOT,
             // before an addition in the CORDIC routines: the addition rounds its A side
             0x6C4A => self.round_next = true,
-            // F2XM1, before the denominator's subtraction; meaning unknown
+            // F2XM1, before the denominator's subtraction; meaning unknown. It is not a carry
+            // or a rounding of that subtraction: a unit either way there is the same as a
+            // unit on the log2(e) constant, and no such change matches more real results.
             0x6E44 => {}
             0x6B48 => {
                 self.loop_mode = LOOP_REM;
@@ -951,10 +999,10 @@ impl Micro8087 {
             0x1EB => 0xC90F_DAA2_2168_C235, // pi
             0x1EC => 0x9A20_9A84_FBCF_F799, // log10(2)
             0x1ED => 0xB172_17F7_D1CF_79AC, // ln(2)
-            0x1F0 if self.alt_const => 0xEC98_1FF5_17BF_4CE5, // ln(2)/3
-            0x1F0 => 0xB8AA_3B29_5C17_F0BC,                   // log2(e)
-            0x1F1 | 0x1F9 if self.alt_const => 0x8A7F_AC5F_0511_F48D, // 3 log2(e)
-            0x1F1 | 0x1F9 => 0xB504_F333_F9DE_6484,                   // sqrt(2)
+            0x1F0 if self.alt_const => self.fconst[0],
+            0x1F0 => self.fconst[1],
+            0x1F1 | 0x1F9 if self.alt_const => self.fconst[2],
+            0x1F1 | 0x1F9 => self.fconst[3],
             n => return Err(format!("fraction constant for opcode {:03X}", n)),
         })
     }
@@ -973,7 +1021,7 @@ impl Micro8087 {
             }),
             // the next word of the memory operand
             0x04 => {
-                let w = *self.bus_in.get(self.bus_next).ok_or("more than five operand words read")?;
+                let w = *self.bus_in.get(self.bus_next).ok_or("more operand words read than the instruction has")?;
                 self.bus_next += 1;
                 self.kinds[K_READ] += 1;
                 Val::frac(w as u64)
@@ -1116,7 +1164,7 @@ impl Micro8087 {
             // the sum register (shifted left once per step) by the B register
             if ijk == 6 {
                 self.loop_steps = self.counter as u32 + 1;
-                self.kinds[K_DIV_STEP] += self.loop_steps;
+                self.kinds[K_REM_STEP] += self.loop_steps;
                 self.counter = 0;
             }
             else if _op == 5 {
@@ -1137,6 +1185,7 @@ impl Micro8087 {
         self.kinds[match self.loop_mode {
             LOOP_MUL => K_MUL_STEP,
             LOOP_SQRT => K_SQRT_STEP,
+            LOOP_QUOT => K_QUOT_STEP,
             _ => K_DIV_STEP,
         }] += steps;
         self.counter = 0;
@@ -1280,6 +1329,7 @@ impl Micro8087 {
             0x08 => self.cordic_index(),
             _ => return Err(format!("variable shift mode {:02X}", by)),
         };
+        self.kinds[if by & !1 == 0x08 { K_SHIFT_INDEX } else { K_SHIFT_DIST }] += n;
         let sticky = by & 1 != 0 && v.wide & 1 != 0;
         if right {
             let lost = v.wide & ((1u128 << n) - 1) != 0;

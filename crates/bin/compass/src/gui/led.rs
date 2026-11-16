@@ -31,10 +31,10 @@ const FONT: [[u8; 5]; 95] = [
     [0x00, 0x00, 0x7F, 0x00, 0x00], [0x00, 0x41, 0x36, 0x08, 0x00], [0x02, 0x01, 0x02, 0x04, 0x02],
 ];
 
-/// Lit LED colour (the real display glows magenta-red).
-pub const LIT: Color32 = Color32::from_rgb(0xFF, 0x3C, 0xC8);
-const DIM: Color32 = Color32::from_rgb(0x2E, 0x10, 0x26);
-const GLASS: Color32 = Color32::from_rgb(0x12, 0x06, 0x10);
+/// Lit LED colour (the real display is red).
+pub const LIT: Color32 = Color32::from_rgb(0xFF, 0x2A, 0x1A);
+const DIM: Color32 = Color32::from_rgb(0x30, 0x0C, 0x0A);
+const GLASS: Color32 = Color32::from_rgb(0x14, 0x05, 0x04);
 
 fn glyph(c: char) -> [u8; 5] {
     let i = c as u32;

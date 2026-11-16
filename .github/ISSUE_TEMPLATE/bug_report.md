@@ -10,7 +10,7 @@ assignees: ''
 What you saw, and what you expected (or what a real Compass does).
 
 **How to reproduce**
-1. Model (`--model`) and how you started it (which .bat or command line)
+1. Model (`--model`) and how you started it (setup page profile, shortcut .bat or command line)
 2. Disk image / GRiD-OS version, and any ROMs given with `--rom0..3`
 3. Steps in GRiD-OS
 

@@ -221,9 +221,23 @@ fn fit_constants() {
     let mut best = score(&mut f);
     eprintln!("{} tests, {} exact at the start", tests.len(), best);
     for _pass in 0..3 {
-        for i in 0..16 {
-            let get = |f: &I8087| if which == "atan" { f.micro.as_ref().unwrap().atan[i] } else { f.micro.as_ref().unwrap().log[i] };
-            let set = |f: &mut I8087, v: u128| if which == "atan" { f.micro.as_mut().unwrap().atan[i] = v } else { f.micro.as_mut().unwrap().log[i] = v };
+        for i in 0..if which == "frac" { 4 } else { 16 } {
+            let get = |f: &I8087| {
+                let m = f.micro.as_ref().unwrap();
+                match which.as_str() {
+                    "atan" => m.atan[i],
+                    "frac" => m.fconst[i] as u128,
+                    _ => m.log[i],
+                }
+            };
+            let set = |f: &mut I8087, v: u128| {
+                let m = f.micro.as_mut().unwrap();
+                match which.as_str() {
+                    "atan" => m.atan[i] = v,
+                    "frac" => m.fconst[i] = v as u64,
+                    _ => m.log[i] = v,
+                }
+            };
             let base = get(&f);
             let mut pick = 0i32;
             for d in -8i32..=8 {
@@ -241,6 +255,70 @@ fn fit_constants() {
         }
     }
     eprintln!("{} exact at the end", best);
+}
+
+/// How well 8087 Bench 3 (ids Y, Z, h, w: the constant ROM probe) can see each constant:
+/// the number of its tests whose result changes when the constant moves by one unit.
+/// Runs with FB_SENS set.
+#[test]
+fn probe_sensitivity() {
+    if std::env::var("FB_SENS").is_err() {
+        return;
+    }
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata");
+    let all = table(&std::fs::read_to_string(format!("{dir}/bench-table.txt")).unwrap());
+    let tests: Vec<&Test> = all.iter().filter(|t| "YZhw".contains(&t.id[..1])).collect();
+    let mut f = I8087::new();
+    f.use_microcode(MicroRom::find().expect("the microcode ROM"));
+    let base: Vec<String> = tests.iter().map(|t| run(&mut f, t, 0x0400)).collect();
+    for (name, n) in [("atan", 16), ("log", 16), ("frac", 4)] {
+        for i in 0..n {
+            let mut line = format!("{name} {i:2}:");
+            for d in [-1i128, 1, 2, 4] {
+                let m = f.micro.as_mut().unwrap();
+                let old = (m.atan[i], m.log[i], m.fconst[i.min(3)]);
+                match name {
+                    "atan" => m.atan[i] = (m.atan[i] as i128 + d) as u128,
+                    "log" => m.log[i] = (m.log[i] as i128 + d) as u128,
+                    _ => m.fconst[i] = (m.fconst[i] as i128 + d) as u64,
+                }
+                let changed = tests.iter().zip(&base).filter(|(t, b)| run(&mut f, t, 0x0400) != **b).count();
+                let m = f.micro.as_mut().unwrap();
+                (m.atan[i], m.log[i], m.fconst[i.min(3)]) = old;
+                line += &format!("  {d:+} changes {changed}");
+            }
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Which constants a test uses: FB_USES = a table file (bench-table format); prints for each
+/// test the logarithm and arctangent constants whose change (by 2^20 units) changes its result.
+#[test]
+fn probe_uses() {
+    let Ok(path) = std::env::var("FB_USES") else { return };
+    let tests = table(&std::fs::read_to_string(path).unwrap());
+    let mut f = I8087::new();
+    f.use_microcode(MicroRom::find().expect("the microcode ROM"));
+    for t in &tests {
+        let base = run(&mut f, t, 0x0400);
+        let mut line = format!("{}", &t.id);
+        for (name, log) in [(" log", true), (" atan", false)] {
+            line += name;
+            for i in 0..16 {
+                let m = f.micro.as_mut().unwrap();
+                let old = (m.atan[i], m.log[i]);
+                if log { m.log[i] += 1 << 20 } else { m.atan[i] += 1 << 20 }
+                let ch = run(&mut f, t, 0x0400) != base;
+                let m = f.micro.as_mut().unwrap();
+                (m.atan[i], m.log[i]) = old;
+                if ch {
+                    line += &format!(" {i}");
+                }
+            }
+        }
+        eprintln!("{line}");
+    }
 }
 
 /// Tests the real machines and the microcode core still disagree on (the list shrinks as

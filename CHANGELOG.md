@@ -2,9 +2,9 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/dbalsom/martypc](https://github.com/dbalsom/martypc).
 
-## 1.0.0
+## 0.13.0
 
-First public release.
+First release for testers.
 - The Windows zip starts from the machine setup page: import the ROMs (MAME sets or
   your own dumps) with Import ROMs..., pick a model and a GRiD-OS disk, Power on.
   No MAME folder is needed. The old start files for a MAME setup moved to
@@ -14,6 +14,95 @@ First public release.
   tools\gridbuild.py as before.
 - README.txt in the zip is the user guide only; the version history ships as
   CHANGELOG.md beside it.
+- The source tree keeps only the parts of MartyPC the Compass uses (the 8086 core and
+  its bus); MartyPC's PC frontends, display code and bundled PC software are gone.
+- The 8087 runs on its microcode whenever the ROM file is there (8087mc.txt in the ROM
+  folder, or the file named on the setup page or with --fpu-rom); no switch needed. The
+  setup page's 8087 box and --fpu-table keep the instruction-level 8087. Without the file
+  nothing changes. Profiles saved by 0.11.0 follow the new default.
+- Microcode 8087 timing fitted by operand: the cost model counts FPREM's and the
+  transcendentals' loop steps and how far the shifts move, and the fit no longer lets a
+  few odd tests steer it. Mean error against the real 1101 over 2068 timed tests 1.45 %
+  (was 1.7 % after the refresh change below).
+- Microcode 8087: the register loops of FSAVE and FRSTOR run from the ROM too. Same
+  results and times as before.
+- The user guide says what the microcode ROM is, where the file goes and how to switch.
+- 8087 Bench 0.0.5's third program (1584 tests on the transcendentals' constant ROM) is in
+  `testdata/bench-table.txt`; `probe_uses` and `probe_sensitivity` show which constants
+  each test leans on. The constants get fitted once a real machine has run it.
+- A WAIT hangs like the real machine while the 8087 holds BUSY for an unmasked exception
+  nobody clears (it gave up after a guard count before). The 8086 stays in the WAIT and
+  still takes interrupts. 8087 Bench 0.0.3's risky part now stops at y005 in the emulator
+  as on the real 1101.
+- Microcode 8087: FLDCW, FSTCW, FSTSW, FSTENV, FLDENV, FSAVE, FRSTOR and FNOP take the
+  real 1101's time within about 1.5 clocks (were 3 to 10 off). Timing checked against the
+  real 1137 too: 2.3 % mean error, the 1101 2.0 %.
+- 8087 registers hold a real 1101's power-on pattern instead of zeros: FXAM of an empty
+  register answers 4700 as on the real machines.
+- Internal modem (0.12.0): the modem board's 8749 runs GRiD's own firmware (16020-007.bin
+  in the ROM folder; Import ROMs knows it), so `Modem~Device~`, GRiDTerm and PhoneLink work.
+  The MCS-48 core has an 8048/8749 mode (128 bytes RAM, MOVX/INS/OUTL BUS, JNI, SEL MB,
+  ENT0 CLK); the 8255 at DFEC0 does port A mode 2 with the MCU on the other side; the
+  modem interrupts on IR2 (GRiD interrupt 4). A line model drives the MCU's pins: dial tone,
+  DTMF and pulse dialing, ring, and the far modem at 300 baud and at 1200 baud with the
+  212A scrambler. The phone line is TCP with the raw data bytes: `--modem-dial
+  NUMBER=HOST:PORT` (phone book, `*` = any number), `--modem-listen tcp:PORT` (a connection
+  rings the Compass), `--modem-answer-300`, `--rom-modem`, `--no-modem`; the same on the
+  setup page. Tested with the firmware in `tests/modem.rs` (calls both ways at both speeds, pulse dialing)
+  and with GRiDTerm 3.1.5 on the merged disk dialing and echoing at 1200 baud
+  (`tests/modem_boot.rs`). How to use it: the user guide's "The internal modem" (README.txt in the zip); reference: docs/modem.md.
+- Timing: the DRAM refresh steal now keeps its place in every display frame instead of
+  running free every 48 clocks. The free-running steal drifted 4 clocks a frame against
+  the 1101's 82276-clock frame, and its beat with the display slots made a polling loop's
+  turns per frame vary by up to 1.5 with the moment the loop started. 8087 Bench, which
+  sizes its timing loops from one such reading, then picked 250 turns for a few tests
+  (t044, t048, u024, d002 on the 1101), the loop ran past a frame and the time came out
+  one frame short (negative clocks). On the real board the display's own fetches refresh
+  the DRAM, so the refresh runs off the same counters as the frame. Same number of steals,
+  so the GRiDBench gap rows stay where they were (1101 1.22 %, 1139 1.36 % rms); 8087
+  Bench 1 and 2 on the 1101 and 1137 now give no negative times (1101 bench 1 mean error
+  2.6 % -> 1.9 %, the others unchanged). `GRID_REFRESH_FRAME=0` brings back the free-running
+  refresh.
+- Low-level 2101: floppies read again. A disk the emulator lays out itself (any track
+  the 2101 has not formatted) was built with interleave 3 by a formula that only works
+  for interleaves prime to 9, so every track lost its 4th sector (and got a 2nd copy of
+  its 2nd). Booting a GRiD-OS floppy from a 2101 gave "Cannot boot: Checksum error"
+  because the boot PROM reads pages 1-4. Sectors now go to the next free slot on a
+  collision (IDs 1 4 7 2 5 8 3 6 9, as the 2101's own format writes them); the 2102's
+  interleave 5 layout is unchanged. `lle_2101_floppy` now reads every sector of
+  cylinder 0, and the new ignored test `boot_from_2101_floppy` boots a floppy in a 2101.
+- 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
+  you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
+  arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals
+  run from the chip's microcode ROM instead of the instruction-level model. Of 141
+  transcendental and square root results dumped from a real 1101, 134 come out bit for
+  bit and the other 7 are one unit off.
+- The microcode 8087 fitted to 8087 Bench on a real 1101 and 1137 (2181 tests): of 1588
+  real result lines 34 still differ (were 1441), and the busy time now comes from the
+  micro-instructions that ran (mean error about 2.5 % over 2068 timed tests, was 40 % with the
+  tables). Both 8087 cores: FINIT keeps the condition bits, the B bit shows a pending
+  unmasked exception, the IR bit is derived, the control word has 13 bits, reserved
+  opcodes alias their neighbours, FSTENV's pointer is the ESC byte after a segment
+  prefix. The test `bench_real` holds the real reports.
+- The instruction-level 8087 was corrected wherever the microcode showed it wrong (FSQRT
+  exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
+  loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
+
+## 0.12.0
+
+The internal modem works. The modem's 8749 microcontroller runs GRiD's own
+firmware (roms\16020-007.bin, copy it in by hand or with Import ROMs...), so
+GRiDTerm, PhoneLink and Modem~Device~ dial, answer and connect at 300 and
+1200 baud. The phone line is TCP: a phone book says which address each
+number reaches (--modem-dial NUMBER=HOST:PORT, * = any number) and a listen
+port makes incoming connections ring the Compass (--modem-listen tcp:PORT);
+the same settings are on the setup page (Serial and sound) and the ROMs card.
+See The internal modem above.
+The 8087 runs on its own microcode whenever its ROM file is there (8087mc.txt
+in the ROM folder, or the file named on the setup page or with --fpu-rom); no
+switch needed. The setup page's 8087 box and --fpu-table keep the
+instruction-level 8087. Without the file nothing changes. See The 8087
+microcode ROM above.
 
 ## 0.11.0
 
@@ -31,9 +120,9 @@ GUI for everyday use:
   beside the disk fields on the setup page (the last 8 floppies and hard disks).
 - ImageDisk .IMD floppies: used through the .img beside them, made from the
   .IMD when it is missing (GRiD 2102 and IBM sector numbering).
-- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-micro,
-  --fpu-rom) runs the 8087 on its own microcode ROM, which you supply; the
-  setup page says which ROM file it found (docs/8087-microcode.md).
+- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-rom)
+  runs the 8087 on its own microcode ROM, which you supply; the setup page
+  says which ROM file it found (docs/8087-microcode.md).
 - Help > Keyboard map lists every Compass key and its PC key, and the
   emulator keys.
 
@@ -45,17 +134,42 @@ Machine setup, drives and keys:
   whatever their file names, and copies them into the profile's ROM folder under
   the names the emulator looks for (a 16K boot PROM file is split into its even
   and odd halves). Also `compass import-roms SOURCE [ROMFOLDER]`.
-- Emulation level per drive: Drives > "2101 box" and "2102 floppy" choose Low level
-  (the drive's own firmware runs) or Protocol model. The status bar shows LL or P
-  beside each drive; hover for the details. Also --2101-protocol, --2102-protocol,
-  --rom-2101, --rom-2101-10 and --rom-2102.
-- 2101 front panel: the box's 4-character LED display and its drive lights (View >
-  2101 front panel, or click the small display in the status bar). It shows what
-  the 2101 firmware writes to the display, so only with the low-level 2101.
+- GPIB devices on the setup page: a card per unit (2101 Disc System, 2102 Floppy,
+  PC folder drive) with an on/off box, its GPIB address and GRiD-OS name (changeable),
+  Low level (the unit's own firmware runs) or Protocol model, its own firmware file if
+  wanted, and its disks. Two 2101 boxes (4 + 5 and 12 + 13), each at its own level.
+  A floppy drive with no disk is emulated too, so GRiD-OS lists it and a disk
+  inserted later is seen. The PC folder drive is a unit of its own (13 Extra Floppy
+  Disk next to a 2101), so the 2101 keeps its floppy drive and its firmware. The
+  status bar shows each drive's GRiD-OS name and LL or P; hover for the details.
+  Also --gpib, --folder-addr, --2101-protocol, --2102-protocol, --rom-2101,
+  --rom-2101-10 and --rom-2102. Older profiles turn into units by themselves.
+- Power on sits beside each profile (double-click a profile to power it on) and at
+  the top of the page.
+- 2101 front panel: the box's 4-character red LED display and its drive lights (View >
+  2101 front panel, or click the small display in the status bar), one per 2101 box.
+  It shows what the 2101 firmware writes to the display, so only with the low-level
+  2101.
 - Keys on Windows: a held key no longer goes on after it is let go (Windows key
   repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
   instead of switching windows (the keyboard hook now runs on its own thread, so
-  Windows no longer drops it when a frame is slow).
+  Windows no longer drops it when a frame is slow, the window itself refuses
+  Alt+Esc, and while the window has focus Alt+Esc is registered as its hot key).
+  Help > Keyboard map shows whether these guards are on, how often each caught
+  Alt+Esc, and what the hook saw of the last Esc.
+- Write protect per drive instead of one switch for all disks (see The window).
+- Media manager: opens the floppies and hard disks GRiD-OS reads, also unnamed
+  volumes (a blank volume name) and boot floppies (boot code in page 0), finds
+  the root directory even when it is not right after the bitmap, and says so
+  plainly when a disk has none. "Open disk image..." takes .IMD floppies too.
+- Bubble card on the setup page: bubble on or off, the image (raw, 128 KB per
+  7110 module, in address order; size and modules shown), New image size
+  (128/256/384/512 KB) with "Make blank...", and its own Write protect box.
+- Media > Floppy library: every .img and .IMD in a folder (and sub-folders)
+  with its GRiD volume name, file count, size and date, a Find box, and the
+  drive to put it in; double-click a floppy (or Insert) to put it in that drive.
+- Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
+  PC keys > By position (US layout) for the old way.
 
 Build and run in the window:
 - Project > Project window: pick a project folder (NAME.pas, NAME.asm, ...) and a
@@ -77,9 +191,14 @@ Extras:
   Edit > Copy screen puts the Compass screen on the clipboard as a picture.
 - Speed slider (toolbar and Machine menu): 10 % to 400 % of a real Compass;
   double-click it for 100 %.
-- On-screen Compass keyboard (View, or Keyboard on the toolbar): click a key to
-  type it, hold the mouse button to hold it; SHIFT, CTRL and CODE stay on for the
-  next key.
+- On-screen Compass keyboard (View, or Keyboard on the toolbar), laid out and
+  coloured like the real one: click a key to type it, hold the mouse button to
+  hold it; SHIFT, CTRL and CODE stay on for the next key.
+- Saved states with pictures: Machine > Save state keeps the machine and a picture
+  of its screen with the profile; Machine > Saved states... shows them as
+  thumbnails to load (double-click) or delete. A state holds no disks.
+- The 8087 core switches while the machine runs (Machine > 8087 on its microcode
+  ROM), like the fast CPU core.
 - View > EL panel look: glow around lit pixels, dark gaps between pixels (at 3x and
   more) and a short afterglow.
 
@@ -105,7 +224,7 @@ Extras:
 
 Each model now has the hardware its real boards carry (from photos of 1101,
 1121, 1137 and 1139 motherboards):
-- New model 1137 (`--model 1137`, the machine used for the 113x measurements): 113x board with 512K and the
+- New model 1137 (`--model 1137`, the project's own machine): 113x board with 512K and the
   large screen, the 1139 PROM (as on the real 1137) and the 300001-02 keyboard
   firmware dumped from it. No modem: the 8255 at DFEC0 is missing, so
   Modem~Device~ finds no modem as on the real machine. Its sound DACs and DTMF
@@ -232,20 +351,13 @@ Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
 ## 0.8.0
 
 - The 2101 hard disk box runs low-level when roms holds its firmware
-  (300205-05.bin for the 20 MB box, 300205-06.bin for the 10 MB one; 2101.bin
-  also works): the box's 8088 (4 MHz) runs the real ROM, with an 8291A GPIB
-  chip, the 74LS259 latch, a WD2797 floppy controller and a Xebec S1410 SASI
-  controller (the S1410 at command level, timed after its ROM and a real 2101
-  with an ST-225). The ROM is picked from the hard disk image size.
-- The 2101's 4-character display shows in the status bar and in the debugger.
-- The 2101 floppy goes through the box's firmware too: a format writes
-  interleave 3, and an empty slot gives error 128 as on the real box.
-- Disk timing fitted to GRiDBench 2.1b on a real 1101 + 2101 (ms, emulated vs
-  real): same page 17.0 / 19.0, sequential 23.8 / 21.1, random 55.8 / 53.5,
-  first/last 133.7 / 130.3, steps 117.8 / 122.5. The drive is taken as formatted
-  at interleave 4 (S1410_IL changes it; S1410_SEEK the seek curve).
-- GRID_2101=protocol uses the protocol-level model; it is also used when no
-  2101 ROM is there, or when a PC folder is the 2101 floppy.
+  (300205-05.bin 20 MB, 300205-06.bin 10 MB): the box's 8088 runs the real
+  ROM; the Xebec controller is modelled at command level, timed after a real
+  2101. Its 4-character display shows in the status bar.
+- The 2101 floppy goes through the firmware too; an empty slot gives error
+  128 as on the real box.
+- Disk speed fitted to GRiDBench on a real 1101 + 2101 (within about 10%).
+- GRID_2101=protocol uses the old protocol-level model instead.
 
 ## 0.7.0
 
@@ -458,7 +570,7 @@ screen shows what the beam saw, so racing the beam and tearing look as on a real
 
 ## Not there yet
 
-The internal modem, the test ROM socket, a GRiD Server for GRiDLink.
+The test ROM socket, a GRiD Server for GRiDLink.
 
 Source: https://github.com/ConventionalMemories/compass-emu
 By Conventional Memories (C.M._), MIT license. Built on MartyPC by Daniel Balsom (MIT).

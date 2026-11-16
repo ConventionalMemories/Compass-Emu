@@ -128,6 +128,20 @@ pub struct Drive {
     /// The low-level 2101's light for this drive (kept up to date by the bus).
     #[serde(default)]
     served_busy: bool,
+    /// GPIB address (the kind's usual one unless set: GRiD-OS knows 4 Hard Disk, 5 Floppy
+    /// Disk, 6 Portable Floppy, 12 Extra Hard Disk, 13 Extra Floppy Disk).
+    #[serde(default)]
+    pub addr: u8,
+    /// Always the protocol model, even when firmware for the box is there.
+    #[serde(default)]
+    pub protocol: bool,
+    /// Firmware for this drive's box instead of the bus-wide one (`rom_2102`, `rom_2101`).
+    #[serde(skip)]
+    pub rom: Option<Vec<u8>>,
+    /// Write protected: a floppy refuses writes (error 106, as with the tab on a real
+    /// disk); a hard disk takes them, and the frontend doesn't save them.
+    #[serde(default)]
+    pub write_protect: bool,
 }
 
 /// GPIBLOG set: print drive commands, SRQs, serial polls and ends of data on stderr.
@@ -246,6 +260,7 @@ impl Drive {
             kind,
             image,
             dirty: false,
+            write_protect: false,
             listening: false,
             talking: false,
             serial_polling: false,
@@ -269,6 +284,26 @@ impl Drive {
             lle2101: None,
             served: false,
             served_busy: false,
+            addr: kind.address(),
+            protocol: false,
+            rom: None,
+        }
+    }
+
+    /// A drive at GPIB address `addr`.
+    pub fn at(kind: DriveKind, addr: u8, image: Vec<u8>) -> Drive {
+        let mut d = Drive::new(kind, image);
+        d.addr = addr;
+        d
+    }
+
+    /// The drive's GPIB address (older saved states have none: the kind's usual one).
+    pub fn address(&self) -> u8 {
+        if self.addr == 0 {
+            self.kind.address()
+        }
+        else {
+            self.addr
         }
     }
 
@@ -394,6 +429,11 @@ impl Drive {
     }
 
     /// 7-byte error reply: error word, drive, page.
+    /// A write-protected floppy (a hard disk has no tab).
+    fn floppy_protected(&self) -> bool {
+        self.write_protect && self.kind != DriveKind::Hdd2101 && !self.image.is_empty()
+    }
+
     fn error_block(code: u16, page: u32) -> [u8; 7] {
         let mut b = [0u8; 7];
         b[0..2].copy_from_slice(&code.to_le_bytes());
@@ -447,7 +487,7 @@ impl Drive {
         let addr = b & 0x1F;
         if group == 0x20 {
             self.rx.clear();
-            self.listening = addr == self.kind.address();
+            self.listening = addr == self.address();
             if self.listening && self.chunked {
                 self.tx.clear();
                 self.chunked = false;
@@ -456,7 +496,7 @@ impl Drive {
         }
         else if group == 0x40 {
             self.rx.clear();
-            self.talking = addr == self.kind.address();
+            self.talking = addr == self.address();
             self.listening = false;
         }
         else if b == CMD_SPE {
@@ -491,7 +531,7 @@ impl Drive {
                 let size = u16::from_le_bytes([self.rx[7], self.rx[8]]);
                 self.log.push(format!("cmd {} sector {} size {}", cmd, sector, size));
                 if gpib_log() {
-                    eprintln!("GPIB {} {} {} {} @{}", now, cmd, sector, size, self.kind.address());
+                    eprintln!("GPIB {} {} {} {} @{}", now, cmd, sector, size, self.address());
                 }
                 match cmd {
                     0 => self.tx.extend([0u8; 7]),
@@ -513,6 +553,7 @@ impl Drive {
                         self.write_ctrl = self.rx[9];
                         self.state = DriveState::Writing;
                     }
+                    17 if self.floppy_protected() => self.tx.extend(Self::error_block(106, 0)),
                     17 => {
                         self.ra_cache.clear();
                         self.state = DriveState::Formatting;
@@ -524,6 +565,14 @@ impl Drive {
             DriveState::Writing => {
                 let off = self.sector as usize * SECTOR;
                 let end = (off + self.rx.len()).min(self.image.len());
+                if off < end && !matches!(self.write_ctrl, 1 | 2) && self.floppy_protected() {
+                    // the write-protect tab: nothing written, error 106 once the data is in
+                    self.state = DriveState::Idle;
+                    self.tx.extend(Self::error_block(106, self.sector));
+                    self.spoll = 0x0F;
+                    self.srq = true;
+                    return;
+                }
                 if off < end && !matches!(self.write_ctrl, 1 | 2) {
                     let n = end - off;
                     self.image[off..end].copy_from_slice(&self.rx[..n]);
@@ -673,10 +722,14 @@ impl Gpib {
     /// A 2101 box answers on both its addresses: with a hard disk and no floppy image, add
     /// the box's floppy drive with no disk in it, so GRiD-OS's polls of address 5 get answers.
     pub fn add_2101_floppy_slot(&mut self) {
-        let hd = self.drives.iter().any(|d| d.kind == DriveKind::Hdd2101);
-        let fl = self.drives.iter().any(|d| d.kind == DriveKind::Floppy2101);
-        if hd && !fl {
-            self.drives.push(Drive::new(DriveKind::Floppy2101, Vec::new()));
+        let boxes: Vec<(u8, bool)> =
+            self.drives.iter().filter(|d| d.kind == DriveKind::Hdd2101).map(|d| (d.address(), d.protocol)).collect();
+        for (a, protocol) in boxes {
+            if !self.drives.iter().any(|d| d.address() == a + 1) {
+                let mut d = Drive::at(DriveKind::Floppy2101, a + 1, Vec::new());
+                d.protocol = protocol;
+                self.drives.push(d);
+            }
         }
     }
 
@@ -716,22 +769,24 @@ impl Gpib {
 
     /// Give 2102 drives added without firmware their low-level box (once a ROM is set).
     fn attach_lle(&mut self) {
-        let Some(rom) = &self.rom_2102
-        else {
-            return;
-        };
         // GRID_2102_EARLY: seconds the box was switched on before the Compass (default 4; 0 =
         // together, when the box is still busy with its self test as the boot PROM calls it).
         let early = std::env::var("GRID_2102_EARLY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+        let now = self.now;
         for d in &mut self.drives {
-            if d.kind == DriveKind::Floppy2102 && d.lle.is_none() {
-                let mut b = Box2102::new(rom.clone(), DriveKind::Floppy2102.address());
-                b.set_us(Self::to_ns(self.now) / 1000);
-                if self.now == 0 {
-                    b.power_on_early((early * 1e6) as u64, &mut d.image, &mut d.dirty);
-                }
-                d.lle = Some(Box::new(b));
+            if d.kind != DriveKind::Floppy2102 || d.lle.is_some() || d.protocol {
+                continue;
             }
+            let Some(rom) = d.rom.as_ref().or(self.rom_2102.as_ref())
+            else {
+                continue;
+            };
+            let mut b = Box2102::new(rom.clone(), d.address());
+            b.set_us(Self::to_ns(now) / 1000);
+            if now == 0 {
+                b.power_on_early((early * 1e6) as u64, &mut d.image, &mut d.dirty);
+            }
+            d.lle = Some(Box::new(b));
         }
     }
 
@@ -747,38 +802,52 @@ impl Gpib {
         }
     }
 
-    /// Give a 2101 box (hard disk and floppy) its low-level board once a ROM fits.
+    /// Give each 2101 box (hard disk and floppy) its low-level board once a ROM fits.
     fn attach_2101(&mut self) {
-        if self.rom_2101.iter().all(|r| r.is_none()) {
+        let hds: Vec<usize> = (0..self.drives.len()).filter(|&i| self.drives[i].kind == DriveKind::Hdd2101).collect();
+        for h in hds {
+            self.attach_2101_box(h);
+        }
+    }
+
+    /// The 2101 floppy drive of the box whose hard disk is drive `h` (at the next address).
+    fn box_floppy(&self, h: usize) -> Option<usize> {
+        let a = self.drives[h].address() + 1;
+        self.drives.iter().position(|d| d.kind == DriveKind::Floppy2101 && d.address() == a)
+    }
+
+    fn note_2101(&mut self, h: usize, text: String) {
+        if !self.drives[h].log.iter().any(|l| l.starts_with("2101 low-level")) {
+            self.drives[h].log.push(text);
+        }
+    }
+
+    fn attach_2101_box(&mut self, h: usize) {
+        if self.drives[h].lle2101.is_some() || self.drives[h].protocol {
             return;
         }
-        let hd = self.drives.iter().position(|d| d.kind == DriveKind::Hdd2101);
-        let fd = self.drives.iter().position(|d| d.kind == DriveKind::Floppy2101);
-        let Some(h) = hd
-        else {
-            return;
-        };
-        if self.drives[h].lle2101.is_some() {
-            return;
-        }
+        let fd = self.box_floppy(h);
         if fd.is_some_and(|f| self.drives[f].image.len() > 720 * SECTOR) {
             // A PC folder on the floppy drive is larger than any floppy the firmware can use.
-            if !self.drives[h].log.iter().any(|l| l.starts_with("2101 low-level")) {
-                self.drives[h].log.push("2101 low-level: off with a PC folder as the floppy, protocol model used".into());
-            }
+            self.note_2101(h, "2101 low-level: off with a PC folder as the box's floppy, protocol model used".into());
             return;
         }
         let pages = self.drives[h].image.len() / SECTOR;
-        let Some(rom) = self.rom_2101_for(pages).cloned()
+        let rom = match &self.drives[h].rom {
+            Some(r) => Some(r.clone()),
+            None => self.rom_2101_for(pages).cloned(),
+        };
+        let Some(rom) = rom
         else {
-            if !self.drives[h].log.iter().any(|l| l.starts_with("2101 low-level")) {
-                self.drives[h].log.push(format!("2101 low-level: no ROM for a {pages}-page disk, protocol model used"));
+            if self.rom_2101.iter().any(|r| r.is_some()) {
+                self.note_2101(h, format!("2101 low-level: no ROM for a {pages}-page disk, protocol model used"));
             }
             return;
         };
         // GRID_2101_EARLY: seconds the box was switched on before the Compass (default 4).
         let early = std::env::var("GRID_2101_EARLY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
         let mut b = Box2101::new(rom);
+        b.set_address(self.drives[h].address());
         b.set_ns(Self::to_ns(self.now));
         if let Some(f) = fd {
             self.drives[f].served = true;
@@ -840,14 +909,16 @@ impl Gpib {
         if self.drives[i].lle.is_some() {
             let d = &mut self.drives[i];
             let b = d.lle.as_mut().unwrap();
+            b.set_write_protect(d.write_protect);
             let ahead = b.ahead;
             return b.run(target / 1000 + ahead, &mut d.image, &mut d.dirty);
         }
-        let fd = self.drives.iter().position(|d| d.served);
+        let fd = self.box_floppy(i).filter(|&f| self.drives[f].served);
         let (hd_d, fd_d) = Self::two(&mut self.drives, i, fd);
         let mut empty = Vec::new();
         let mut nd = false;
         let b = hd_d.lle2101.as_mut().unwrap();
+        b.set_write_protect(fd_d.as_ref().is_some_and(|d| d.write_protect));
         let fbusy = b.fd_busy();
         let (fdi, fdd) = match fd_d {
             Some(d) => {

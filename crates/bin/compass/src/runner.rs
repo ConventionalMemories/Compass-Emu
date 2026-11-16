@@ -10,6 +10,9 @@ use grid_core::{screen, GridMachine};
 
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
 /// seen by the 8741 scan.
+/// A tap with this bit set is pressed with exactly its own Shift/Ctrl/Code, whatever the
+/// PC's modifier keys are doing (keys by printed letter: '1' on AZERTY needs Shift).
+pub const EXACT: u8 = 0x80;
 const MIN_HOLD: u64 = 300_000;
 /// Shortest time between two presses of one key (CPU clocks) so the second is seen.
 const KEY_GAP: u64 = 250_000;
@@ -173,6 +176,10 @@ impl Runner {
                 mods |= st.2;
             }
         }
+        if let Some(st) = self.held.values().find(|st| st.2 & EXACT != 0) {
+            mods = st.2 & !EXACT;
+        }
+        let mods = mods & !EXACT;
         if let Some(k) = &mut m.board_mut().keyboard {
             k.set_matrix(cols, mods);
         }

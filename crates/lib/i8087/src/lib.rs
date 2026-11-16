@@ -165,10 +165,15 @@ impl Default for I8087 {
     }
 }
 
+/// A register's bits after power-on, as read from a real Compass 1101 (all eight alike).
+const POWER_ON: u128 = 0xFCA9_AFEA_A3BE_028F_A027;
+
 impl I8087 {
     pub fn new() -> I8087 {
         let mut f = I8087 {
-            st: [F80::ZERO; 8],
+            // Power-on leaves no zeros in the register file: this is what an 1101's held
+            // (8087 Bench p029; FXAM of an empty register reports it as a negative number).
+            st: [F80::from_bits(POWER_ON); 8],
             raw: [None; 8],
             cw: 0x03FF,
             sw: 0,
@@ -725,13 +730,26 @@ impl I8087 {
 
     /// Run the instructions that have microcode on the microcode core from now on. The
     /// control instructions (FLDCW, FSTENV, FINIT...) are hardwired in the chip, not in its
-    /// microcode ROM, and stay with the instruction-level core, as do FSAVE and FRSTOR.
+    /// microcode ROM, and stay with the instruction-level core; of FSAVE and FRSTOR the
+    /// ROM does the register loops (see `state_micro`).
     pub fn use_microcode(&mut self, rom: micro::MicroRom) {
         self.micro = Some(Box::new(micro::Micro8087::new(rom)));
     }
 
     pub fn microcode(&self) -> bool {
         self.micro.is_some()
+    }
+
+    /// Back to the instruction-level core for every instruction (the microcode core keeps
+    /// no state between instructions, so this can happen between any two). Gives back the
+    /// microcode core, to put in again with `put_microcode`.
+    pub fn take_microcode(&mut self) -> Option<Box<micro::Micro8087>> {
+        self.micro_last = None;
+        self.micro.take()
+    }
+
+    pub fn put_microcode(&mut self, m: Option<Box<micro::Micro8087>>) {
+        self.micro = m;
     }
 
     /// One instruction on the microcode core. The instruction-level core runs it first, with
@@ -798,6 +816,51 @@ impl I8087 {
         (micro::clocks(&res.unwrap(), 0xD8 | op, modrm), timing.1)
     }
 
+    /// FSAVE and FRSTOR on the microcode core: the environment (and FSAVE's FINIT) are
+    /// hardwired in the chip, the eight registers go through the ROM's loops.
+    fn state_micro(&mut self, mem: &mut dyn FpuMem, restore: bool, a: u32) -> (u32, u32) {
+        let reg = if restore { 4 } else { 6 };
+        if restore {
+            self.load_env(mem, a);
+        }
+        else {
+            self.store_env(mem, a);
+        }
+        let mut m = self.micro.take().unwrap();
+        for p in 0..8 {
+            let mut r = micro::Reg::from_bits(self.raw[p].unwrap_or_else(|| self.st[p].to_bits()));
+            r.tag = self.tag(p) as u8;
+            m.st[p] = r;
+        }
+        m.top = self.top() as u8;
+        m.cw = self.cw;
+        m.sw = self.sw & !(0x3800 | SW_IR | 0x8000);
+        let res = m.exec_state(restore, mem, a + 14);
+        let ok = res.is_ok() && m.top as usize == self.top();
+        if ok && restore {
+            for p in 0..8 {
+                let bits = m.st[p].bits();
+                let v = unnormal_value(bits).unwrap_or_else(|| F80::from_bits(bits));
+                self.st[p] = v;
+                self.raw[p] = (v.to_bits() != bits).then_some(bits);
+            }
+        }
+        self.micro = Some(m);
+        if !ok {
+            // not understood: the instruction-level core does it all (again)
+            self.micro_faults += 1;
+            return self.esc_mem(mem, 5, reg, a);
+        }
+        self.micro_runs += 1;
+        if !restore {
+            self.finit();
+        }
+        // The time stays the table's, corrected to the real 1101: 8087 Bench timed only
+        // the pair, and the loops' micro-instruction counts (FRSTOR's is twice FSAVE's)
+        // cannot be split against one number.
+        ((205 + micro::control_fit(5, reg, true)) as u32, 47)
+    }
+
     /// Execute an ESC instruction. `opcode` is D8-DF, `modrm` the ModR/M byte, `ea` the linear
     /// address of the memory operand (None for register forms), `ip` the linear address of the
     /// instruction, `now` the CPU clock. Returns the extra CPU clocks the 8087's own memory
@@ -828,11 +891,18 @@ impl I8087 {
         else if self.micro.is_some() && micro::has_entry(run_op, run_modrm) {
             self.esc_micro(mem, run_op, run_modrm, ea)
         }
+        else if self.micro.is_some() && run_op == 5 && matches!((ea, reg), (Some(_), 4 | 6)) {
+            self.state_micro(mem, reg == 4, ea.unwrap())
+        }
         else {
-            match ea {
+            let (c, w) = match ea {
                 Some(a) => self.esc_mem(mem, run_op, reg, a),
                 None => self.esc_reg(run_op, reg, rm),
-            }
+            };
+            // the hardwired instructions on the microcode core: table times, corrected to
+            // 8087 Bench on a real 1101 (group M)
+            let fit = if self.micro.is_some() { micro::control_fit(run_op, reg, ea.is_some()) } else { 0 };
+            ((c as i32 + fit).max(2) as u32, w)
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
         // (FSTSW and FSAVE too: after them a real chip's FSTENV still shows the instruction
@@ -1763,11 +1833,16 @@ impl I8087 {
         if v.is_negative() {
             self.sw |= SW_C1;
         }
+        let bits = self.raw[p].unwrap_or_else(|| v.to_bits());
         if self.tag(p) == TAG_EMPTY {
+            // C1 and C2 show what the register last held (a real chip after power-on:
+            // 4700, a negative number)
             self.sw |= SW_C3 | SW_C0;
+            if (bits >> 63) & 1 != 0 {
+                self.sw |= SW_C2;
+            }
             return;
         }
-        let bits = self.raw[p].unwrap_or_else(|| v.to_bits());
         let exp = (bits >> 64) & 0x7FFF;
         let int_bit = (bits >> 63) & 1;
         if v.is_nan() {

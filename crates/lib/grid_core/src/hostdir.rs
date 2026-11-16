@@ -181,10 +181,13 @@ impl Volume {
     /// and root directory named in page 0), as tools/gridfs.py reads them.
     pub fn open_any(img: Vec<u8>) -> R<Volume> {
         let n = (img.len() / PAGE) as u32;
-        if n < 16 || &img[..13] != b"System Disk!!" {
+        // (a boot floppy has boot code in page 0 instead of the header: its bitmap and root
+        // are where a floppy keeps them)
+        let floppy = (16..=1440).contains(&n);
+        if n < 16 || (&img[..13] != b"System Disk!!" && !floppy) {
             return err("no GRiD volume header (System Disk!!)");
         }
-        if u16_at(&img, 23) == 0x7285 {
+        if &img[..13] == b"System Disk!!" && u16_at(&img, 23) == 0x7285 {
             let bm = u16_at(&img, 30) as u32;
             let root = u16_at(&img, 32) as u32;
             if bm >= n || root >= n {
@@ -192,14 +195,29 @@ impl Volume {
             }
             return Ok(Volume { img, n, root, bm });
         }
-        for p in 1..n {
+        let is_bitmap = |p: u32| {
             let pg = &img[p as usize * PAGE..(p as usize + 1) * PAGE];
-            if u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16) {
-                let root = p + n.div_ceil(BM_BITS);
-                return Ok(Volume { img, n, root, bm: p });
+            u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16)
+        };
+        // the usual place first, then anywhere
+        let Some(bm) = std::iter::once(BITMAP_FID).filter(|&p| p < n).chain(1..n).find(|&p| is_bitmap(p)) else {
+            return err("no bitmap found on the volume");
+        };
+        let mut v = Volume { img, n, root: bm + n.div_ceil(BM_BITS), bm };
+        if v.header(v.root).is_err() {
+            // The root directory is not right after the bitmap: look for it (a file header
+            // whose parent directory is itself).
+            if let Some(r) = (1..n).find(|&p| v.header(p).is_ok_and(|h| u16_at(&h, 100) as u32 == p)) {
+                v.root = r;
+            }
+            else {
+                return err(format!(
+                    "no root directory on the volume (bitmap at page {bm}, nothing valid at page {} or anywhere else; the disk may be damaged)",
+                    v.root
+                ));
             }
         }
-        err("no bitmap found on the volume")
+        Ok(v)
     }
 
     /// Root directory FID.
@@ -352,7 +370,7 @@ impl Volume {
             return err(format!("file {fid} outside the volume"));
         }
         let h = self.page(fid).to_vec();
-        if u16_at(&h, 0) as u32 != fid || u16_at(&h, 2) != 0 || h[8] == 0 || h[8] > 80 {
+        if u16_at(&h, 0) as u32 != fid || u16_at(&h, 2) != 0 || h[8] > 80 {
             return err(format!("page {fid} is not a file header"));
         }
         if u16_at(&h, 202) != checksum(&h[0..202]) {
@@ -588,6 +606,11 @@ pub fn volumes(img: &[u8]) -> Vec<(u32, u32)> {
     }
     if &img[..13] == b"System Disk!!" {
         return vec![(0, (img.len() / PAGE) as u32)];
+    }
+    let n = (img.len() / PAGE) as u32;
+    if n <= 1440 {
+        // a floppy without the header (boot code in page 0)
+        return vec![(0, n)];
     }
     (0..4)
         .filter_map(|k| {
@@ -924,6 +947,23 @@ impl HostDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unnamed_volume_and_boot_floppy() {
+        // GRiD floppies with no volume name (name length 0) and with boot code in page 0
+        let mut v = Volume::format(720, "x", [0; 11]);
+        v.put_file("", "a~Text~", b"hello").unwrap();
+        let r = v.root;
+        let mut h = v.page(r).to_vec();
+        h[8] = 0;
+        h[9..89].fill(b' ');
+        v.seal(&mut h);
+        v.put_page(r, &h);
+        v.img[..16].copy_from_slice(&[0xBB, 0xB0, 0x01, 0x90, 0x81, 0xC3, 0, 0x7C, 0x2E, 0x88, 0x57, 0x0E, 0xEB, 0x18, 0, 0]);
+        assert_eq!(volumes(&v.img), vec![(0, 720)]);
+        let w = Volume::open_any(v.img.clone()).unwrap();
+        assert_eq!(w.files().unwrap().len(), 1);
+    }
 
     #[test]
     fn roundtrip() {

@@ -31,6 +31,17 @@ pub struct RomSet {
     /// hard disk image runs the 2101 low-level. Set GRID_2101=protocol to use the
     /// protocol-level model anyway.
     pub hd2101: [Option<PathBuf>; 2],
+    /// Internal modem 8749 firmware (16020-007): with it the modem board runs low-level.
+    /// Without it (or with GRID_MODEM=off) the 8255 only drives the DTMF chip.
+    pub modem: Option<PathBuf>,
+}
+
+/// The modem firmware in `dir`.
+pub fn find_modem(dir: &Path) -> Option<PathBuf> {
+    if std::env::var("GRID_MODEM").is_ok_and(|v| v.eq_ignore_ascii_case("off")) {
+        return None;
+    }
+    ["16020-007.bin", "modem.bin"].iter().map(|n| dir.join(n)).find(|p| p.exists())
 }
 
 /// The 2101 firmware files in `dir`: [-05, -06].
@@ -77,7 +88,7 @@ pub fn find(model: GridModel, dir: &Path) -> RomSet {
     let (k_own, k_other) = (p("300001-02.bin"), p("300067-01.bin"));
     let (k_own, k_other) = if model == GridModel::Compass1137 { (k_own, k_other) } else { (k_other, k_own) };
     let keyboard = if !k_own.exists() && k_other.exists() { k_other } else { k_own };
-    RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note, fd2102: find_2102(dir), hd2101: find_2101(dir) }
+    RomSet { prom_even: prom.0, prom_odd: prom.1, keyboard, e0000_dma, note, fd2102: find_2102(dir), hd2101: find_2101(dir), modem: find_modem(dir) }
 }
 
 /// A ready machine for `model` with the ROMs from `dir` (keyboard firmware loaded, the
@@ -91,6 +102,9 @@ pub fn machine(model: GridModel, dir: &Path) -> Result<crate::GridMachine, Strin
     m.board_mut().e0000_dma = r.e0000_dma;
     if let Some(p) = &r.fd2102 {
         m.board_mut().gpib.rom_2102 = Some(rd(p)?);
+    }
+    if let (Some(p), true) = (&r.modem, model.has_modem()) {
+        m.board_mut().modem = Some(crate::modem::Modem::new(rd(p)?));
     }
     for (i, p) in r.hd2101.iter().enumerate() {
         if let Some(p) = p {

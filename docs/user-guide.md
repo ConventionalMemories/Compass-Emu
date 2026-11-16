@@ -348,6 +348,17 @@ for the server's poll. The machine setup page has the same two settings.
 Keep the emulator at real speed while linked: GRiDLink's timeouts run in
 emulated time, and turbo shortens them for the program at the other end.
 
+## The internal modem
+
+With the modem's firmware in the roms folder (16020-007.bin), the internal
+modem works: GRiDTerm and PhoneLink can dial. The phone line is TCP: a
+phone book says which address each number reaches, for example
+--modem-dial 5551234=127.0.0.1:2400 (or *=HOST:PORT for any number), and
+--modem-listen tcp:2400 lets a program on the PC call the Compass (it
+rings; answer in GRiDTerm as usual). The connection carries the plain data
+bytes. The machine setup page has the same settings under "Serial and
+sound". docs/modem.md has the details.
+
 ## Two Compasses on a null-modem cable
 
 Start "Start Compass-Emu 1101.bat", then "Start Compass-Emu 1101 link.bat".

@@ -1,6 +1,10 @@
 //! Intel 8741A (UPI-41) microcontroller core, as used for the Compass keyboard.
 //! MCS-48 instruction set plus the UPI host interface (DBB in/out, STS, IBF/OBF, F1 = A0,
 //! EN FLAGS, JOBF/JNIBF). One machine cycle = 15 oscillator clocks.
+//!
+//! `new_8048` makes the same core an 8048/8749 (the internal modem's MCU): 128 bytes of RAM,
+//! a BUS port with MOVX / INS / OUTL instead of the DBB, JNI on the INT pin, SEL MB0/1 and
+//! ENT0 CLK in place of EN DMA / EN FLAGS, and no IBF interrupt.
 
 pub trait UpiPorts {
     fn p1_in(&mut self, p2_out: u8) -> u8;
@@ -11,6 +15,16 @@ pub trait UpiPorts {
     fn p2_out(&mut self, _v: u8) {}
     fn t0(&mut self) -> bool;
     fn t1(&mut self) -> bool;
+    /// 8048 mode: the INT pin (JNI jumps when it is low; EN I takes an interrupt on low).
+    fn int_pin(&mut self) -> bool {
+        true
+    }
+    /// 8048 mode: external data bus read (MOVX A,@Rr / INS A,BUS) with RD strobe.
+    fn bus_read(&mut self, _addr: u8) -> u8 {
+        0xFF
+    }
+    /// 8048 mode: external data bus write (MOVX @Rr,A) with WR strobe.
+    fn bus_write(&mut self, _addr: u8, _v: u8) {}
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -42,6 +56,21 @@ pub struct Upi41 {
     t_ovf_pending: bool,
     last_t1: bool,
     pub cycles: u64,
+    /// 8048/8749 mode (see the module notes).
+    #[serde(default)]
+    pub mcs48: bool,
+    /// 8749 RAM 40h-7Fh.
+    #[serde(default)]
+    pub ram_hi: Vec<u8>,
+    /// 8048 memory bank flip-flop (SEL MB0/1).
+    #[serde(default)]
+    mbf: bool,
+    /// 8048 external interrupt enable (EN I / DIS I).
+    #[serde(default)]
+    xien: bool,
+    /// 8048 BUS port latch (OUTL BUS).
+    #[serde(default)]
+    pub bus: u8,
 }
 
 impl Upi41 {
@@ -73,12 +102,42 @@ impl Upi41 {
             t_ovf_pending: false,
             last_t1: false,
             cycles: 0,
+            mcs48: false,
+            ram_hi: Vec::new(),
+            mbf: false,
+            xien: false,
+            bus: 0xFF,
         };
         u.reset();
         u
     }
 
+    /// An 8048/8749 (2 KB program memory, 128 bytes of RAM).
+    pub fn new_8048(rom: Vec<u8>) -> Upi41 {
+        let mut u = Upi41::new(rom);
+        u.mcs48 = true;
+        u.ram_hi = vec![0; 64];
+        u
+    }
+
+    /// Read RAM byte `i` (indirect addresses are masked to the RAM size).
+    pub fn ram_at(&self, i: usize) -> u8 {
+        if i < 64 { self.ram[i] } else { self.ram_hi.get(i - 64).copied().unwrap_or(0) }
+    }
+
+    fn set_ram(&mut self, i: usize, v: u8) {
+        if i < 64 {
+            self.ram[i] = v;
+        }
+        else if let Some(r) = self.ram_hi.get_mut(i - 64) {
+            *r = v;
+        }
+    }
+
     pub fn reset(&mut self) {
+        self.mbf = false;
+        self.xien = false;
+        self.bus = 0xFF;
         self.pc = 0;
         self.psw = 0x08;
         self.f1 = false;
@@ -163,7 +222,7 @@ impl Upi41 {
     }
 
     fn ind(&self, n: u8) -> usize {
-        (self.r(n) & 0x3F) as usize
+        (self.r(n) & if self.mcs48 { 0x7F } else { 0x3F }) as usize
     }
 
     fn cy(&self) -> bool {
@@ -219,6 +278,69 @@ impl Upi41 {
         }
     }
 
+    /// Program memory bit 11 for JMP/CALL: the bank flip-flop on an 8048 (forced to 0 inside
+    /// an interrupt routine), the current bank on the 8741.
+    fn a11(&self) -> u16 {
+        if self.mcs48 {
+            if self.mbf && !self.in_irq { 0x800 } else { 0 }
+        }
+        else {
+            self.pc & 0x800
+        }
+    }
+
+    /// The opcodes where the 8048 differs from the 8741. Returns false for the shared ones.
+    fn step_8048(&mut self, op: u8, io: &mut dyn UpiPorts, cyc: &mut u32) -> bool {
+        match op {
+            0x02 => {
+                // OUTL BUS,A
+                self.bus = self.a;
+                io.bus_write(0, self.a);
+                *cyc = 2;
+            }
+            0x05 => self.xien = true,
+            0x08 => {
+                // INS A,BUS
+                self.a = io.bus_read(0);
+                *cyc = 2;
+            }
+            0x15 => self.xien = false,
+            0x22 | 0xD6 => {} // IN A,DBB / JNIBF: not on the 8048
+            0x75 => {}        // ENT0 CLK: T0 outputs the clock (not used by the emulation)
+            0x80 | 0x81 => {
+                let r = self.r(op & 1);
+                self.a = io.bus_read(r);
+                *cyc = 2;
+            }
+            0x86 => {
+                let i = io.int_pin();
+                self.jcc(!i);
+                *cyc = 2;
+            }
+            0x88 => {
+                let v = self.fetch();
+                self.bus |= v;
+                io.bus_write(0, self.bus);
+                *cyc = 2;
+            }
+            0x90 | 0x91 => {
+                let r = self.r(op & 1);
+                io.bus_write(r, self.a);
+                *cyc = 2;
+            }
+            0x98 => {
+                let v = self.fetch();
+                self.bus &= v;
+                io.bus_write(0, self.bus);
+                *cyc = 2;
+            }
+            0xE5 => self.mbf = false,
+            0xF5 => self.mbf = true,
+            _ => return false,
+        }
+        true
+    }
+
     fn timer_cycles(&mut self, n: u32, t1: bool) {
         for _ in 0..n {
             if self.timer_run {
@@ -248,7 +370,14 @@ impl Upi41 {
     /// Execute one instruction (or take an interrupt); returns machine cycles.
     pub fn step(&mut self, io: &mut dyn UpiPorts) -> u32 {
         if !self.in_irq {
-            if self.ien && self.ibf {
+            if self.mcs48 && self.xien && !io.int_pin() {
+                self.push_pc();
+                self.pc = 3;
+                self.in_irq = true;
+                self.cycles += 2;
+                return 2;
+            }
+            if !self.mcs48 && self.ien && self.ibf {
                 self.push_pc();
                 self.pc = 3;
                 self.in_irq = true;
@@ -268,6 +397,12 @@ impl Upi41 {
         let mut cyc = 1u32;
         let rn = op & 7;
         let ri = op & 1;
+        if self.mcs48 && self.step_8048(op, io, &mut cyc) {
+            let t1 = io.t1();
+            self.timer_cycles(cyc, t1);
+            self.cycles += cyc as u64;
+            return cyc;
+        }
         match op {
             0x00 => {}
             0x02 => {
@@ -281,7 +416,7 @@ impl Upi41 {
             }
             0x04 | 0x24 | 0x44 | 0x64 | 0x84 | 0xA4 | 0xC4 | 0xE4 => {
                 let v = self.fetch();
-                self.pc = (self.pc & 0x800) | (((op as u16) & 0xE0) << 3) | v as u16;
+                self.pc = self.a11() | (((op as u16) & 0xE0) << 3) | v as u16;
                 cyc = 2;
             }
             0x05 => self.ien = true,
@@ -303,7 +438,8 @@ impl Upi41 {
             }
             0x10 | 0x11 => {
                 let i = self.ind(ri);
-                self.ram[i] = self.ram[i].wrapping_add(1);
+                let v = self.ram_at(i).wrapping_add(1);
+                self.set_ram(i, v);
             }
             0x12 | 0x32 | 0x52 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => {
                 let b = op >> 5;
@@ -320,7 +456,7 @@ impl Upi41 {
             0x14 | 0x34 | 0x54 | 0x74 | 0x94 | 0xB4 | 0xD4 | 0xF4 => {
                 let v = self.fetch();
                 self.push_pc();
-                self.pc = (self.pc & 0x800) | (((op as u16) & 0xE0) << 3) | v as u16;
+                self.pc = self.a11() | (((op as u16) & 0xE0) << 3) | v as u16;
                 cyc = 2;
             }
             0x15 => self.ien = false,
@@ -337,7 +473,10 @@ impl Upi41 {
             }
             0x20 | 0x21 => {
                 let i = self.ind(ri);
-                std::mem::swap(&mut self.a, &mut self.ram[i]);
+                let m = self.ram_at(i);
+                let a = self.a;
+                self.set_ram(i, a);
+                self.a = m;
             }
             0x22 => {
                 self.a = self.dbb_in;
@@ -362,8 +501,8 @@ impl Upi41 {
             }
             0x30 | 0x31 => {
                 let i = self.ind(ri);
-                let m = self.ram[i];
-                self.ram[i] = (m & 0xF0) | (self.a & 0x0F);
+                let m = self.ram_at(i);
+                self.set_ram(i, (m & 0xF0) | (self.a & 0x0F));
                 self.a = (self.a & 0xF0) | (m & 0x0F);
             }
             0x35 => {
@@ -387,7 +526,7 @@ impl Upi41 {
                 io.p2_out(p);
                 cyc = 2;
             }
-            0x40 | 0x41 => self.a |= self.ram[self.ind(ri)],
+            0x40 | 0x41 => self.a |= self.ram_at(self.ind(ri)),
             0x42 => self.a = self.timer,
             0x43 => {
                 self.a |= self.fetch();
@@ -404,7 +543,7 @@ impl Upi41 {
             }
             0x47 => self.a = self.a.rotate_left(4),
             0x48..=0x4F => self.a |= self.r(rn),
-            0x50 | 0x51 => self.a &= self.ram[self.ind(ri)],
+            0x50 | 0x51 => self.a &= self.ram_at(self.ind(ri)),
             0x53 => {
                 self.a &= self.fetch();
                 cyc = 2;
@@ -437,7 +576,7 @@ impl Upi41 {
             }
             0x58..=0x5F => self.a &= self.r(rn),
             0x60 | 0x61 => {
-                let v = self.ram[self.ind(ri)];
+                let v = self.ram_at(self.ind(ri));
                 self.add(v, false);
             }
             0x62 => self.timer = self.a,
@@ -455,7 +594,7 @@ impl Upi41 {
                 self.add(v, false);
             }
             0x70 | 0x71 => {
-                let v = self.ram[self.ind(ri)];
+                let v = self.ram_at(self.ind(ri));
                 let c = self.cy();
                 self.add(v, c);
             }
@@ -517,7 +656,8 @@ impl Upi41 {
             }
             0xA0 | 0xA1 => {
                 let i = self.ind(ri);
-                self.ram[i] = self.a;
+                let a = self.a;
+                self.set_ram(i, a);
             }
             0xA3 => {
                 let addr = (self.pc & 0xF00) | self.a as u16;
@@ -536,7 +676,7 @@ impl Upi41 {
             0xB0 | 0xB1 => {
                 let v = self.fetch();
                 let i = self.ind(ri);
-                self.ram[i] = v;
+                self.set_ram(i, v);
                 cyc = 2;
             }
             0xB3 => {
@@ -567,7 +707,7 @@ impl Upi41 {
                 let v = self.r(rn).wrapping_sub(1);
                 self.set_r(rn, v);
             }
-            0xD0 | 0xD1 => self.a ^= self.ram[self.ind(ri)],
+            0xD0 | 0xD1 => self.a ^= self.ram_at(self.ind(ri)),
             0xD3 => {
                 self.a ^= self.fetch();
                 cyc = 2;
@@ -598,7 +738,7 @@ impl Upi41 {
                 self.jcc(v != 0);
                 cyc = 2;
             }
-            0xF0 | 0xF1 => self.a = self.ram[self.ind(ri)],
+            0xF0 | 0xF1 => self.a = self.ram_at(self.ind(ri)),
             0xF5 => {
                 self.flags_en = true;
                 let p = self.p2_pins();

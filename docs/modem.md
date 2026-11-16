@@ -7,6 +7,10 @@ runs the 8749's firmware (`grid_core/src/modem.rs`), so GRiD-OS's `Modem~Device~
 PhoneLink and any program that talks to the modem see the real thing. What the analog parts
 would do (tones, carrier, ring) is replaced by what they put on the MCU's pins.
 
+Using it (setup, GRiDTerm, calling in, two emulators) is in the user guide
+([user-guide.md](user-guide.md#the-internal-modem), README.txt in the Windows zip). This page
+is the reference.
+
 ## ROM
 
 Put the 8749 dump in the ROM folder as `16020-007.bin` (2048 bytes, CRC-32 8B526845).
@@ -79,7 +83,7 @@ speaker. Dial tone is a plain 400 Hz square wave.
 ## Tests
 
 - `grid_core/tests/modem.rs` drives the firmware like `Modem~Device~` does and makes calls in
-  both directions at 300 and 1200 baud, sending data both ways:
+  both directions at 300 and 1200 baud, sending data both ways, and pulse-dials a number:
 
       MODEM_ROM=16020-007.bin cargo test --release -p grid_core --test modem
 

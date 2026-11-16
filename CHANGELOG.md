@@ -13,9 +13,9 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
   212A scrambler. The phone line is TCP with the raw data bytes: `--modem-dial
   NUMBER=HOST:PORT` (phone book, `*` = any number), `--modem-listen tcp:PORT` (a connection
   rings the Compass), `--modem-answer-300`, `--rom-modem`, `--no-modem`; the same on the
-  setup page. Tested with the firmware in `tests/modem.rs` (calls both ways at both speeds)
+  setup page. Tested with the firmware in `tests/modem.rs` (calls both ways at both speeds, pulse dialing)
   and with GRiDTerm 3.1.5 on the merged disk dialing and echoing at 1200 baud
-  (`tests/modem_boot.rs`). See docs/modem.md.
+  (`tests/modem_boot.rs`). How to use it: the user guide's "The internal modem" (README.txt in the zip); reference: docs/modem.md.
 - Timing: the DRAM refresh steal now keeps its place in every display frame instead of
   running free every 48 clocks. The free-running steal drifted 4 clocks a frame against
   the 1101's 82276-clock frame, and its beat with the display slots made a polling loop's

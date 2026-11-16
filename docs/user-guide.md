@@ -131,8 +131,9 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            "2101|addr=4|hd=disk.img" --gpib "2101|addr=12|hd=old.img|protocol".
 --rom0 .. --rom3  a chip in application ROM socket 0-3 (Compass II models;
            see Application ROMs below).
---bubble   384K bubble image; made blank if the file doesn't exist (format it
-           with Initialize Media). Saved on exit like the disks.
+--bubble   bubble image: raw 7220/7110 contents, 128 KB per module (384K on a
+           1101); made blank if the file doesn't exist (format it with
+           Initialize Media). Saved on exit like the disks.
 --serial   the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a
            terminal such as PuTTY in "Raw" mode), or a real PC
            port like COM3 (the bit rate follows what the GRiD program sets).

@@ -59,6 +59,8 @@ pub struct GuiPrefs {
     /// Keys by their position on a US keyboard (the older way) instead of by the letter
     /// printed on the PC key.
     pub keys_by_position: bool,
+    /// Media > Floppy library: the folder it lists.
+    pub floppy_library: String,
 }
 
 impl Default for GuiPrefs {
@@ -77,6 +79,7 @@ impl Default for GuiPrefs {
             build_disk: String::new(),
             el_look: false,
             keys_by_position: false,
+            floppy_library: String::new(),
         }
     }
 }
@@ -372,6 +375,64 @@ fn addr_text(kind: &str, a: u8) -> String {
     }
 }
 
+/// The bubble memory as a device: on/off, image, size of a new image, Make blank, write protect.
+fn bubble_card(ui: &mut egui::Ui, c: &mut MachineConfig) -> bool {
+    let mut ch = false;
+    ui.horizontal(|ui| {
+        let mut on = !c.bubble_off;
+        if ui.checkbox(&mut on, "").on_hover_text("on: the bubble is in the machine at the next Power on; off: left out, settings kept").changed() {
+            c.bubble_off = !on;
+            ch = true;
+        }
+        ui.label(RichText::new("Intel 7220 bubble memory").strong());
+        if c.bubble_off {
+            ui.label(RichText::new("off for now").weak());
+        }
+        else if c.bubble.trim().is_empty() {
+            ui.label(RichText::new("no image: no bubble in the machine").weak());
+        }
+    });
+    ui.add_enabled_ui(!c.bubble_off, |ui| {
+        ch |= path_row(ui, "Bubble image (raw, 128 KB per 7110 module)", &mut c.bubble, false, &[]);
+        let p = PathBuf::from(c.bubble.trim());
+        ui.horizontal(|ui| {
+            match std::fs::metadata(&p) {
+                Ok(m) if !c.bubble.trim().is_empty() => {
+                    let kb = m.len() / 1024;
+                    ui.label(format!("{kb} KB, {} module(s)", (m.len() as usize).div_ceil(grid_core::bubble::MBM_SIZE)));
+                }
+                _ if !c.bubble.trim().is_empty() => {
+                    ui.label(RichText::new("not there yet: a blank one is made at Power on").weak());
+                }
+                _ => {}
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("New image");
+            let cur = if c.bubble_kb == 0 { 384 } else { c.bubble_kb };
+            egui::ComboBox::from_id_salt("bubble-kb").selected_text(format!("{cur} KB")).width(90.0).show_ui(ui, |ui| {
+                for kb in [128u32, 256, 384, 512] {
+                    let label = if kb == 384 { "384 KB (1101)".to_string() } else { format!("{kb} KB") };
+                    if ui.selectable_label(cur == kb, label).clicked() {
+                        c.bubble_kb = if kb == 384 { 0 } else { kb };
+                        ch = true;
+                    }
+                }
+            });
+            if ui.button("Make blank...").on_hover_text("writes an empty bubble image; format it on the Compass with Initialize Media").clicked() {
+                if let Some(f) = rfd::FileDialog::new().add_filter("Bubble image", &["img"]).set_file_name("bubble.img").save_file() {
+                    if std::fs::write(&f, vec![0u8; c.bubble_bytes()]).is_ok() {
+                        c.bubble = f.display().to_string();
+                        ch = true;
+                    }
+                }
+            }
+        });
+        ch |= ui.checkbox(&mut c.bubble_protect, "Write protect (GRiD can write, the image is never saved)").changed();
+    });
+    ch
+}
+
 const HD_PROTECT: &str = "GRiD can write to the hard disk as usual, but the changes are never saved to the image file (a hard disk has no write-protect tab)";
 const FD_PROTECT: &str = "the disk's write-protect tab: GRiD can read it but not change it (writes give error 106, as on a real disk); also while running, in the Media menu";
 
@@ -622,9 +683,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     None => &mut *a,
                 };
                 card(col2, "Bubble memory", |ui| {
-                    ch |= path_row(ui, "Bubble memory image (made if missing)", &mut c.bubble, false, &[]);
-                    ch |= ui.checkbox(&mut c.bubble_protect, "Write protect (never save the bubble image)").changed();
-                    ui.label(RichText::new("Disks: each GPIB unit below has its own write protect.").weak().small());
+                    ch |= bubble_card(ui, c);
                 });
             });
             ui.add_space(8.0);

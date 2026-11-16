@@ -56,8 +56,16 @@ Machine setup, drives and keys:
   Help > Keyboard map shows whether these guards are on, how often each caught
   Alt+Esc, and what the hook saw of the last Esc.
 - Write protect per drive instead of one switch for all disks (see The window).
-- Media manager: finds the root directory of a floppy even when it is not right
-  after the bitmap, and says so plainly when a disk has none.
+- Media manager: opens the floppies and hard disks GRiD-OS reads, also unnamed
+  volumes (a blank volume name) and boot floppies (boot code in page 0), finds
+  the root directory even when it is not right after the bitmap, and says so
+  plainly when a disk has none. "Open disk image..." takes .IMD floppies too.
+- Bubble card on the setup page: bubble on or off, the image (raw, 128 KB per
+  7110 module, in address order; size and modules shown), New image size
+  (128/256/384/512 KB) with "Make blank...", and its own Write protect box.
+- Media > Floppy library: every .img and .IMD in a folder (and sub-folders)
+  with its GRiD volume name, file count, size and date, a Find box, and the
+  drive to put it in; double-click a floppy (or Insert) to put it in that drive.
 - Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
   PC keys > By position (US layout) for the old way.
 

@@ -218,9 +218,16 @@ fn browser(app: &mut App, ui: &mut egui::Ui) {
     let mp = &mut app.media;
     ui.horizontal_wrapped(|ui| {
         if ui.button("Open disk image...").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("GRiD disk image", &["img", "IMG"]).pick_file() {
-                match std::fs::read(&p) {
-                    Ok(img) => mp.open(Source::File(p), img),
+            if let Some(p) = rfd::FileDialog::new().add_filter("GRiD disk image", &["img", "IMG", "imd", "IMD"]).pick_file() {
+                // an .IMD is used through the .img beside it (made from it if missing)
+                let r = crate::imd::floppy_path(&p).and_then(|(p, note)| std::fs::read(&p).map(|img| (p, img, note)).map_err(|e| e.to_string()));
+                match r {
+                    Ok((p, img, note)) => {
+                        mp.open(Source::File(p), img);
+                        if note.is_some() {
+                            mp.message = note;
+                        }
+                    }
                     Err(e) => mp.message = Some(format!("{}: {e}", p.display())),
                 }
             }

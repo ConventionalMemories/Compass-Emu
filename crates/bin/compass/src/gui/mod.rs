@@ -3,6 +3,7 @@
 
 mod debugger;
 mod led;
+mod library;
 mod media;
 mod osk;
 mod project;
@@ -91,6 +92,7 @@ pub struct App {
     show_chips: bool,
     show_media: bool,
     states: states::SavedStates,
+    library: library::Library,
     show_keys: bool,
     show_about: bool,
     /// The 2101 front panel window.
@@ -174,6 +176,7 @@ impl App {
             show_chips: false,
             show_media: false,
             states: Default::default(),
+            library: Default::default(),
             show_keys: false,
             show_about: false,
             show_panel: false,
@@ -766,6 +769,9 @@ impl App {
             ui.menu_button("Media", |ui| {
                 if ui.button("Media manager...").clicked() {
                     self.show_media = true;
+                }
+                if ui.button("Floppy library...").on_hover_text("every floppy in a folder with its volume name; double-click to insert").clicked() {
+                    self.library.show = true;
                 }
                 if on {
                     ui.separator();
@@ -1467,6 +1473,9 @@ impl eframe::App for App {
         }
         if self.show_chips {
             debugger::chips_window(self, &ctx);
+        }
+        if self.library.show {
+            self.library_window(&ctx);
         }
         if self.states.show && self.sess.is_some() {
             self.states_window(&ctx);

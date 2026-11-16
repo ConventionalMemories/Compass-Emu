@@ -53,6 +53,10 @@ pub struct MachineConfig {
     pub readonly: bool,
     /// Never write the bubble memory back.
     pub bubble_protect: bool,
+    /// Bubble left out for now (the image path is kept).
+    pub bubble_off: bool,
+    /// Size of a new bubble image in KB (0 = 384, the 1101's).
+    pub bubble_kb: u32,
     /// Fast CPU core (whole instructions, approximate timing).
     pub fast: bool,
     /// Program symbols: the project folder of a debug build (NAME.pas.obj files).
@@ -326,6 +330,12 @@ impl MachineConfig {
         &mut self.gpib[i]
     }
 
+    /// Bytes of a new bubble image (128K per 7110 module).
+    pub fn bubble_bytes(&self) -> usize {
+        let kb = if self.bubble_kb == 0 { 384 } else { self.bubble_kb } as usize;
+        (kb * 1024).div_ceil(grid_core::bubble::MBM_SIZE).max(1) * grid_core::bubble::MBM_SIZE
+    }
+
     /// Problems with the GPIB list: two units on one address.
     pub fn gpib_problems(&self) -> Vec<String> {
         let mut seen: Vec<(u8, String)> = vec![];
@@ -378,7 +388,9 @@ impl MachineConfig {
         for (i, r) in self.roms.iter().enumerate() {
             opt(&format!("--rom{i}"), r);
         }
-        opt("--bubble", &self.bubble);
+        if !self.bubble_off {
+            opt("--bubble", &self.bubble);
+        }
         opt("--serial", &self.serial);
         opt("--gridlink", &self.gridlink);
         if self.gridlink_p2p {
@@ -635,8 +647,8 @@ impl Session {
                 m.board_mut().insert_rom(slot, chip).map_err(|e| format!("{}: {e}", p.display()))?;
             }
         }
-        if let Some(p) = some(&cfg.bubble) {
-            let img = fs::read(&p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]);
+        if let (Some(p), false) = (some(&cfg.bubble), cfg.bubble_off) {
+            let img = fs::read(&p).unwrap_or_else(|_| vec![0u8; cfg.bubble_bytes()]);
             m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(img));
         }
         let serial = match some(&cfg.serial) {

@@ -9,9 +9,6 @@ also has a fast core that makes it usable as a build machine.
 > **Version 0.13.0, the first beta release.** Expect rough edges.
 
 ![GRiD Compass 1101 Executive](docs/img/compass-1101-executive.png)
-![GRiD Compass II 1139 Executive](docs/img/compass-1139-executive.png)
-
-![Compass-Emu window with the debugger workspace](docs/img/compass-gui-debugger.png)
 
 ![The crash catcher stopping a Pascal program on a division by zero, with procedure names and source lines](docs/img/compass-crash-catcher.png)
 

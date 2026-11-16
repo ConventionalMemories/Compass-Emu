@@ -80,22 +80,28 @@ differs from a real Compass.
   (Cp: cp.main, Rom.Asm, BankSwitch.PLM, splitboard.gpib.asm), the GRiD-OS system
   dependent code (SysDep: RomDriver, RomDir, Os.Sysdep) and the file system.
 - **GRiD documentation**: *Programming EPROMs for GRiDCase and Compass* (031031-44, 1986),
-  *GRiDCase Technical Reference* (1985).
-- **US patent 4,571,456** (GRiD Systems): clocks, display RAM arbitration, GPIB
+  *US patent 4,571,456* (GRiD Systems): clocks, display RAM arbitration, GPIB
   pseudo-DMA and its keyboard watchdog, serial clock latches.
-- **MAME**: the gridcomp, gridkeyb, tms9914, grid2102, i7220, z80sio and mm58174
-  drivers (BSD-3-Clause), for the memory map, keyboard matrix and device behaviour.
+- **MAME**: the gridcomp, grid2102 and gridkeyb drivers (Sergey Svishchev, usernameak, Vas Crabb, vklachkov and
+  others), and the tms9914, i7220, z80sio and mm58174 devices (BSD-3-Clause), for the
+  memory map, keyboard matrix and device behaviour.
+- **[vklachkov](https://github.com/vklachkov)**: much of MAME's GRiD Compass emulation,
+  tracked in [mamedev/mame#16845](https://github.com/mamedev/mame/issues/16845): the
+  low-level keyboard, the 113x screen modes, 2102 geometry and formatting, RS-232, the 8087
+  hookup, the test ROM and machine-ID ROM devices, bubble memory, and ROM dumps. Also the
+  reverse engineering in [grid-compass-fdd-2102](https://github.com/vklachkov/grid-compass-fdd-2102)
+  and [grid-compass-2101](https://github.com/vklachkov/grid-compass-2101).
+- **[JDat](https://github.com/JDat)**: schematics of the 2102 floppy drive (the base of the
+  low-level 2102), the internal modem board (used to check the modem's pin wiring), and part
+  of the 1101 motherboard. Also author of [GRiDemulator](https://github.com/JDat/GRiDemulator).
 - **MartyPC** by Daniel Balsom: the 8086 core and emulator framework (MIT).
 - **Datasheets**: Intel 8086, 8087, 8741/8041 (UPI-41), 8048/8749, 8255, 8259/80130, 8274, 7220
   bubble memory controller; TI TMS9914; National MM58174.
 - **SingleStepTests** 8086 test suite, for checking both CPU cores.
-- **Real-hardware measurements** by C.M._: GRiDBench 2.x runs on a 1101 (with 2101 hard
+- **Real-hardware measurements** by me: GRiDBench 2.x runs on a 1101 (with 2101 hard
   disk and 2102 floppy) and a 1137, Disk Toolkit seek tests, Rom Toolbox dumps of the
   boot PROMs and application ROMs, the 1137 keyboard controller dump and the internal
   modem's 8749 firmware dump.
-- **grid-compass-network** by vklachkov (MIT): the reversed MS-DOS internal modem driver
-  and the modem board schematic in that repository, used to check the modem's register
-  protocol and pin wiring.
 - **Ken Shirriff's 8087 articles** (righto.com), for the microcode engine, FPTAN's method
   and the constant ROM.
 - **The 8087 microcode dump** from the granite project (github.com/a-mcego/granite), whose

@@ -206,3 +206,21 @@ fn answer_300() {
 fn answer_1200() {
     answer(true);
 }
+
+#[test]
+fn pulse_dial() {
+    let Some(mut h) = host() else {
+        eprintln!("MODEM_ROM not set, skipped");
+        return;
+    };
+    h.init();
+    h.send(1, true); // off-hook
+    h.wait_status(0x04, 3.0, "dial tone");
+    for d in [4u8, 10, 2] {
+        h.send(0x40 + d, true); // pulse dial d pulses (10 = "0")
+        h.wait_status(0x01, 5.0, "dial done");
+    }
+    h.send(3, true);
+    h.secs(0.01);
+    assert_eq!(h.m.io.line.events.pop_front(), Some(LineEvent::Dial("402".into())));
+}

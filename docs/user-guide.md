@@ -4,24 +4,36 @@ The same text ships as README.txt in the Windows zip.
 
 ## Setup
 
-Put the compass-emu folder inside your GRiD-MAME folder, next to roms, disks and
-tools. Then double-click "Start Compass-Emu 1101.bat" or "Start Compass-Emu 1139.bat".
-The first time each one unpacks the ROMs from ..\roms\grid1101.zip (or grid1139.zip)
-and ..\roms\grid_keyboard.zip into compass-emu\roms, and makes
-..\disks\Compass-Emu 1101 disk.img (or 1139 disk.img): a copy of the merged disk
-switched to the 11xx or 113x build with gridmodel.py. Your MAME disk is never changed.
+Compass-Emu needs the GRiD ROMs and a GRiD-OS disk. Neither is included.
+- ROMs: the MAME ROM sets grid1101.zip (1101/1109), grid1139.zip (113x), optionally
+grid1129.zip (1121/1129) and grid_keyboard.zip, or dumps of your own machine.
+Optional: the 2102 floppy firmware (300237-02.bin) and the 2101 hard disk box
+firmware (300205-05.bin, 300205-06.bin) for the low-level drive models, the
+internal modem's firmware (16020-007.bin) and the 8087 microcode (8087mc.txt).
+- A GRiD-OS hard disk image (for the 2101) or boot floppy image (for the 2102).
+The 1101 to 1129 need the 11xx build of GRiD-OS, the 1131 to 1139 the 113x build.
+1. Unpack the zip anywhere and double-click compass.exe. The machine setup page opens.
+2. On the ROMs card press Import ROMs... and pick the folder that holds the MAME
+zips or your own dumps. Every Compass ROM in it (zips included) is known by
+its checksum and copied into the roms folder next to compass.exe under the
+name the emulator looks for. From a command prompt:
+```
+ compass.exe import-roms FOLDER
+```
+3. Pick a model and the disk images, then Power on.
+"Save as shortcut" on the setup page writes a .bat that starts that machine
+straight away.
 
 ## The window
 
-The emulator now has menus (Machine, Edit, Media, Project, View, Debug, Help), a toolbar and a
+The emulator has menus (Machine, Edit, Media, Project, View, Debug, Help), a toolbar and a
 status bar with the speed and a light for each drive.
-- Started from a .bat (or with machine options on the command line) the machine
-powers on right away. Started on its own (double-click compass.exe) it opens
+- Started from a shortcut .bat (or with machine options on the command line)
+the machine powers on right away. Started on its own (double-click compass.exe) it opens
 the machine setup page: pick a profile or make one (model, ROM folder, GPIB
 devices, bubble, ROM sockets, serial port, modem phone line, sound), then Power on (the button
 beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe.
-"Save as shortcut" writes a .bat that starts that machine. Run a .bat once
-first so the ROMs are unpacked into compass-emu\roms.
+"Save as shortcut" writes a .bat that starts that machine.
 - Machine: power off (back to setup), restart, pause, turbo, the fast CPU core
 and the 8087 core (both switch while the machine runs), quick save / quick
 load (kept in memory, disks included), Save state and Saved states... (states
@@ -119,7 +131,7 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
            1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
            1131 and 1139 the 512 x 256 screen. 1131/1139 need the 113x build of
-           GRiD-OS (the 1139 .bat makes that disk), the others the 11xx build.
+           GRiD-OS, the others the 11xx build.
 --prom     boot PROM as one 16K file (even/odd bytes interleaved), e.g. a dump
            from your own machine.
 --folder   a folder on the PC as a GRiD drive (see PC folder below): the "Extra
@@ -169,20 +181,18 @@ compass import-roms SOURCE [ROMFOLDER]  copy GRiD ROMs found in a folder or zip
 --classic  the plain window of 0.4 (no menus); --scale only applies there.
 --symbols  program symbols for the debugger: a debug build's project folder.
 --no-catch crash catcher off (see Program symbols and the crash catcher).
-The start .bat uses ..\disks\Compass-Emu bubble.img and serial on tcp:2323.
 Boot PROM defaults, under MAME's names in roms: the model's own pair if it is there
 (1129even.ccprom.bin ...), else the PROM it shares: the 1101's for the 1109,
 the 1129's for the 1121, 1139even/odd.ccprom.bin for the 1131. The 1129 and builds need
-the 1129 PROM: put grid1129.zip (MAME set) in GRiD-MAME\roms, or its two files in
-compass-emu\roms. Without it the 1101 PROM stands in (slower boot).
+the 1129 PROM: import grid1129.zip (MAME set) on the setup page. Without it the 1101 PROM stands in (slower boot).
 The 1101 boots the later rev 4 PROM (1101even/odd.rev4.bin, in MAME's grid1101.zip)
 when it is there, else rev 3.
 Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when present).
 2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
-the MAME sets: copy it in by hand. With it the 2102 runs low-level (see New in 0.7.0);
+the MAME sets: copy it in by hand. With it the 2102 runs low-level (see CHANGELOG.md, 0.7.0);
 without it the protocol model answers as before.
 2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
-box), the 2101's own firmware. With it the 2101 runs low-level (see New in
+box), the 2101's own firmware. With it the 2101 runs low-level (see CHANGELOG.md,
 0.8.0); without it the protocol model answers as before.
 Internal modem: roms\16020-007.bin, the modem's 8749 firmware (2 KB). Not in the
 MAME sets: copy it in by hand (Import ROMs... finds it under any name). Without
@@ -192,7 +202,7 @@ it the modem has no microcontroller and Modem~Device~ can't start.
 ## Build in the window
 
 Project > Project window: pick the project folder (NAME.pas, NAME.asm and the
-other sources, as for build.bat) and a development disk (empty = the machine's
+other sources) and a development disk (empty = the machine's
 hard disk; the disk needs Pascal~Run~ and DevelopmentExecutive~Run~). Build,
 Build and run, Debug build. The build runs inside compass.exe (no Python) on a
 hidden Compass: an 1129, or an 1139 when the disk has the 113x build of
@@ -207,35 +217,22 @@ added or changed in the PC folder show up while the machine runs (once the GRiD
 has left the drive alone for two seconds). The same from a command prompt:
 compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug] [--exact]
 
-## Build mode (replaces MAME for build.bat)
-
-Copy tools\gridbuild.py from this folder over GRiD-MAME\tools\gridbuild.py
-(and tools\debug.bat next to build.bat, see Program symbols).
-build.bat then compiles on Compass-Emu, a GRiD Compass 1129 by default (512K,
-11xx build of GRiD-OS), instead of MAME: same results (NAME.lst, NAME.run,
-screen.png, output\). It unpacks the ROMs from ..\roms the first time.
-set GRID_MODEL=1139 (or another model) before build.bat to build on another one.
-Without compass-emu\compass.exe it uses MAME as before.
-Builds run on a fast CPU core (whole instructions, approximate timing): same
-results, about 5x quicker. set GRID_EXACT=1 for the cycle-exact core.
-Build on a 512K model: on the 1101, 1121 and 1131 the compiler runs out of RAM.
-Headless on its own:  compass.exe do --hd disk.img --shot screen.png "Do build"
-(boots, types the command at the => prompt, waits for the prompt to come back).
-
 ## Claude Code hook
 
 compass.exe mcp is an MCP server for Claude Code. Add it once with
-claude mcp add compass -- C:\path\to\GRiD-MAME\compass-emu\compass.exe mcp
-Then Claude can build programs (grid_build), boot a Compass from a disk image
-(grid_boot), type on it (grid_type), look at the screen (grid_screen, grid_run),
-read memory (grid_read_memory), save the disk (grid_save_disk) and time 8086 code
-in CPU clocks (grid_fragment). It finds the GRiD-MAME folder as the folder above
-compass.exe (or set GRID_ROOT).
+claude mcp add compass -- C:\path\to\compass.exe mcp
+Then Claude can build programs (grid_build, with disk = a development disk image,
+or set GRID_DEV_DISK), boot a Compass from a disk image (grid_boot), type on it
+(grid_type), look at the screen (grid_screen, grid_run), read memory
+(grid_read_memory), save the disk (grid_save_disk) and time 8086 code in CPU
+clocks (grid_fragment). Headless on its own:
+compass.exe do --hd disk.img --shot screen.png "Do build"
+(boots, types the command at the => prompt, waits for the prompt to come back).
 
 ## PC folder
 
-The .bat files start the emulator with the folder "PC Folder" (inside
-compass-emu, made if missing) as a GRiD drive. In GRiD-OS it shows as the
+Pick a folder on the PC on the setup page (PC folder), or start with
+--folder DIR, and it becomes a GRiD drive. In GRiD-OS it shows as the
 volume 'PC Folder' on the Floppy Disk device. Files in the folder are files on
 the drive, and sub-folders are subjects (one level deep, as on GRiD).
 The folder is read when the emulator starts. When you close the window, every
@@ -260,8 +257,7 @@ machine: the programs show on the device "Read Only Memory" (subject
 Programs). With a bootable ROM (CCOS) in a socket the PROM starts GRiD-OS
 from that ROM, even with a hard disk (the PROM decides that), and it needs no
 disk at all.
-"Start Compass-Emu 1139.bat" puts roms\Compass_Socket_0.bin to
-Compass_Socket_3.bin in the sockets when those files are there.
+The setup page has a field for each socket.
 
 ## The 8087 microcode ROM
 
@@ -322,11 +318,10 @@ marks           the cycle counter report
 
 ## Program symbols and the crash catcher
 
-Build with debug.bat instead of build.bat (or tools\gridbuild.py debug NAME):
-the same program (identical code), and the compilers' symbols are kept in
-the project folder (NAME.pas.obj, NAME.asm.obj, NAME.map). Copy debug.bat
-from compass-emu\tools next to build.bat once (and the new gridbuild.py
-over GRiD-MAME\tools\gridbuild.py). Then Debug > Load program
+Make a debug build (Project > Debug build, or compass build PROJECT --disk
+DEV.img --debug): the same program (identical code), and the compilers'
+symbols are kept in the project folder (NAME.pas.obj, NAME.asm.obj,
+NAME.map). Then Debug > Load program
 symbols and pick the project folder (or --symbols projects\NAME, or the
 Debugging card of the machine setup page, which remembers it). Compass-Emu
 finds the program in memory by its code whenever it runs, so:
@@ -388,7 +383,7 @@ the PC or the network, and a connection to a port on this PC rings the
 Compass. Once the modems have connected, the connection carries the plain
 data bytes both ways, nothing added.
 
-1. Put the modem firmware in compass-emu\roms as 16020-007.bin (or use
+1. Put the modem firmware in the roms folder as 16020-007.bin (or use
 Import ROMs... on the setup page). The ROMs card shows "Internal modem
 (8749)" with the file it found.
 2. Machine setup, Serial and sound card, "Internal modem phone line":
@@ -445,11 +440,11 @@ end gets the parity bit as bit 7 of each byte, as a real terminal set to
 
 ## Two Compasses on a null-modem cable
 
-Start "Start Compass-Emu 1101.bat", then "Start Compass-Emu 1101 link.bat".
-The second machine connects its serial port to the first one's (TCP port
-2323 on this PC) and has its own disk copy, bubble and "PC Folder B".
-Programs that talk over the serial port (GRiDTerm, a two-player game) then
-see each other as if a null-modem cable joined them. For two PCs, start the
-first with --serial tcp:0.0.0.0:2323 and the second with
---serial connect:OTHERPC:2323. Turbo (F12) on one side only makes it run
-ahead of the other, so leave it off while linked.
+Make two profiles on the setup page, each with its own disk copy: the first
+with serial port tcp:2323, the second with connect:2323, and start both (two
+compass.exe windows; "Save as shortcut" makes a .bat for each). The second
+machine's serial port then talks to the first one's, as if a null-modem cable
+joined them. Programs that use the serial port (GRiDTerm, a two-player game)
+see each other. For two PCs, start the first with --serial tcp:0.0.0.0:2323
+and the second with --serial connect:OTHERPC:2323. Turbo (F12) on one side
+only makes it run ahead of the other, so leave it off while linked.

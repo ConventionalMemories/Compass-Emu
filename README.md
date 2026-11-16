@@ -33,17 +33,19 @@ Accuracy, measured with GRiDBench on a real 1101 with a 2101 and a 2102:
 - 2101 page reads: same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0 (130.3).
 - 2102 page reads: within about 10% for most patterns.
 
-Not emulated yet: the test ROM socket. Known timing gaps are listed in
+Not emulated yet: the test ROM socket. No GRiD Server is included for GRiDLink. Known timing gaps are listed in
 [COMPASS.md](COMPASS.md).
 
 ## Getting started (Windows)
 
-1. Download the zip from [Releases](https://github.com/ConventionalMemories/Compass-Emu/releases).
+1. Download the zip from [Releases](https://github.com/ConventionalMemories/Compass-Emu/releases)
+   and unpack it anywhere.
 2. You need the GRiD ROMs and a GRiD-OS disk image. They are not included. The ROMs are
    the MAME sets `grid1101.zip`, `grid1139.zip` (optionally `grid1129.zip`) and
-   `grid_keyboard.zip`.
-3. Unpack the zip next to your `roms` and `disks` folders and start
-   `Start Compass-Emu 1101.bat` or `Start Compass-Emu 1139.bat`.
+   `grid_keyboard.zip`, or dumps of your own machine.
+3. Start `compass.exe`. On the machine setup page press **Import ROMs...** and pick the
+   folder with the ROM zips, then choose a model and a GRiD-OS hard disk or floppy image
+   and press **Power on**.
 
 Keys map by position; Alt is CODE, F12 is turbo, F11 saves a screenshot. The full guide,
 command line and build mode are in [docs/user-guide.md](docs/user-guide.md).
@@ -58,7 +60,8 @@ cargo test --release -p grid_core -p i8087 -p compass
 Linux needs `libasound2-dev` and `libudev-dev` to build, and `libxkbcommon-x11-0` and OpenGL to run the window. The Windows build is cross-compiled with
 `--target x86_64-pc-windows-gnu`. Technical notes on the hardware model are in
 [COMPASS.md](COMPASS.md); the code is in `crates/lib/grid_core`, `crates/lib/i8087` and
-`crates/bin/compass`.
+`crates/bin/compass`. Start files for people who already run the Compass in MAME are in
+[util/grid-mame](util/grid-mame).
 
 ## How this was made (AI disclosure)
 
@@ -93,10 +96,14 @@ differs from a real Compass.
 - **grid-compass-network** by vklachkov (MIT): the reversed MS-DOS internal modem driver
   and the modem board schematic in that repository, used to check the modem's register
   protocol and pin wiring.
+- **Ken Shirriff's 8087 articles** (righto.com), for the microcode engine, FPTAN's method
+  and the constant ROM.
+- **The 8087 microcode dump** from the granite project (github.com/a-mcego/granite), whose
+  text format the microcode core reads. The ROM itself is not included; you supply the file.
 - **rustc_apfloat** (Apache-2.0 WITH LLVM-exception) for 8087 arithmetic.
 
 ## License
 
 MIT, see [LICENSE](LICENSE). Compass-Emu by Conventional Memories (C.M._), based on
-MartyPC by Daniel Balsom (original readme in [MARTYPC.md](MARTYPC.md)). GRiD ROMs and
+MartyPC by Daniel Balsom (what was kept is in [MARTYPC.md](MARTYPC.md)). GRiD ROMs and
 software are not part of this repository.

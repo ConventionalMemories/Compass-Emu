@@ -1,20 +1,25 @@
 # Changelog
 
-Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHANGELOG.md](MARTYPC-CHANGELOG.md).
+Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/dbalsom/martypc](https://github.com/dbalsom/martypc).
 
-## Unreleased
+## 0.13.0
 
+First release for testers.
+- The Windows zip starts from the machine setup page: import the ROMs (MAME sets or
+  your own dumps) with Import ROMs..., pick a model and a GRiD-OS disk, Power on.
+  No MAME folder is needed. The old start files for a MAME setup moved to
+  util/grid-mame in the source.
+- The Claude Code hook's grid_build can use the build inside compass.exe: give it
+  `disk` (a development disk image) or set GRID_DEV_DISK. Without either it uses
+  tools\gridbuild.py as before.
+- README.txt in the zip is the user guide only; the version history ships as
+  CHANGELOG.md beside it.
+- The source tree keeps only the parts of MartyPC the Compass uses (the 8086 core and
+  its bus); MartyPC's PC frontends, display code and bundled PC software are gone.
 - The 8087 runs on its microcode whenever the ROM file is there (8087mc.txt in the ROM
   folder, or the file named on the setup page or with --fpu-rom); no switch needed. The
   setup page's 8087 box and --fpu-table keep the instruction-level 8087. Without the file
   nothing changes. Profiles saved by 0.11.0 follow the new default.
-- Microcode 8087 timing fitted by operand: the cost model counts FPREM's and the
-  transcendentals' loop steps and how far the shifts move, and the fit no longer lets a
-  few odd tests steer it. Mean error against the real 1101 over 2068 timed tests 1.45 %
-  (was 1.7 % after the refresh change below).
-- Microcode 8087: the register loops of FSAVE and FRSTOR run from the ROM too. Same
-  results and times as before.
-- The user guide says what the microcode ROM is, where the file goes and how to switch.
 - Microcode 8087 timing fitted by operand: the cost model counts FPREM's and the
   transcendentals' loop steps and how far the shifts move, and the fit no longer lets a
   few odd tests steer it. Mean error against the real 1101 over 2068 timed tests 1.45 %
@@ -565,7 +570,7 @@ screen shows what the beam saw, so racing the beam and tearing look as on a real
 
 ## Not there yet
 
-The modem itself, GRiDLink (synchronous serial), the test ROM socket.
+The test ROM socket, a GRiD Server for GRiDLink.
 
 Source: https://github.com/ConventionalMemories/compass-emu
 By Conventional Memories (C.M._), MIT license. Built on MartyPC by Daniel Balsom (MIT).

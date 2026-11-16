@@ -1,7 +1,0 @@
-[package]
-name = "gridbench_core"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-marty_core = { path = "../../lib/marty_core", default-features = false }

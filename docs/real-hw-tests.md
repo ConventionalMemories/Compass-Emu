@@ -1,13 +1,10 @@
-# Real-1101 measurements for the combined test session
+# Real-hardware measurements
 
-**Status (2026-11-12):** the display items D1-D7 and most serial, sound, 8086 and 8087 items
-were measured on a real 1101 with GRiDBench 2.0-2.2 (gridbench/reports/real-1101-2.*.txt) and
-fitted in Compass-Emu 0.3.6-0.3.10; the CPU gap rows of GRiDBench 2.2 and a real 1137 run
-(real-1137-2.2.txt: large-screen frame, contention, split-board bus) were fitted in 0.6.1
-(1101: 271 clocks a line, 306 lines; 113x: 281 x 297; IR3 at the top of the picture on both).
-GRiDProbe 0.0.7 (1137) and 0.0.11 (1101) results (gridprobe/reports/) were fitted in 0.6.2:
-bubble seeks/streaming/command times, IR3 level length, non-specific EOI ignored, DFE00 dark
-screen on the 113x; P2 latency and the K2 third key already matched.
+How Compass-Emu's timing was pinned down: the questions each measurement answered, and how it
+was measured. Most items were measured on a real 1101 (with a 2101 hard disk and a 2102
+floppy) and a real 1137 with the GRiDBench, GRiDProbe and Disk Toolkit test programs, and the
+results fitted into the emulator (versions 0.3.6 to 0.10.0, see CHANGELOG.md). Rows marked
+DONE are measured; the others are still open.
 
 Collected while building Compass-Emu (display timing 0.0.5; bubble, serial and sound 0.1.0). The emulator has
 adjustable settings for each item; these tests pin them down. To be bundled with the 8086,
@@ -44,7 +41,7 @@ Note: GRiDBench "c" values are scaled by AAM = 83; the emulator (validated again
 | L3 | Timing in compatibility mode (before the OS turns the large screen on) | Emulator keeps the large-screen timing and shows 320 x 240 centred | D1 + D4 with the 11xx PROM screen up (e.g. PROM boot menu) |
 | L4 | What each DFE04 bit does (0Eh PROM, 0Bh/0Ah OS) | Emulator: bit 2 clear = large screen; bits 0-1 look like RAM size | Write values from a test program with DFE00 = 1 and watch the screen |
 | L5 | Does a 256K split board mirror RAM above 40000h | Emulator returns FFh there | Write/read 4000:0 vs 0000:0 on a 1131/1121 if one turns up |
-| L6 | 1121/1129 boot PROM dumps (DONE: C.M._'s 1129 PROM, 2026-11-10, = MAME grid1129) | The 1139 PROM can't start the 11xx build (its data sits where that CCOS loads) | Dump the PROM pair of a 1129 (MAME lists one: 1129even/odd.ccprom.bin) |
+| L6 | 1121/1129 boot PROM dumps (DONE: a real 1129 PROM, = MAME grid1129) | The 1139 PROM can't start the 11xx build (its data sits where that CCOS loads) | Dump the PROM pair of a 1129 (MAME lists one: 1129even/odd.ccprom.bin) |
 
 ## Bubble memory (7220 + 3 x 7110)
 

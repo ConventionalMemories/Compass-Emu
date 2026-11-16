@@ -8,7 +8,7 @@ Goals: a complete emulator anyone can use (drives, keyboard, sound, serial), acc
 enough to race the display beam, plus hooks so tools can run and measure code fragments.
 Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
 
-## Status (0.11.0)
+## Status (0.12.0)
 
 - Frontend (`crates/bin/compass`): an egui/eframe (OpenGL) GUI in `src/gui/` (menus, machine
   setup with profiles, drag and drop, recent disks, full screen and saved view settings, media
@@ -275,8 +275,13 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
   stands in, with the split board also answering the 1101's DMA window at E0000h
   (`GridBoard::e0000_dma`). ROM choice: grid_core/src/roms.rs.
 
-Not yet: the modem itself (its microcontroller was never dumped), GRiDLink, the test ROM
-socket at C0000h.
+- Internal modem (0.12.0, `grid_core/src/modem.rs`, docs/modem.md): the 8749 runs GRiD's
+  firmware (16020-007.bin) as an 8048-mode `Upi41` behind a mode 2 8255 at DFEC0, IRQ on
+  IR2; a line model drives its pins (dial tone, DTMF and pulse dialing, ring, the far modem
+  at 300 and 1200 baud with the 212A scrambler) and the frontend connects calls over TCP
+  (`--modem-dial NUMBER=HOST:PORT`, `--modem-listen tcp:PORT`, `host::ModemLine`).
+
+Not yet: the test ROM socket at C0000h.
 
 ## Build mode
 

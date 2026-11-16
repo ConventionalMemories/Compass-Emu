@@ -4,6 +4,18 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
 
 ## Unreleased
 
+- Internal modem (0.12.0): the modem board's 8749 runs GRiD's own firmware (16020-007.bin
+  in the ROM folder; Import ROMs knows it), so `Modem~Device~`, GRiDTerm and PhoneLink work.
+  The MCS-48 core has an 8048/8749 mode (128 bytes RAM, MOVX/INS/OUTL BUS, JNI, SEL MB,
+  ENT0 CLK); the 8255 at DFEC0 does port A mode 2 with the MCU on the other side; the
+  modem interrupts on IR2 (GRiD interrupt 4). A line model drives the MCU's pins: dial tone,
+  DTMF and pulse dialing, ring, and the far modem at 300 baud and at 1200 baud with the
+  212A scrambler. The phone line is TCP with the raw data bytes: `--modem-dial
+  NUMBER=HOST:PORT` (phone book, `*` = any number), `--modem-listen tcp:PORT` (a connection
+  rings the Compass), `--modem-answer-300`, `--rom-modem`, `--no-modem`; the same on the
+  setup page. Tested with the firmware in `tests/modem.rs` (calls both ways at both speeds)
+  and with GRiDTerm 3.1.5 on the merged disk dialing and echoing at 1200 baud
+  (`tests/modem_boot.rs`). See docs/modem.md.
 - Timing: the DRAM refresh steal now keeps its place in every display frame instead of
   running free every 48 clocks. The free-running steal drifted 4 clocks a frame against
   the 1101's 82276-clock frame, and its beat with the display slots made a polling loop's

@@ -265,6 +265,8 @@ fn roms_card(ui: &mut egui::Ui, c: &mut MachineConfig, default_roms: &Path, impo
         let (h20, h10) = (dr.hd2101[0].clone(), dr.hd2101[1].clone());
         ch |= rom_row(ui, "2101 firmware, 20 MB box", &mut c.rom_2101_20, h20.as_deref(), false, "not found (300205-05.bin)");
         ch |= rom_row(ui, "2101 firmware, 10 MB box", &mut c.rom_2101_10, h10.as_deref(), false, "not found (300205-06.bin)");
+        let modem_used = if c.rom_modem.trim().is_empty() { found.modem.clone() } else { Some(PathBuf::from(c.rom_modem.trim())) };
+        ch |= rom_row(ui, "Internal modem (8749)", &mut c.rom_modem, modem_used.as_deref(), false, "not found (16020-007.bin): no modem MCU, Modem~Device~ can't start");
         let mc = crate::session::fpu_microcode(&MachineConfig { fpu_micro: true, ..c.clone() }, &dir).flatten();
         let mc_note = if c.fpu_micro { "not found: the instruction-level 8087 runs (8087mc.txt)" } else { "optional, only for Computer > 8087 microcode (8087mc.txt)" };
         ch |= rom_row(ui, "8087 microcode", &mut c.fpu_rom, mc.as_deref(), false, mc_note);
@@ -719,6 +721,15 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                         ch |= ui.add(egui::TextEdit::singleline(&mut c.gridlink).hint_text("not connected").desired_width(260.0)).changed();
                         ui.label(RichText::new("tcp:2400 (wait for a GRiDLink server program), tcp:HOST:PORT or connect:[HOST:]PORT; frames only, no server is built in").weak().small());
                         ch |= ui.checkbox(&mut c.gridlink_p2p, "Point-to-point cable (RTS looped to CTS) instead of multidrop").changed();
+                    });
+                    ui.label("Internal modem phone line (see docs/modem.md)");
+                    ui.vertical(|ui| {
+                        ch |= ui.add(egui::TextEdit::singleline(&mut c.modem_listen).hint_text("no incoming calls").desired_width(260.0)).changed();
+                        ui.label(RichText::new("incoming calls: tcp:2400 (a connection to this port rings the Compass) or tcp:HOST:PORT").weak().small());
+                        ch |= ui.add(egui::TextEdit::singleline(&mut c.modem_dial).hint_text("phone book").desired_width(260.0)).changed();
+                        ui.label(RichText::new("NUMBER=HOST:PORT, ... (* = any other number); 127*0*0*1*2400 dials that address directly").weak().small());
+                        ch |= ui.checkbox(&mut c.modem_answer_300, "Callers connect at 300 baud (else 1200)").changed();
+                        ch |= ui.checkbox(&mut c.modem_off, "Leave the modem MCU out").changed();
                     });
                     ui.label("Sound");
                     ch |= ui.checkbox(&mut c.mute, "No sound").changed();

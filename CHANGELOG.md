@@ -41,6 +41,122 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
   exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
   loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
 
+## 0.11.0
+
+GUI for everyday use:
+- Full screen: View > Full screen, or double-click the Compass screen
+  (again to leave it). Menus, toolbar and status bar hide while it is on.
+- The window size and maximized state, scaling, screen colour, toolbar and
+  status bar are kept from one start to the next (in compass-profiles.json).
+  View > Toolbar hides the toolbar.
+- Drag and drop: drop a floppy image on the running machine to insert it in
+  the 2102 floppy drive (Shift: the 2101 floppy drive), or a .state file to
+  load it. On the setup page dropped floppy, hard disk and bubble images and
+  folders go into the selected profile.
+- Recent disks: Media > Recent into the 2102 / 2101 drive, and Recent menus
+  beside the disk fields on the setup page (the last 8 floppies and hard disks).
+- ImageDisk .IMD floppies: used through the .img beside them, made from the
+  .IMD when it is missing (GRiD 2102 and IBM sector numbering).
+- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-micro,
+  --fpu-rom) runs the 8087 on its own microcode ROM, which you supply; the
+  setup page says which ROM file it found (docs/8087-microcode.md).
+- Help > Keyboard map lists every Compass key and its PC key, and the
+  emulator keys.
+
+Machine setup, drives and keys:
+- ROMs card on the setup page, per profile: each ROM the machine uses (boot PROM,
+  keyboard 8741, 2102 firmware, 2101 firmware for the 20 MB and the 10 MB box,
+  8087 microcode) with the file found and a field to pick another file. "Import
+  ROMs..." takes a folder (zips inside it too), knows the GRiD ROMs by checksum
+  whatever their file names, and copies them into the profile's ROM folder under
+  the names the emulator looks for (a 16K boot PROM file is split into its even
+  and odd halves). Also `compass import-roms SOURCE [ROMFOLDER]`.
+- GPIB devices on the setup page: a card per unit (2101 Disc System, 2102 Floppy,
+  PC folder drive) with an on/off box, its GPIB address and GRiD-OS name (changeable),
+  Low level (the unit's own firmware runs) or Protocol model, its own firmware file if
+  wanted, and its disks. Two 2101 boxes (4 + 5 and 12 + 13), each at its own level.
+  A floppy drive with no disk is emulated too, so GRiD-OS lists it and a disk
+  inserted later is seen. The PC folder drive is a unit of its own (13 Extra Floppy
+  Disk next to a 2101), so the 2101 keeps its floppy drive and its firmware. The
+  status bar shows each drive's GRiD-OS name and LL or P; hover for the details.
+  Also --gpib, --folder-addr, --2101-protocol, --2102-protocol, --rom-2101,
+  --rom-2101-10 and --rom-2102. Older profiles turn into units by themselves.
+- Power on sits beside each profile (double-click a profile to power it on) and at
+  the top of the page.
+- 2101 front panel: the box's 4-character red LED display and its drive lights (View >
+  2101 front panel, or click the small display in the status bar), one per 2101 box.
+  It shows what the 2101 firmware writes to the display, so only with the low-level
+  2101.
+- Keys on Windows: a held key no longer goes on after it is let go (Windows key
+  repeat queued extra presses), and CODE+Esc / CODE+Space reach the Compass
+  instead of switching windows (the keyboard hook now runs on its own thread, so
+  Windows no longer drops it when a frame is slow, the window itself refuses
+  Alt+Esc, and while the window has focus Alt+Esc is registered as its hot key).
+  Help > Keyboard map shows whether these guards are on, how often each caught
+  Alt+Esc, and what the hook saw of the last Esc.
+- Write protect per drive instead of one switch for all disks (see The window).
+- Media manager: opens the floppies and hard disks GRiD-OS reads, also unnamed
+  volumes (a blank volume name) and boot floppies (boot code in page 0), finds
+  the root directory even when it is not right after the bitmap, and says so
+  plainly when a disk has none. "Open disk image..." takes .IMD floppies too.
+- Bubble card on the setup page: bubble on or off, the image (raw, 128 KB per
+  7110 module, in address order; size and modules shown), New image size
+  (128/256/384/512 KB) with "Make blank...", and its own Write protect box.
+- Media > Floppy library: every .img and .IMD in a folder (and sub-folders)
+  with its GRiD volume name, file count, size and date, a Find box, and the
+  drive to put it in; double-click a floppy (or Insert) to put it in that drive.
+- Keys by the letter printed on the PC key (AZERTY, QWERTZ...), see Using it; View >
+  PC keys > By position (US layout) for the old way.
+
+Build and run in the window:
+- Project > Project window: pick a project folder (NAME.pas, NAME.asm, ...) and a
+  development disk (the machine's hard disk by default), then Build, Build and run
+  or Debug build. compass.exe builds by itself, no Python: on a hidden Compass
+  (1129, or 1139 for a 113x disk) with the fast core while your machine keeps
+  running. The first build of a disk boots it (about a minute) and keeps that
+  state, later builds take a few seconds. Results go to the project folder like
+  build.bat: NAME.run, NAME.lst, screen.png, output\. Also `compass build PROJECT
+  --disk DISK [--debug]`. The toolbar has a Build and run button.
+- Build and run copies NAME~Run~ into the running machine's PC folder drive.
+- PC folder drive: files added or changed on the PC show up while the machine
+  runs (checked each second, once the GRiD has left the drive alone for two
+  seconds). A file the GRiD changed too is left as the GRiD has it.
+
+Extras:
+- Edit > Paste text types the PC clipboard's text on the Compass keyboard (one key
+  at a time, about 14 a second; characters with no Compass key are left out).
+  Edit > Copy screen puts the Compass screen on the clipboard as a picture.
+- Speed slider (toolbar and Machine menu): 10 % to 400 % of a real Compass;
+  double-click it for 100 %.
+- On-screen Compass keyboard (View, or Keyboard on the toolbar), laid out and
+  coloured like the real one: click a key to type it, hold the mouse button to
+  hold it; SHIFT, CTRL and CODE stay on for the next key.
+- Saved states with pictures: Machine > Save state keeps the machine and a picture
+  of its screen with the profile; Machine > Saved states... shows them as
+  thumbnails to load (double-click) or delete. A state holds no disks.
+- The 8087 core switches while the machine runs (Machine > 8087 on its microcode
+  ROM), like the fast CPU core.
+- View > EL panel look: glow around lit pixels, dark gaps between pixels (at 3x and
+  more) and a short afterglow.
+
+8087:
+- 8087 on its own microcode (optional): with `FPU_CORE=micro` and a microcode ROM file
+  you supply (`I8087_MICROCODE` or `roms/8087mc.txt`, see docs/8087-microcode.md) the
+  arithmetic, loads and stores, FSQRT, FPREM, FSCALE, BCD and the five transcendentals
+  run from the chip's microcode ROM instead of the instruction-level model. Of 141
+  transcendental and square root results dumped from a real 1101, 134 come out bit for
+  bit and the other 7 are one unit off.
+- The microcode 8087 fitted to 8087 Bench on a real 1101 and 1137 (2181 tests): of 1588
+  real result lines 34 still differ (were 1441), and the busy time now comes from the
+  micro-instructions that ran (mean error about 2.5 % over 2068 timed tests, was 40 % with the
+  tables). Both 8087 cores: FINIT keeps the condition bits, the B bit shows a pending
+  unmasked exception, the IR bit is derived, the control word has 13 bits, reserved
+  opcodes alias their neighbours, FSTENV's pointer is the ESC byte after a segment
+  prefix. The test `bench_real` holds the real reports.
+- The instruction-level 8087 was corrected wherever the microcode showed it wrong (FSQRT
+  exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
+  loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
+
 ## 0.10.0
 
 Each model now has the hardware its real boards carry (from photos of 1101,
@@ -172,20 +288,13 @@ Fitted again to the real 1101 and 1137 runs (GRiDBench 2.2, GRiDProbe 0.0.11):
 ## 0.8.0
 
 - The 2101 hard disk box runs low-level when roms holds its firmware
-  (300205-05.bin for the 20 MB box, 300205-06.bin for the 10 MB one; 2101.bin
-  also works): the box's 8088 (4 MHz) runs the real ROM, with an 8291A GPIB
-  chip, the 74LS259 latch, a WD2797 floppy controller and a Xebec S1410 SASI
-  controller (the S1410 at command level, timed after its ROM and a real 2101
-  with an ST-225). The ROM is picked from the hard disk image size.
-- The 2101's 4-character display shows in the status bar and in the debugger.
-- The 2101 floppy goes through the box's firmware too: a format writes
-  interleave 3, and an empty slot gives error 128 as on the real box.
-- Disk timing fitted to GRiDBench 2.1b on a real 1101 + 2101 (ms, emulated vs
-  real): same page 17.0 / 19.0, sequential 23.8 / 21.1, random 55.8 / 53.5,
-  first/last 133.7 / 130.3, steps 117.8 / 122.5. The drive is taken as formatted
-  at interleave 4 (S1410_IL changes it; S1410_SEEK the seek curve).
-- GRID_2101=protocol uses the protocol-level model; it is also used when no
-  2101 ROM is there, or when a PC folder is the 2101 floppy.
+  (300205-05.bin 20 MB, 300205-06.bin 10 MB): the box's 8088 runs the real
+  ROM; the Xebec controller is modelled at command level, timed after a real
+  2101. Its 4-character display shows in the status bar.
+- The 2101 floppy goes through the firmware too; an empty slot gives error
+  128 as on the real box.
+- Disk speed fitted to GRiDBench on a real 1101 + 2101 (within about 10%).
+- GRID_2101=protocol uses the old protocol-level model instead.
 
 ## 0.7.0
 

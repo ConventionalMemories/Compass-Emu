@@ -1,12 +1,13 @@
 [package]
 name = "compass"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "MIT"
 description = "Compass-Emu: GRiD Compass emulator with a window"
 
 [dependencies]
 grid_core = { path = "../../lib/grid_core" }
+i8087 = { path = "../../lib/i8087" }
 marty_core = { path = "../../lib/marty_core", default-features = false }
 minifb = "0.27"
 eframe = { workspace = true, default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
@@ -19,6 +20,9 @@ cpal = "0.15"
 serialport = { version = "4.7", default-features = false }
 serde_json = "1"
 base64 = "0.13"
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
+crc32fast = "1.4"
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

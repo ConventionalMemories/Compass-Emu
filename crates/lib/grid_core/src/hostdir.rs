@@ -181,10 +181,13 @@ impl Volume {
     /// and root directory named in page 0), as tools/gridfs.py reads them.
     pub fn open_any(img: Vec<u8>) -> R<Volume> {
         let n = (img.len() / PAGE) as u32;
-        if n < 16 || &img[..13] != b"System Disk!!" {
+        // (a boot floppy has boot code in page 0 instead of the header: its bitmap and root
+        // are where a floppy keeps them)
+        let floppy = (16..=1440).contains(&n);
+        if n < 16 || (&img[..13] != b"System Disk!!" && !floppy) {
             return err("no GRiD volume header (System Disk!!)");
         }
-        if u16_at(&img, 23) == 0x7285 {
+        if &img[..13] == b"System Disk!!" && u16_at(&img, 23) == 0x7285 {
             let bm = u16_at(&img, 30) as u32;
             let root = u16_at(&img, 32) as u32;
             if bm >= n || root >= n {
@@ -192,14 +195,29 @@ impl Volume {
             }
             return Ok(Volume { img, n, root, bm });
         }
-        for p in 1..n {
+        let is_bitmap = |p: u32| {
             let pg = &img[p as usize * PAGE..(p as usize + 1) * PAGE];
-            if u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16) {
-                let root = p + n.div_ceil(BM_BITS);
-                return Ok(Volume { img, n, root, bm: p });
+            u16_at(pg, 0) as u32 == p && u16_at(pg, 2) == 0 && u16_at(pg, 4) == checksum(&pg[6..8 + BM_BYTES]).wrapping_add(p as u16)
+        };
+        // the usual place first, then anywhere
+        let Some(bm) = std::iter::once(BITMAP_FID).filter(|&p| p < n).chain(1..n).find(|&p| is_bitmap(p)) else {
+            return err("no bitmap found on the volume");
+        };
+        let mut v = Volume { img, n, root: bm + n.div_ceil(BM_BITS), bm };
+        if v.header(v.root).is_err() {
+            // The root directory is not right after the bitmap: look for it (a file header
+            // whose parent directory is itself).
+            if let Some(r) = (1..n).find(|&p| v.header(p).is_ok_and(|h| u16_at(&h, 100) as u32 == p)) {
+                v.root = r;
+            }
+            else {
+                return err(format!(
+                    "no root directory on the volume (bitmap at page {bm}, nothing valid at page {} or anywhere else; the disk may be damaged)",
+                    v.root
+                ));
             }
         }
-        err("no bitmap found on the volume")
+        Ok(v)
     }
 
     /// Root directory FID.
@@ -352,7 +370,7 @@ impl Volume {
             return err(format!("file {fid} outside the volume"));
         }
         let h = self.page(fid).to_vec();
-        if u16_at(&h, 0) as u32 != fid || u16_at(&h, 2) != 0 || h[8] == 0 || h[8] > 80 {
+        if u16_at(&h, 0) as u32 != fid || u16_at(&h, 2) != 0 || h[8] > 80 {
             return err(format!("page {fid} is not a file header"));
         }
         if u16_at(&h, 202) != checksum(&h[0..202]) {
@@ -589,6 +607,11 @@ pub fn volumes(img: &[u8]) -> Vec<(u32, u32)> {
     if &img[..13] == b"System Disk!!" {
         return vec![(0, (img.len() / PAGE) as u32)];
     }
+    let n = (img.len() / PAGE) as u32;
+    if n <= 1440 {
+        // a floppy without the header (boot code in page 0)
+        return vec![(0, n)];
+    }
     (0..4)
         .filter_map(|k| {
             let e = &img[0x1BE + 16 * k..0x1BE + 16 * k + 16];
@@ -663,6 +686,38 @@ pub struct HostDir {
     /// (subject, GRiD name) -> (host path, contents as imported, added ~Text~)
     files: HashMap<(String, String), (PathBuf, Vec<u8>, bool)>,
     subjects: Vec<String>,
+    /// (path, modified, size) of every file in the folder at the last look (sync_in).
+    seen: Vec<(PathBuf, std::time::SystemTime, u64)>,
+}
+
+/// The files in a folder drive's folder: (subject or "" for the root, host path), one subject
+/// level deep, dot files left out, sorted.
+fn host_files(path: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+    let read_dir = |p: &Path| -> io::Result<Vec<PathBuf>> {
+        let mut v: Vec<PathBuf> = fs::read_dir(p)?.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        v.sort();
+        Ok(v)
+    };
+    let hidden = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+    let mut out = vec![];
+    for p in read_dir(path)? {
+        if hidden(&p) {
+            continue;
+        }
+        if p.is_dir() {
+            let (sname, _) = grid_name(&p.file_name().unwrap().to_string_lossy());
+            let sname = sname.trim_end_matches("~Text~").to_string() + "~Subject~";
+            for q in read_dir(&p)? {
+                if q.is_file() && !hidden(&q) {
+                    out.push((sname.clone(), q));
+                }
+            }
+        }
+        else if p.is_file() {
+            out.push((String::new(), p));
+        }
+    }
+    Ok(out)
 }
 
 fn mtime(p: &Path) -> std::time::SystemTime {
@@ -732,7 +787,8 @@ impl HostDir {
             .unwrap_or_else(|| "PC Folder".into());
         let now = grid_time(std::time::SystemTime::now());
         let mut v = Volume::format(pages, &label, now);
-        let mut hd = HostDir { path: path.to_path_buf(), files: HashMap::new(), subjects: vec![] };
+        let mut hd = HostDir { path: path.to_path_buf(), files: HashMap::new(), subjects: vec![], seen: vec![] };
+        hd.seen = hd.snapshot();
         let root = v.root;
         for (sname, files) in plan {
             let dir = if sname.is_empty() {
@@ -753,6 +809,94 @@ impl HostDir {
             }
         }
         Ok((hd, v))
+    }
+
+    fn snapshot(&self) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
+        host_files(&self.path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, p)| {
+                let m = fs::metadata(&p).ok();
+                let t = m.as_ref().and_then(|m| m.modified().ok()).unwrap_or(std::time::UNIX_EPOCH);
+                (p, t, m.map(|m| m.len()).unwrap_or(0))
+            })
+            .collect()
+    }
+
+    /// True when files in the folder were added or changed since the last look.
+    pub fn changed_on_pc(&self) -> bool {
+        self.snapshot() != self.seen
+    }
+
+    /// Bring files added or changed on the PC into the running drive's image `img`: new files
+    /// are added, and a file the PC changed is replaced unless GRiD changed it too (then GRiD's
+    /// copy stays and is written to the folder at the end). Files deleted on the PC stay on
+    /// the drive. Call it only while GRiD is not using the drive. Returns what was done.
+    pub fn sync_in(&mut self, img: &mut Vec<u8>) -> Vec<String> {
+        let snap = self.snapshot();
+        if snap == self.seen {
+            return vec![];
+        }
+        let mut log = vec![];
+        let mut v = match Volume::open(img.clone()) {
+            Ok(v) => v,
+            Err(e) => return vec![format!("cannot read the folder drive: {}", e.0)],
+        };
+        let old: HashMap<PathBuf, (std::time::SystemTime, u64)> = self.seen.iter().map(|(p, t, n)| (p.clone(), (*t, *n))).collect();
+        let mut changed = false;
+        for (subject, hp) in host_files(&self.path).unwrap_or_default() {
+            let now_meta = snap.iter().find(|s| s.0 == hp).map(|s| (s.1, s.2));
+            if now_meta.is_some() && old.get(&hp).copied() == now_meta {
+                continue;
+            }
+            let fname = hp.file_name().unwrap().to_string_lossy().to_string();
+            let (g, added) = grid_name(&fname);
+            let Ok(mut data) = fs::read(&hp) else { continue };
+            if added {
+                data = to_crlf(&data);
+            }
+            let k = key(&subject, &g);
+            // what the drive holds under that name now
+            let on_drive = v.subject_dir(&subject).ok().and_then(|dir| {
+                v.entries(dir).ok()?.into_iter().find(|e| e.1.eq_ignore_ascii_case(&g)).and_then(|(fid, _)| v.read(fid).ok())
+            });
+            match (&on_drive, self.files.get(&k)) {
+                (Some(d), _) if *d == data => {}
+                (Some(d), Some((_, imported, _))) if d != imported => {
+                    log.push(format!("{fname}: changed on the PC and on GRiD, GRiD's copy kept"));
+                    continue;
+                }
+                (Some(_), None) => {
+                    log.push(format!("{fname}: GRiD made a file of that name, GRiD's copy kept"));
+                    continue;
+                }
+                _ => {
+                    if !subject.is_empty() && v.subject_dir(&subject).is_err() {
+                        if let Err(e) = v.add_subject(&subject) {
+                            log.push(format!("{fname}: {}", e.0));
+                            continue;
+                        }
+                        self.subjects.push(subject.clone());
+                    }
+                    match v.put_file(&subject, &g, &data) {
+                        Ok(_) => {
+                            log.push(format!("{} {fname}", if on_drive.is_some() { "updated" } else { "added" }));
+                            changed = true;
+                        }
+                        Err(e) => {
+                            log.push(format!("{fname}: {}", e.0));
+                            continue;
+                        }
+                    }
+                }
+            }
+            self.files.insert(k, (hp.clone(), data, added));
+        }
+        self.seen = snap;
+        if changed {
+            *img = v.img;
+        }
+        log
     }
 
     /// Write GRiD's changes back to the folder. Returns lines describing what was done.
@@ -805,6 +949,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unnamed_volume_and_boot_floppy() {
+        // GRiD floppies with no volume name (name length 0) and with boot code in page 0
+        let mut v = Volume::format(720, "x", [0; 11]);
+        v.put_file("", "a~Text~", b"hello").unwrap();
+        let r = v.root;
+        let mut h = v.page(r).to_vec();
+        h[8] = 0;
+        h[9..89].fill(b' ');
+        v.seal(&mut h);
+        v.put_page(r, &h);
+        v.img[..16].copy_from_slice(&[0xBB, 0xB0, 0x01, 0x90, 0x81, 0xC3, 0, 0x7C, 0x2E, 0x88, 0x57, 0x0E, 0xEB, 0x18, 0, 0]);
+        assert_eq!(volumes(&v.img), vec![(0, 720)]);
+        let w = Volume::open_any(v.img.clone()).unwrap();
+        assert_eq!(w.files().unwrap().len(), 1);
+    }
+
+    #[test]
     fn roundtrip() {
         let base = std::env::temp_dir().join(format!("hostdir-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -830,6 +991,50 @@ mod tests {
         assert_eq!(fs::read(base.join("new%2Fone~Text~")).unwrap(), b"abc");
         // hello.pas unchanged: not rewritten.
         assert_eq!(fs::read(base.join("hello.pas")).unwrap(), b"line1\nline2\n");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Files added or changed on the PC while the drive runs come into its image; a file
+    /// GRiD changed meanwhile keeps GRiD's copy.
+    #[test]
+    fn sync_in_live() {
+        let base = std::env::temp_dir().join(format!("hostdir-sync-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("a.pas"), b"one\n").unwrap();
+        fs::write(base.join("b.pas"), b"bee\n").unwrap();
+        let (mut hd, v) = HostDir::import(&base).unwrap();
+        let mut img = v.img;
+        assert!(!hd.changed_on_pc());
+        assert!(hd.sync_in(&mut img).is_empty());
+        // GRiD rewrites b; the PC adds NAME~Run~ in a new subject and changes a and b.
+        let mut v = Volume::open(img.clone()).unwrap();
+        v.put_file("", "b.pas~Text~", b"grid\r\n").unwrap();
+        img = v.img;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::create_dir_all(base.join("Build")).unwrap();
+        fs::write(base.join("Build").join("NAME~Run~"), vec![5u8; 3000]).unwrap();
+        fs::write(base.join("a.pas"), b"one two\n").unwrap();
+        fs::write(base.join("b.pas"), b"pc copy\n").unwrap();
+        assert!(hd.changed_on_pc());
+        let log = hd.sync_in(&mut img);
+        assert!(log.iter().any(|l| l.contains("added NAME~Run~")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("updated a.pas")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("b.pas") && l.contains("GRiD's copy kept")), "{log:?}");
+        let v = Volume::open(img.clone()).unwrap();
+        let get = |s: &str, n: &str| {
+            let dir = v.subject_dir(s).unwrap();
+            let fid = v.entries(dir).unwrap().into_iter().find(|e| e.1 == n).unwrap().0;
+            v.read(fid).unwrap()
+        };
+        assert_eq!(get("Build~Subject~", "NAME~Run~"), vec![5u8; 3000]);
+        assert_eq!(get("", "a.pas~Text~"), b"one two\r\n");
+        assert_eq!(get("", "b.pas~Text~"), b"grid\r\n");
+        assert!(!hd.changed_on_pc());
+        // At the end only GRiD's b goes back to the folder.
+        let log = hd.export(&img).unwrap();
+        assert_eq!(log.iter().filter(|l| l.starts_with("wrote")).count(), 1, "{log:?}");
+        assert_eq!(fs::read(base.join("b.pas")).unwrap(), b"grid\r\n");
         let _ = fs::remove_dir_all(&base);
     }
 

@@ -2,7 +2,7 @@
 //! classic window: pacing, the keyboard matrix, pause and the debugger console.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -10,6 +10,9 @@ use grid_core::{screen, GridMachine};
 
 /// Shortest time a key stays down for the Compass (CPU clocks, 60 ms), so quick taps are
 /// seen by the 8741 scan.
+/// A tap with this bit set is pressed with exactly its own Shift/Ctrl/Code, whatever the
+/// PC's modifier keys are doing (keys by printed letter: '1' on AZERTY needs Shift).
+pub const EXACT: u8 = 0x80;
 const MIN_HOLD: u64 = 300_000;
 /// Shortest time between two presses of one key (CPU clocks) so the second is seen.
 const KEY_GAP: u64 = 250_000;
@@ -30,6 +33,13 @@ pub struct Runner {
     pending: Vec<((usize, u8), u8)>,
     /// Clock of the last queued press.
     last_start: u64,
+    /// Keys down at the previous frame (a key held down through two frames is not a new tap:
+    /// Windows' key repeat sets the "pressed since" bit again and again while a key is held).
+    prev_down: Vec<(usize, u8)>,
+    /// Pasted text still to type: one key at a time, each let go before the next.
+    paste: VecDeque<((usize, u8), u8)>,
+    /// Real-time speed setting (1.0 = a real Compass; the speed slider).
+    pub rate: f64,
     /// Emulated speed (1.0 = a real Compass), updated about once a second.
     pub speed: f64,
     /// Frames shown per second.
@@ -50,6 +60,9 @@ impl Runner {
             released: HashMap::new(),
             pending: Vec::new(),
             last_start: 0,
+            prev_down: Vec::new(),
+            paste: VecDeque::new(),
+            rate: 1.0,
             speed: 0.0,
             fps: 0.0,
             speed_wall: Instant::now(),
@@ -67,6 +80,32 @@ impl Runner {
         self.held.clear();
         self.released.clear();
         self.pending.clear();
+        self.prev_down.clear();
+    }
+
+    /// Stop typing pasted text.
+    pub fn cancel_paste(&mut self) {
+        self.paste.clear();
+    }
+
+    /// Set the real-time speed (0.1 to 4.0 times a real Compass).
+    pub fn set_rate(&mut self, m: &GridMachine, rate: f64) {
+        let held = std::mem::take(&mut self.held);
+        self.rate = rate.clamp(0.1, 4.0);
+        self.resync(m);
+        self.held = held;
+    }
+
+    /// Queue text to type (Edit > Paste). Returns how many characters have no Compass key.
+    pub fn paste_text(&mut self, text: &str) -> usize {
+        let (keys, skipped) = paste_keys(text);
+        self.paste.extend(keys);
+        skipped
+    }
+
+    /// Characters of pasted text still to type.
+    pub fn pasting(&self) -> usize {
+        self.paste.len()
     }
 
     pub fn set_turbo(&mut self, m: &GridMachine, on: bool) {
@@ -87,7 +126,22 @@ impl Runner {
     /// in matrix order) and KEY_GAP after the same key was let go (so "ll" is two presses).
     pub fn set_keys(&mut self, m: &mut GridMachine, down: &[(usize, u8)], tapped: &[((usize, u8), u8)], mods: u8) {
         let now = m.board().clocks;
-        self.pending.extend_from_slice(tapped);
+        // Pasted text goes in one key at a time, when nothing else is down or waiting.
+        if self.pending.is_empty() && self.held.is_empty() && down.is_empty() && mods == 0 {
+            if let Some(k) = self.paste.pop_front() {
+                self.pending.push(k);
+            }
+        }
+        // Key repeat while a key is held is not typing: drop taps of a key that stayed down
+        // since the last frame, or that is down and already waiting in the queue.
+        for &(p, pm) in tapped {
+            let repeat = down.contains(&p) && (self.prev_down.contains(&p) || self.pending.iter().any(|q| q.0 == p));
+            if !repeat {
+                self.pending.push((p, pm));
+            }
+        }
+        self.prev_down.clear();
+        self.prev_down.extend_from_slice(down);
         if let Some(&(p, pm)) = self.pending.first() {
             let gap_over = self.released.get(&p).map(|&t| now.saturating_sub(t) >= KEY_GAP).unwrap_or(true);
             // (the keyboard chip stops scanning with three matrix keys down)
@@ -122,6 +176,10 @@ impl Runner {
                 mods |= st.2;
             }
         }
+        if let Some(st) = self.held.values().find(|st| st.2 & EXACT != 0) {
+            mods = st.2 & !EXACT;
+        }
+        let mods = mods & !EXACT;
         if let Some(k) = &mut m.board_mut().keyboard {
             k.set_matrix(cols, mods);
         }
@@ -152,9 +210,9 @@ impl Runner {
             }
         }
         else {
-            let target = self.base_clock + (self.base_wall.elapsed().as_secs_f64() * screen::CPU_HZ) as u64;
+            let target = self.base_clock + (self.base_wall.elapsed().as_secs_f64() * screen::CPU_HZ * self.rate) as u64;
             let now = m.board().clocks;
-            let max_step = (0.1 * screen::CPU_HZ) as u64;
+            let max_step = (0.1 * screen::CPU_HZ * self.rate) as u64;
             let behind = target.saturating_sub(now);
             if behind > max_step || now > target + max_step {
                 // Too far behind (slow PC, window dragged) or ahead: start pacing afresh.
@@ -182,5 +240,45 @@ impl Runner {
         self.paused = true;
         let (cs, ip) = m.cs_ip();
         Some(format!("{why}\n{}\n{}", m.reg_dump(), m.disassemble(cs, ip, 3)))
+    }
+}
+
+/// The Compass keys (matrix position, Shift) that type `text`, and how many characters have
+/// no Compass key. A line break (CR, LF or CR LF) is one RETURN.
+pub fn paste_keys(text: &str) -> (Vec<((usize, u8), u8)>, usize) {
+    let mut keys = vec![];
+    let mut skipped = 0;
+    let mut last_cr = false;
+    for c in text.chars() {
+        let c = match c {
+            '\n' if last_cr => {
+                last_cr = false;
+                continue;
+            }
+            '\n' => '\r',
+            c => c,
+        };
+        last_cr = c == '\r';
+        match grid_core::keyboard::key_for_char(c) {
+            Some((col, bit, shift)) => keys.push(((col, bit), if shift { grid_core::keyboard::MOD_SHIFT } else { 0 })),
+            None => skipped += 1,
+        }
+    }
+    (keys, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grid_core::keyboard::MOD_SHIFT;
+
+    #[test]
+    fn paste_maps_text_to_keys() {
+        let (k, skipped) = paste_keys("aA\r\nb\nc[]");
+        assert_eq!(skipped, 2);
+        let ret = ((1, 0x04), 0);
+        assert_eq!(k, vec![((5, 0x04), 0), ((5, 0x04), MOD_SHIFT), ret, ((3, 0x08), 0), ret, ((4, 0x04), 0)]);
+        let (k, _) = paste_keys("!\"");
+        assert_eq!(k, vec![((1, 0x01), MOD_SHIFT), ((1, 0x08), MOD_SHIFT)]);
     }
 }

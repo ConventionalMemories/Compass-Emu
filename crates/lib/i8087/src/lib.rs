@@ -739,6 +739,18 @@ impl I8087 {
         self.micro.is_some()
     }
 
+    /// Back to the instruction-level core for every instruction (the microcode core keeps
+    /// no state between instructions, so this can happen between any two). Gives back the
+    /// microcode core, to put in again with `put_microcode`.
+    pub fn take_microcode(&mut self) -> Option<Box<micro::Micro8087>> {
+        self.micro_last = None;
+        self.micro.take()
+    }
+
+    pub fn put_microcode(&mut self, m: Option<Box<micro::Micro8087>>) {
+        self.micro = m;
+    }
+
     /// One instruction on the microcode core. The instruction-level core runs it first, with
     /// its writes to memory dropped and its results thrown away, for the number of bus words
     /// (and as the fallback if the microcode model gives up).

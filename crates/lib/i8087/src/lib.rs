@@ -165,10 +165,15 @@ impl Default for I8087 {
     }
 }
 
+/// A register's bits after power-on, as read from a real Compass 1101 (all eight alike).
+const POWER_ON: u128 = 0xFCA9_AFEA_A3BE_028F_A027;
+
 impl I8087 {
     pub fn new() -> I8087 {
         let mut f = I8087 {
-            st: [F80::ZERO; 8],
+            // Power-on leaves no zeros in the register file: this is what an 1101's held
+            // (8087 Bench p029; FXAM of an empty register reports it as a negative number).
+            st: [F80::from_bits(POWER_ON); 8],
             raw: [None; 8],
             cw: 0x03FF,
             sw: 0,
@@ -841,10 +846,14 @@ impl I8087 {
             self.esc_micro(mem, run_op, run_modrm, ea)
         }
         else {
-            match ea {
+            let (c, w) = match ea {
                 Some(a) => self.esc_mem(mem, run_op, reg, a),
                 None => self.esc_reg(run_op, reg, rm),
-            }
+            };
+            // the hardwired instructions on the microcode core: table times, corrected to
+            // 8087 Bench on a real 1101 (group M)
+            let fit = if self.micro.is_some() { micro::control_fit(run_op, reg, ea.is_some()) } else { 0 };
+            ((c as i32 + fit).max(2) as u32, w)
         };
         // FNINIT/FNCLEX/FSTENV etc. keep the last-instruction pointers; ordinary ones update them.
         // (FSTSW and FSAVE too: after them a real chip's FSTENV still shows the instruction
@@ -1775,11 +1784,16 @@ impl I8087 {
         if v.is_negative() {
             self.sw |= SW_C1;
         }
+        let bits = self.raw[p].unwrap_or_else(|| v.to_bits());
         if self.tag(p) == TAG_EMPTY {
+            // C1 and C2 show what the register last held (a real chip after power-on:
+            // 4700, a negative number)
             self.sw |= SW_C3 | SW_C0;
+            if (bits >> 63) & 1 != 0 {
+                self.sw |= SW_C2;
+            }
             return;
         }
-        let bits = self.raw[p].unwrap_or_else(|| v.to_bits());
         let exp = (bits >> 64) & 0x7FFF;
         let int_bit = (bits >> 63) & 1;
         if v.is_nan() {

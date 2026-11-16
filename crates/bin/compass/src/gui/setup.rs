@@ -267,8 +267,8 @@ fn roms_card(ui: &mut egui::Ui, c: &mut MachineConfig, default_roms: &Path, impo
         ch |= rom_row(ui, "2101 firmware, 10 MB box", &mut c.rom_2101_10, h10.as_deref(), false, "not found (300205-06.bin)");
         let modem_used = if c.rom_modem.trim().is_empty() { found.modem.clone() } else { Some(PathBuf::from(c.rom_modem.trim())) };
         ch |= rom_row(ui, "Internal modem (8749)", &mut c.rom_modem, modem_used.as_deref(), false, "not found (16020-007.bin): no modem MCU, Modem~Device~ can't start");
-        let mc = crate::session::fpu_microcode(&MachineConfig { fpu_micro: true, ..c.clone() }, &dir).flatten();
-        let mc_note = if c.fpu_micro { "not found: the instruction-level 8087 runs (8087mc.txt)" } else { "optional, only for Computer > 8087 microcode (8087mc.txt)" };
+        let mc = crate::session::fpu_microcode(&MachineConfig { fpu_table: false, ..c.clone() }, &dir).flatten();
+        let mc_note = if c.fpu_table { "optional, not used: Computer > 8087 is set to the instruction-level 8087 (8087mc.txt)" } else { "not found: the instruction-level 8087 runs (8087mc.txt)" };
         ch |= rom_row(ui, "8087 microcode", &mut c.fpu_rom, mc.as_deref(), false, mc_note);
     });
     ui.label(RichText::new("A 2101 box takes the firmware that fits its hard disk image's size; a unit under GPIB devices can name its own file instead.").weak().small());
@@ -676,8 +676,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     ch |= ui.checkbox(&mut c.fast, "Fast (whole instructions, approximate timing; switchable while running)").changed();
                     ui.label("8087");
                     ch |= ui
-                        .checkbox(&mut c.fpu_micro, "Run on the 8087's own microcode ROM (you supply the ROM; switchable while running)")
-                        .on_hover_text("slower, closer to the real chip; see docs/8087-microcode.md. Off: the instruction-level 8087")
+                        .checkbox(&mut c.fpu_table, "Instruction-level 8087 even with the microcode ROM (switchable while running)")
+                        .on_hover_text("Off: the 8087 runs on its own microcode ROM when you have supplied the file (closest to the real chip; see docs/8087-microcode.md), and on the instruction-level model when not")
                         .changed();
                 });
                 let col2 = match b {

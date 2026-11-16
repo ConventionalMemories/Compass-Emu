@@ -1,14 +1,16 @@
 # GRiDLink in Compass-Emu
 
-GRiDLink is the GRiD Server network: the Compass's serial port runs the Intel 8274 in
-synchronous SDLC mode at 250 kbit/s (x1 clock from the 80130's baud timer, divisor 20), and
+GRiDLink is the GRiD Server network: the Compass's serial port, wired for RS-422, runs the
+Intel 8274 in synchronous SDLC mode at 250 kbit/s (x1 clock from the 80130's baud timer, divisor 20), and
 the server, the primary station, polls each Compass in turn (normal response mode, window 1,
 modulo 8). A Compass is always a secondary station: it only speaks when polled. So two
 Compass-Emus can't link to each other over GRiDLink; the other end of the cable has to play
 the GRiD Server.
 
-Compass-Emu 0.9.0 emulates the Compass side: the 8274's SDLC mode, the serial port select
-latches and the cable. It does not include a server.
+Compass-Emu (since 0.9.0) emulates the Compass side: the 8274's SDLC mode, the serial port
+select latches and the cable. It does not include a server yet. Nothing here has been
+checked against a real GRiDLink cable or server; the model follows GRiD's own client code
+(see "What the 8274 model does in SDLC mode").
 
 ## Using it
 
@@ -90,8 +92,8 @@ DFE10/12/14/16h on the Compass II board (DFE00-DFE06h on the 1101). They are kep
 
 ## What the 8274 model does in SDLC mode
 
-From the GRiDLink client code (GRiDLink~Device~ and CableTest), since no 8274 SDLC timing
-measurements exist yet:
+From the GRiDLink client code (GRiDLink~Device~ and CableTest), since no 8274 SDLC
+measurements on a real Compass exist yet:
 
 - Transmit: bytes go out one per 8 baud clocks. When the transmitter runs dry after
   WR0 = C0h (reset Tx Underrun/EOM latch) with Tx CRC on, the 8274 sends the CRC and the

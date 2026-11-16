@@ -7,8 +7,7 @@ Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/d
 First release for testers.
 - The Windows zip starts from the machine setup page: import the ROMs (MAME sets or
   your own dumps) with Import ROMs..., pick a model and a GRiD-OS disk, Power on.
-  No MAME folder is needed. The old start files for a MAME setup moved to
-  util/grid-mame in the source.
+  No MAME folder is needed. The old start files for a MAME setup were removed.
 - The Claude Code hook's grid_build can use the build inside compass.exe: give it
   `disk` (a development disk image) or set GRID_DEV_DISK. Without either it uses
   tools\gridbuild.py as before.

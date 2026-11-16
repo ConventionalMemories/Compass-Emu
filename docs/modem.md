@@ -2,7 +2,7 @@
 
 Every Compass except the 1137 has an internal modem board: an 8749 microcontroller running
 GRiD's own firmware, a TMS99532 for 300 baud (Bell 103), the 1200 baud (Bell 212A) modem,
-a DTMF chip, the sound DACs, the hook relay and the line circuits. From 0.12.0 Compass-Emu
+a DTMF chip, the sound DACs, the hook relay and the line circuits. Since 0.12.0 Compass-Emu
 runs the 8749's firmware (`grid_core/src/modem.rs`), so GRiD-OS's `Modem~Device~`, GRiDTerm,
 PhoneLink and any program that talks to the modem see the real thing. What the analog parts
 would do (tones, carrier, ring) is replaced by what they put on the MCU's pins.
@@ -76,7 +76,9 @@ it sends and samples one bit per clock edge and scrambles in software (taps 14 a
 the 212A rule that inverts a bit after 64 ones). The line model makes the clocks, scrambles
 what the far end sends and descrambles what the Compass sends.
 
-Not modelled: the ring line to IR7 (GRiD interrupt 7, `intRing`; GRiD-OS's modem driver
+Not checked on a real modem yet: the pin wiring above comes from the firmware, GRiD's
+sources and the modem board's schematic, not from tracing a board, and no call between a real
+Compass and the emulator's line model has been made. Not modelled: the ring line to IR7 (GRiD interrupt 7, `intRing`; GRiD-OS's modem driver
 doesn't use it), the use of P1.3/P1.4 (commands 7 and 8), busy and ringback tones, and the
 speaker. Dial tone is a plain 400 Hz square wave.
 

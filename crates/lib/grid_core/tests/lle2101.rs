@@ -227,7 +227,8 @@ fn lle_2101_floppy() {
     let st = h.reply_now();
     eprintln!("floppy status {:.1} ms: {:02X?}", h.ms(t0), st);
     assert_eq!(st.len(), 52);
-    for page in [0u32, 1, 9, 17, 18, 100, 719, 2] {
+    // Every sector of the first cylinder (the boot PROM reads pages 0-4), then some more.
+    for page in (0u32..18).chain([100, 719, 2]) {
         let t0 = h.t;
         h.request(4, page, 512, 0);
         let d = h.reply();

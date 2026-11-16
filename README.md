@@ -19,9 +19,9 @@ compilers and the programs written for it, and fast enough to use as a build mac
 |---|---|
 | Models | 1101, 1109 (original board); 1121, 1129, 1131, 1137, 1139 (Compass II split board, 512 x 256 screen on the 113x), each with its own timer and interrupt chips and sound wiring |
 | CPU | 8086 with prefetch queue and bus timing, plus a fast whole-instruction core for builds |
-| FPU | 8087 with bit-exact 80-bit results; optionally run on the 8087's own microcode ROM (a file you supply), with timing taken from the micro-instructions |
+| FPU | 8087 with bit-exact 80-bit results; runs the chip's own microcode when you supply the ROM file (see [docs/8087-microcode.md](docs/8087-microcode.md)), an instruction-level model otherwise |
 | Storage | 2101 hard disk and floppy, 2102 portable floppy, bubble memory, application ROM sockets, a PC folder as a GRiD drive |
-| I/O | 8741 keyboard controller running GRiD's firmware, 8274 serial (TCP, COM port, or a null-modem link between two emulators) and GRiDLink SDLC frames over TCP, sound DAC, DTMF, real-time clock |
+| I/O | 8741 keyboard controller running GRiD's firmware, 8274 serial (TCP, COM port, or a null-modem link between two emulators), GRiDLink over TCP, internal modem running its own 8749 firmware with a TCP phone line ([docs/modem.md](docs/modem.md)), sound DAC, DTMF, real-time clock |
 | Window | Menus, machine setup with saved profiles, media manager (floppy swapping, GRiD file browser with import/export), quick save and state files |
 | Demo tools | Cycle counter marks (OUT to ports a real Compass ignores), frame meter overlay, debugger workspace with code/port/interrupt/memory breakpoints, profiler, chips window; program symbols from debug builds (names, Pascal source lines, breakpoints by name, call stack) and a crash catcher |
 | Display | Electroluminescent (EL) screen with RAM contention and a beam-accurate picture, so racing the beam works as on the real machine |
@@ -29,12 +29,11 @@ compilers and the programs written for it, and fast enough to use as a build mac
 Accuracy, measured with GRiDBench on a real 1101 with a 2101 and a 2102:
 
 - Plain 8086 code and memory access: within about 2% on average.
-- 8087 instruction times: mostly within 5%; the microcode core averages 2.6% over 2,068 timed tests.
+- 8087 instruction times: mostly within 5%; on the microcode about 2% on average (8087 Bench, 2068 tests on a real 1101 and 1137).
 - 2101 page reads: same page 19.4 ms (real 19.0), sequential 19.4 (21.1), random 130.0 (130.3).
 - 2102 page reads: within about 10% for most patterns.
 
-Not emulated yet: the internal modem and the test ROM socket. No GRiD Server is
-included for GRiDLink. Known timing gaps are listed in
+Not emulated yet: the test ROM socket. No GRiD Server is included for GRiDLink. Known timing gaps are listed in
 [COMPASS.md](COMPASS.md).
 
 ## Getting started (Windows)
@@ -87,17 +86,20 @@ differs from a real Compass.
 - **MAME**: the gridcomp, gridkeyb, tms9914, grid2102, i7220, z80sio and mm58174
   drivers (BSD-3-Clause), for the memory map, keyboard matrix and device behaviour.
 - **MartyPC** by Daniel Balsom: the 8086 core and emulator framework (MIT).
-- **Datasheets**: Intel 8086, 8087, 8741/8041 (UPI-41), 8259/80130, 8274, 7220
+- **Datasheets**: Intel 8086, 8087, 8741/8041 (UPI-41), 8048/8749, 8255, 8259/80130, 8274, 7220
   bubble memory controller; TI TMS9914; National MM58174.
 - **SingleStepTests** 8086 test suite, for checking both CPU cores.
 - **Real-hardware measurements** by C.M._: GRiDBench 2.x runs on a 1101 (with 2101 hard
   disk and 2102 floppy) and a 1137, Disk Toolkit seek tests, Rom Toolbox dumps of the
-  boot PROMs and application ROMs, and the 1137 keyboard controller dump.
+  boot PROMs and application ROMs, the 1137 keyboard controller dump and the internal
+  modem's 8749 firmware dump.
+- **grid-compass-network** by vklachkov (MIT): the reversed MS-DOS internal modem driver
+  and the modem board schematic in that repository, used to check the modem's register
+  protocol and pin wiring.
 - **Ken Shirriff's 8087 articles** (righto.com), for the microcode engine, FPTAN's method
   and the constant ROM.
 - **The 8087 microcode dump** from the granite project (github.com/a-mcego/granite), whose
-  text format the optional microcode core reads. The ROM itself is not included; you
-  supply the file.
+  text format the microcode core reads. The ROM itself is not included; you supply the file.
 - **rustc_apfloat** (Apache-2.0 WITH LLVM-exception) for 8087 arithmetic.
 
 ## License

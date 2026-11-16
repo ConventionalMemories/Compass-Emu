@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "1.0.0"
+version = "0.13.0"
 dependencies = [
  "arboard",
  "base64",
@@ -672,6 +672,7 @@ dependencies = [
  "eframe",
  "egui",
  "grid_core",
+ "i8087",
  "marty_core",
  "minifb",
  "png 0.17.16",

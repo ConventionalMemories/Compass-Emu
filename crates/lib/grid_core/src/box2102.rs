@@ -42,6 +42,9 @@ pub struct HostLines {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Hw {
+    /// The floppy's write-protect tab (set by the bus before each run).
+    #[serde(default)]
+    write_protect: bool,
     rom: Vec<u8>,
     ram: Vec<u8>,
     fdc: Wd2797,
@@ -89,8 +92,9 @@ impl Ctx<'_> {
     fn fdc_env<'b>(hw: &'b mut Hw, image: &'b mut Vec<u8>, dirty: &'b mut bool) -> (&'b mut Wd2797, Env<'b>) {
         let selected = hw.p3 & 0x10 != 0;
         let spinning = selected && hw.p3 & 0x01 != 0 && !image.is_empty();
+        let wp = hw.write_protect;
         let Hw { fdc, mech, disk, us, .. } = hw;
-        (fdc, Env { now: *us, spinning, selected, mech, disk, image, dirty, write_protect: false, ready: true })
+        (fdc, Env { now: *us, spinning, selected, mech, disk, image, dirty, write_protect: wp, ready: true })
     }
 }
 
@@ -168,6 +172,11 @@ impl Bus51 for Ctx<'_> {
 }
 
 impl Box2102 {
+    /// The disk's write-protect tab.
+    pub fn set_write_protect(&mut self, on: bool) {
+        self.hw.write_protect = on;
+    }
+
     /// A 2102 with firmware `rom` at GPIB address `addr`.
     pub fn new(rom: Vec<u8>, addr: u8) -> Box2102 {
         let mut fdc = Wd2797::new();
@@ -175,6 +184,7 @@ impl Box2102 {
         Box2102 {
             cpu: I8051::new(),
             hw: Hw {
+                write_protect: false,
                 rom,
                 ram: vec![0; 2048],
                 fdc,

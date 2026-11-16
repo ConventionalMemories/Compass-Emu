@@ -20,6 +20,7 @@ pub mod s1410;
 pub mod box2101;
 pub mod keyboard;
 pub mod upi41;
+pub mod modem;
 pub mod rtc;
 pub mod machine;
 pub mod screen;

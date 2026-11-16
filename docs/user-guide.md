@@ -8,7 +8,8 @@ Compass-Emu needs the GRiD ROMs and a GRiD-OS disk. Neither is included.
 - ROMs: the MAME ROM sets grid1101.zip (1101/1109), grid1139.zip (113x), optionally
 grid1129.zip (1121/1129) and grid_keyboard.zip, or dumps of your own machine.
 Optional: the 2102 floppy firmware (300237-02.bin) and the 2101 hard disk box
-firmware (300205-05.bin, 300205-06.bin) for the low-level drive models.
+firmware (300205-05.bin, 300205-06.bin) for the low-level drive models, the
+internal modem's firmware (16020-007.bin) and the 8087 microcode (8087mc.txt).
 - A GRiD-OS hard disk image (for the 2101) or boot floppy image (for the 2102).
 The 1101 to 1129 need the 11xx build of GRiD-OS, the 1131 to 1139 the 113x build.
 1. Unpack the zip anywhere and double-click compass.exe. The machine setup page opens.
@@ -29,14 +30,18 @@ The emulator has menus (Machine, Edit, Media, Project, View, Debug, Help), a too
 status bar with the speed and a light for each drive.
 - Started from a shortcut .bat (or with machine options on the command line)
 the machine powers on right away. Started on its own (double-click compass.exe) it opens
-the machine setup page: pick a profile or make one (model, ROM folder, hard
-disk, floppies, PC folder, bubble, ROM sockets, serial port, sound), then
-Power on. Profiles are kept in compass-profiles.json next to compass.exe.
+the machine setup page: pick a profile or make one (model, ROM folder, GPIB
+devices, bubble, ROM sockets, serial port, modem phone line, sound), then Power on (the button
+beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe.
 "Save as shortcut" writes a .bat that starts that machine.
-- Machine: power off (back to setup), restart, pause, turbo, the fast CPU core,
-quick save / quick load (kept in memory, disks included), save and load a
-state file (a state file holds no disks: keep them as they were).
-- Media: the media manager. Swap or take out floppies while the machine runs
+- Machine: power off (back to setup), restart, pause, turbo, the fast CPU core
+and the 8087 core (both switch while the machine runs), quick save / quick
+load (kept in memory, disks included), Save state and Saved states... (states
+with a picture of the screen, kept per profile in saved-states\ next to
+compass.exe), save and load a state file (a state holds no disks: keep them
+as they were).
+- Media: one entry per floppy drive (Insert, Recent, Take out) and the media
+manager. Swap or take out floppies while the machine runs
 (a changed disk is written back first), write changed disks back now,
 and a GRiD file browser for disk images: hard disk volumes, subjects and
 files with sizes and dates. Export files to the PC from any disk; import,
@@ -52,8 +57,8 @@ floppy drive (hold Shift for the 2101 floppy drive), a .state file loads
 that state. On the setup page a floppy image, a hard disk image (anything
 over 2 MB), a bubble image (name with "bubble") or a folder (PC folder
 drive) goes into the selected profile.
-- Recent disks: Media > Recent into the 2102 / 2101 drive, and a Recent menu
-beside the hard disk and floppy fields on the setup page.
+- Recent disks: Media > (a floppy drive) > Recent, and a Recent menu beside
+the hard disk and floppy fields on the setup page.
 - .IMD floppy files (ImageDisk) work wherever a floppy image does: the
 emulator uses the .img with the same name beside it, and makes that .img
 from the .IMD the first time. Changes go to the .img; the .IMD stays as it was.
@@ -68,9 +73,22 @@ the small display in the status bar opens it too).
 100 %), Paste, the on-screen keyboard and Build and run.
 - Setup page, ROMs: every ROM the profile uses, the file found and a field to
 pick another; Import ROMs... copies GRiD ROMs from a folder or zip, known by
-checksum, under the names the emulator looks for. Drives: Low level (the
-drive's own firmware) or Protocol model for the 2101 box and the 2102. The
-status bar shows LL or P beside each drive.
+checksum, under the names the emulator looks for.
+- Setup page, GPIB devices: one card per unit on the Compass's GPIB bus (2101
+Disc System, 2102 Floppy, PC folder drive), "+ Add device" for more. Each
+card has an on/off box (off: left out of the machine for now, settings
+kept), its GPIB address with GRiD-OS's name for it (4 Hard Disk + 5 Floppy
+Disk, 12 Extra Hard Disk + 13 Extra Floppy Disk, 6 Portable Floppy...), Low
+level (the unit's own firmware) or Protocol model, an optional firmware file
+of its own, and its disks, each with a Write protect box. Two 2101 boxes can
+each have their own level. A floppy drive with no disk is still there, so
+GRiD-OS lists it and sees a disk inserted later. The status bar names each
+drive by its GRiD-OS name and shows LL or P beside it (WP when protected).
+- Write protect, per drive (setup page, Media menu, media manager, also while
+running): a protected floppy acts like one with its write-protect tab on,
+GRiD can read it but its writes fail (error 106); a protected hard disk or
+PC folder takes GRiD's writes but they are never saved. The bubble has its
+own Write protect box. --readonly protects everything.
 - Help > Keyboard map: which PC key is which Compass key.
 - Debug: the debugger workspace (see Demo tools) and a Chips window
 (8259 interrupt controller, 80130 timers, GPIB drives with a traffic trace,
@@ -82,7 +100,12 @@ plain window of 0.4 opens instead; --classic asks for it on purpose.
 
 ## Using it
 
-The PC keys map to the Compass keys by position. Alt = CODE, Ctrl = CTRL.
+The PC keys go by the letter printed on them, so any layout (AZERTY,
+QWERTZ...) types what its keys say: letters by their letter, digits and
+punctuation by the character they type (AZERTY's & key types 1 only with
+Shift, as printed). View > PC keys > By position (US layout) puts every key
+back where it sits on a US keyboard. Alt = CODE, Ctrl = CTRL; with Ctrl or
+Alt held, digits and punctuation go by position.
 Quick taps are held at least 60 ms so the keyboard chip always sees them.
 The Compass keyboard takes at most 2 letter keys at once (3 freeze it, as on
 the real machine), so release keys when typing fast.
@@ -99,8 +122,11 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
             [--folder DIR] [--rom0 chip.bin .. --rom3 chip.bin]
             [--bubble bubble.img] [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
             [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p] [--mute]
+            [--modem-dial NUMBER=HOST:PORT]... [--modem-listen tcp:PORT]
+            [--modem-answer-300] [--rom-modem F] [--no-modem]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-            [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
+            [--scale 1|2|4] [--overlay] [--fast] [--fpu-rom F] [--fpu-table]
+            [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]...
             [--classic] [--symbols DIR] [--no-catch]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
            1129 (512K), 1131 (256K) and 1139 (512K) the Compass II split board;
@@ -108,11 +134,20 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            GRiD-OS, the others the 11xx build.
 --prom     boot PROM as one 16K file (even/odd bytes interleaved), e.g. a dump
            from your own machine.
---folder   a folder on the PC as the GRiD "Floppy Disk" (see PC folder below).
+--folder   a folder on the PC as a GRiD drive (see PC folder below): the "Extra
+           Floppy Disk" (13) next to a 2101, else the "Floppy Disk" (5);
+           --folder-addr 5|6|13 picks the address.
+--gpib     one GPIB unit, as on the setup page (repeat for more; instead of
+           --hd, --flop, --flop2101 and --folder): 2101, 2102 or folder, then
+           addr=N (2101: 4 or 12, its floppy is at N+1), hd=, disk=, folder=,
+           rom= (its own firmware), protocol, protect-hd, protect-disk (write
+           protect), off. --bubble-protect: never save the bubble. Example: --gpib
+           "2101|addr=4|hd=disk.img" --gpib "2101|addr=12|hd=old.img|protocol".
 --rom0 .. --rom3  a chip in application ROM socket 0-3 (Compass II models;
            see Application ROMs below).
---bubble   384K bubble image; made blank if the file doesn't exist (format it
-           with Initialize Media). Saved on exit like the disks.
+--bubble   bubble image: raw 7220/7110 contents, 128 KB per module (384K on a
+           1101); made blank if the file doesn't exist (format it with
+           Initialize Media). Saved on exit like the disks.
 --serial   the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a
            terminal such as PuTTY in "Raw" mode), or a real PC
            port like COM3 (the bit rate follows what the GRiD program sets).
@@ -120,13 +155,21 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
            waits on 127.0.0.1:2400 for a GRiDLink server program, connect:HOST:PORT
            connects to one. See GRiDLink below.
 --gridlink-p2p  point-to-point GRiDLink cable (RTS looped to CTS); default multidrop.
+--modem-dial  internal modem phone book entry: NUMBER=HOST:PORT, the address a
+           dialed number reaches (repeat it, or separate entries with commas;
+           *=HOST:PORT for any other number). See The internal modem below.
+--modem-listen  tcp:2400 (or tcp:0.0.0.0:2400 for other PCs): a TCP connection
+           to that port rings the Compass's modem.
+--modem-answer-300  a caller the Compass answers connects at 300 baud (default 1200).
+--rom-modem F  the modem's 8749 firmware, another file than roms\16020-007.bin.
+--no-modem  leave the modem's microcontroller out even with its firmware there.
 --mute     no sound.
 --fast     start with the fast CPU core (whole instructions, approximate timing).
---fpu-micro  run the 8087 on its own microcode ROM, a file you supply (see
-           docs/8087-microcode.md): 8087mc.txt or 8087mc.bin in the ROM folder,
-           else I8087_MICROCODE or roms\. Without the ROM the instruction-level
-           8087 runs. Also on the setup page (Computer, 8087).
---fpu-rom F  the same, with that microcode ROM file.
+--fpu-rom F  the 8087's microcode ROM file. The 8087 runs on its own microcode
+           when you supply that ROM (see "The 8087 microcode ROM" below);
+           without this option the emulator looks for 8087mc.txt or 8087mc.bin
+           in the ROM folder. With no ROM file the instruction-level 8087 runs.
+--fpu-table  keep the instruction-level 8087 even when the ROM file is there.
 --rom-2102 F, --rom-2101 F (20 MB box), --rom-2101-10 F (10 MB box)
            drive firmware files other than the ones in the ROM folder.
 --2101-protocol, --2102-protocol  the protocol model for that drive even when
@@ -146,11 +189,14 @@ The 1101 boots the later rev 4 PROM (1101even/odd.rev4.bin, in MAME's grid1101.z
 when it is there, else rev 3.
 Keyboard: roms\300067-01.bin (split board models use roms\300001-02.bin when present).
 2102 floppy: roms\300237-02.bin (or 300237-01.bin), the 2102's own firmware. Not in
-the MAME sets: import a dump on the setup page. With it the 2102 runs low-level (see CHANGELOG.md, 0.7.0);
+the MAME sets: copy it in by hand. With it the 2102 runs low-level (see CHANGELOG.md, 0.7.0);
 without it the protocol model answers as before.
 2101 hard disk: roms\300205-05.bin (20 MB box) and/or roms\300205-06.bin (10 MB
 box), the 2101's own firmware. With it the 2101 runs low-level (see CHANGELOG.md,
 0.8.0); without it the protocol model answers as before.
+Internal modem: roms\16020-007.bin, the modem's 8749 firmware (2 KB). Not in the
+MAME sets: copy it in by hand (Import ROMs... finds it under any name). Without
+it the modem has no microcontroller and Modem~Device~ can't start.
 ```
 
 ## Build in the window
@@ -212,6 +258,23 @@ Programs). With a bootable ROM (CCOS) in a socket the PROM starts GRiD-OS
 from that ROM, even with a hard disk (the PROM decides that), and it needs no
 disk at all.
 The setup page has a field for each socket.
+
+## The 8087 microcode ROM
+
+The 8087 can run on the real chip's own microcode. Its results then match a
+real 8087 almost bit for bit (1554 of 1588 lines of 8087 Bench on a real 1101
+and 1137), and its instruction times are about 2% off on average. Without the
+ROM an instruction-level 8087 runs: same answers for ordinary arithmetic, less
+exact in the corner cases and in timing.
+The ROM is not part of Compass-Emu; you supply the file. It is the dump named
+8087mc.txt (1648 lines of the letters A to P) from tools/8087mc/bin in
+github.com/a-mcego/granite. Save it as roms\8087mc.txt (the ROM folder of the
+profile), or pick the file on the setup page (ROMs, "8087 microcode"). The
+setup page shows whether the file was found, and the status bar says "8087
+microcode" when the 8087 runs on it. Nothing else to switch on.
+To compare, Computer > 8087 on the setup page (or --fpu-table, or Machine >
+8087 on its microcode ROM while running) keeps the instruction-level 8087.
+More in docs/8087-microcode.md.
 
 ## Demo tools
 
@@ -309,6 +372,71 @@ included yet. Without a server the Compass's GRiDLink~Device~ just waits
 for the server's poll. The machine setup page has the same two settings.
 Keep the emulator at real speed while linked: GRiDLink's timeouts run in
 emulated time, and turbo shortens them for the program at the other end.
+
+## The internal modem
+
+Every model except the 1137 has an internal modem (300 and 1200 baud). The
+emulator runs the modem's own firmware, so GRiDTerm, PhoneLink and other
+programs that use Modem~Device~ dial, answer and connect as on a real Compass.
+The phone line is TCP: a number the Compass dials connects to an address on
+the PC or the network, and a connection to a port on this PC rings the
+Compass. Once the modems have connected, the connection carries the plain
+data bytes both ways, nothing added.
+
+1. Put the modem firmware in the roms folder as 16020-007.bin (or use
+Import ROMs... on the setup page). The ROMs card shows "Internal modem
+(8749)" with the file it found.
+2. Machine setup, Serial and sound card, "Internal modem phone line":
+- Phone book: which address each number reaches, for example
+```
+     5551234=127.0.0.1:2400, *=myserver.example:2400
+ * stands for any number not listed. A number written as an address
+ with * between the parts dials it directly: 127*0*0*1*2400 reaches
+ 127.0.0.1:2400. Spaces and dashes in numbers don't matter.
+```
+- Incoming calls: tcp:2400 makes a connection to port 2400 on this PC
+```
+ ring the Compass (tcp:0.0.0.0:2400 lets other PCs call too).
+```
+- "Callers connect at 300 baud": the speed of a caller the Compass
+```
+ answers (else 1200).
+```
+On the command line: --modem-dial 5551234=127.0.0.1:2400 --modem-listen tcp:2400
+3. Something has to answer at the other end: your own server program (it
+only has to accept TCP connections and send and receive bytes), another
+Compass-Emu (below), or for a first test a terminal program such as
+PuTTY waiting for a "Raw" connection on that port.
+
+Calling out with GRiDTerm: start GRiDTerm (Programs, GRiDTerm, kind Run
+Terminal), type the phone number in the form and confirm with CODE-RETURN
+(Alt+Enter). You hear the touch-tone digits; the call goes out when the
+modem starts its connect handshake, so the far end sees the connection a
+moment after the last digit. The far modem answers at the speed GRiDTerm
+asked for (Baud rate 300 or 1200 in the form), and after a few seconds
+GRiDTerm is online. Pulse dialing works too. Closing the connection at the
+far end is a hang-up: the Compass reports carrier lost after the modem's own
+carrier-loss delay (a fraction of a second with GRiD-OS's setting). Hanging up on the Compass closes the
+connection.
+
+Calling the Compass: connect to the listen port. The Compass rings (2 s on,
+4 s off) until a program answers; while it rings the modem takes a moment
+to go off-hook (it waits for the ring burst to end, as the real one does).
+Bytes sent before the answer wait until the modems have connected. A second
+caller while the line is in use is turned away (the connection closes).
+
+Two Compasses through the modem: give one --modem-listen tcp:2400 and the
+other --modem-dial *=127.0.0.1:2400 (separate disk images), then dial any
+number on the second one and answer on the first.
+
+Good to know:
+- Data bits and parity: the far end is set to 8 data bits, no parity. When
+the Compass program uses 7 bits with parity (GRiDTerm's default), the far
+end gets the parity bit as bit 7 of each byte, as a real terminal set to
+8N1 would; strip it there if needed.
+- Keep turbo off during calls: the modems' timing runs in emulated time.
+- The modem's speed is real: 300 or 1200 baud, so 30 or 120 bytes a second.
+- docs\modem.md (in the source) has how it works inside and the tests.
 
 ## Two Compasses on a null-modem cable
 

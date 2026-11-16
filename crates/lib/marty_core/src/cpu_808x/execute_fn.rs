@@ -964,9 +964,18 @@ impl Intel808x {
         if extra > 0 {
             self.cycles(extra);
         }
-        while (self.bus.coprocessor_busy(self.cycle_num) || self.cycle_num - start < min) && guard < 2_000_000 {
+        // No 8087 instruction is busy for 4096 polls; only a BUSY held for good gets there
+        // (an unmasked 8087 exception nobody cleared). The 8086 then stays in the WAIT: it
+        // takes interrupts there and returns to it, so the instruction starts over.
+        const POLLS: u32 = 4096;
+        while (self.bus.coprocessor_busy(self.cycle_num) || self.cycle_num - start < min) && guard < POLLS {
             cycles!(self, 5);
             guard += 1;
+        }
+        if guard == POLLS && self.bus.coprocessor_busy(self.cycle_num) {
+            self.biu_fetch_suspend();
+            self.pc = self.instruction_ip;
+            self.biu_queue_flush();
         }
     }
     

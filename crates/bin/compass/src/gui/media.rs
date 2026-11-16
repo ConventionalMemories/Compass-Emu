@@ -116,12 +116,14 @@ impl MediaPage {
     }
 }
 
-fn drive_name(kind: DriveKind) -> &'static str {
-    match kind {
+fn drive_name(d: &grid_core::gpib::Drive) -> String {
+    let a = d.address();
+    let unit = match d.kind {
         DriveKind::Hdd2101 => "2101 hard disk",
         DriveKind::Floppy2101 => "2101 floppy",
         DriveKind::Floppy2102 => "2102 floppy",
-    }
+    };
+    format!("{a} {} ({unit})", crate::session::grid_name(a))
 }
 
 pub fn window(app: &mut App, ctx: &egui::Context) {
@@ -147,7 +149,8 @@ fn drives(app: &mut App, ui: &mut egui::Ui) {
                 let kind = d.kind;
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(drive_name(kind)).strong());
+                    let folder = matches!(s.media[i], Media::Folder(_));
+                    ui.label(RichText::new(if folder { format!("{} {} (PC folder)", d.address(), crate::session::grid_name(d.address())) } else { drive_name(d) }).strong());
                     let what = match &s.media[i] {
                         Media::Image(p) => p.display().to_string(),
                         Media::Folder(p) => format!("PC folder {} (written back when you quit)", p.display()),
@@ -159,13 +162,21 @@ fn drives(app: &mut App, ui: &mut egui::Ui) {
                         ui.label(RichText::new(format!("{} KB, {} volume(s){}", d.image.len() / 1024, vols.len(), if d.dirty { ", changed" } else { "" })).weak());
                     }
                     ui.horizontal_wrapped(|ui| {
-                        if kind != DriveKind::Hdd2101 {
+                        if kind != DriveKind::Hdd2101 && !folder {
                             if ui.button("Insert...").clicked() {
-                                action = Some(Box::new(move |app: &mut App| app_pick(app, kind)));
+                                action = Some(Box::new(move |app: &mut App| app.pick_floppy(i)));
                             }
                             if !d.image.is_empty() && ui.button("Take out").clicked() {
-                                action = Some(Box::new(move |app: &mut App| app.insert_floppy(kind, None)));
+                                action = Some(Box::new(move |app: &mut App| app.insert_at(i, None)));
                             }
+                        }
+                        let mut wp = s.protected(i);
+                        if ui.checkbox(&mut wp, "Write protect").on_hover_text("floppy: the write-protect tab (GRiD gets error 106); hard disk and PC folder: changes are not saved").changed() {
+                            action = Some(Box::new(move |app: &mut App| {
+                                if let Some(s) = &mut app.sess {
+                                    s.set_protected(i, wp);
+                                }
+                            }));
                         }
                         if d.dirty && ui.button("Write back").clicked() {
                             action = Some(Box::new(move |app: &mut App| {
@@ -181,11 +192,6 @@ fn drives(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 });
-            }
-            if !s.m.board().gpib.drives.iter().any(|d| d.kind == DriveKind::Floppy2102) {
-                if ui.button("Insert a 2102 floppy...").clicked() {
-                    action = Some(Box::new(|app: &mut App| app_pick(app, DriveKind::Floppy2102)));
-                }
             }
             ui.add_space(6.0);
             let roms: Vec<String> = s.cfg.roms.iter().enumerate().filter(|(_, r)| !r.is_empty()).map(|(i, r)| format!("socket {i}: {r}")).collect();
@@ -208,20 +214,20 @@ fn drives(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn app_pick(app: &mut App, kind: DriveKind) {
-    match rfd::FileDialog::new().add_filter("GRiD floppy image", &["img", "IMG"]).pick_file() {
-        Some(p) => app.insert_floppy(kind, Some(p)),
-        None => app.resync(),
-    }
-}
-
 fn browser(app: &mut App, ui: &mut egui::Ui) {
     let mp = &mut app.media;
     ui.horizontal_wrapped(|ui| {
         if ui.button("Open disk image...").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("GRiD disk image", &["img", "IMG"]).pick_file() {
-                match std::fs::read(&p) {
-                    Ok(img) => mp.open(Source::File(p), img),
+            if let Some(p) = rfd::FileDialog::new().add_filter("GRiD disk image", &["img", "IMG", "imd", "IMD"]).pick_file() {
+                // an .IMD is used through the .img beside it (made from it if missing)
+                let r = crate::imd::floppy_path(&p).and_then(|(p, note)| std::fs::read(&p).map(|img| (p, img, note)).map_err(|e| e.to_string()));
+                match r {
+                    Ok((p, img, note)) => {
+                        mp.open(Source::File(p), img);
+                        if note.is_some() {
+                            mp.message = note;
+                        }
+                    }
                     Err(e) => mp.message = Some(format!("{}: {e}", p.display())),
                 }
             }

@@ -32,9 +32,10 @@
 //!   --scale N                    window scale 1, 2 or 4 (default 4)
 //!   --overlay                    start with the demo tools overlay on (F10)
 //!   --fast                       fast CPU core (whole instructions, approximate timing)
-//!   --fpu-micro                  8087 on its own microcode ROM (you supply it; see
-//!                                docs/8087-microcode.md): 8087mc.txt or .bin in the ROM folder
-//!   --fpu-rom F                  the same, with that microcode ROM file
+//!   --fpu-rom F                  the 8087's microcode ROM file (you supply it; see
+//!                                docs/8087-microcode.md). Without it: 8087mc.txt or .bin in
+//!                                the ROM folder. With the ROM the 8087 runs on its microcode.
+//!   --fpu-table                  keep the instruction-level 8087 (--fpu-micro: the default)
 //!   --rom-2102 F                 2102 floppy firmware (default 300237-02.bin in the ROM folder)
 //!   --rom-2101 F / --rom-2101-10 F  2101 firmware for the 20 MB / 10 MB box (300205-05/-06.bin)
 //!   --2102-protocol / --2101-protocol  that drive answers from the protocol model (no firmware)
@@ -78,7 +79,7 @@ pub const VERSION: &str = "0.12.0";
 
 fn usage() -> ! {
     eprintln!(
-        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--modem-listen tcp:PORT] [--modem-dial NUMBER=HOST:PORT] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]... [--bubble-protect] [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
+        "Compass-Emu {VERSION}\nusage: compass [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop floppy.img] [--flop2101 floppy.img] [--folder DIR] [--rom0..3 chip.bin] [--bubble bubble.img]\n       [--serial tcp:PORT|connect:[HOST:]PORT|COMn] [--gridlink tcp:PORT|connect:[HOST:]PORT] [--gridlink-p2p] [--modem-listen tcp:PORT] [--modem-dial NUMBER=HOST:PORT] [--mute] [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly] [--scale N] [--overlay] [--fast] [--fpu-rom F] [--fpu-table] [--classic]\n       [--rom-2102 F] [--rom-2101 F] [--rom-2101-10 F] [--2102-protocol] [--2101-protocol]\n       [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]... [--bubble-protect] [--folder-addr 5|6|13]\n       [--symbols DIR] [--no-catch]\nROM defaults are looked for in a roms folder next to the program.\nWithout machine options the window opens at the machine setup screen.\n       compass build PROJECTFOLDER --disk DEVDISK.img [--roms DIR] [--debug]   (build a GRiD program, as Project > Build)\n       compass import-roms FOLDER|ZIP [ROMDIR]   (copy the Compass ROMs found there into ROMDIR)\n       compass do [--model M] --hd disk.img [--shot F] [--max-seconds N] \"Do build\"   (headless, see headless.rs)"
     );
     std::process::exit(1)
 }
@@ -209,7 +210,8 @@ fn main() {
             "--rom-modem" => cfg.rom_modem = val(),
             "--mute" => cfg.mute = true,
             "--fast" => cfg.fast = true,
-            "--fpu-micro" => cfg.fpu_micro = true,
+            "--fpu-micro" => cfg.fpu_table = false,
+            "--fpu-table" => cfg.fpu_table = true,
             "--rom-2102" => cfg.rom_2102 = val(),
             "--rom-2101" => cfg.rom_2101_20 = val(),
             "--rom-2101-10" => cfg.rom_2101_10 = val(),
@@ -225,7 +227,7 @@ fn main() {
             "--folder-addr" => cfg.folder_addr = val().parse().unwrap_or_else(|_| usage()),
             "--fpu-rom" => {
                 cfg.fpu_rom = val();
-                cfg.fpu_micro = true;
+                cfg.fpu_table = false;
             }
             "--symbols" => cfg.symbols = val(),
             "--no-catch" => cfg.no_catch = true,

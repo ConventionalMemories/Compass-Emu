@@ -4,6 +4,36 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
 
 ## Unreleased
 
+- The 8087 runs on its microcode whenever the ROM file is there (8087mc.txt in the ROM
+  folder, or the file named on the setup page or with --fpu-rom); no switch needed. The
+  setup page's 8087 box and --fpu-table keep the instruction-level 8087. Without the file
+  nothing changes. Profiles saved by 0.11.0 follow the new default.
+- Microcode 8087 timing fitted by operand: the cost model counts FPREM's and the
+  transcendentals' loop steps and how far the shifts move, and the fit no longer lets a
+  few odd tests steer it. Mean error against the real 1101 over 2068 timed tests 1.45 %
+  (was 1.7 % after the refresh change below).
+- Microcode 8087: the register loops of FSAVE and FRSTOR run from the ROM too. Same
+  results and times as before.
+- The user guide says what the microcode ROM is, where the file goes and how to switch.
+- Microcode 8087 timing fitted by operand: the cost model counts FPREM's and the
+  transcendentals' loop steps and how far the shifts move, and the fit no longer lets a
+  few odd tests steer it. Mean error against the real 1101 over 2068 timed tests 1.45 %
+  (was 1.7 % after the refresh change below).
+- Microcode 8087: the register loops of FSAVE and FRSTOR run from the ROM too. Same
+  results and times as before.
+- The user guide says what the microcode ROM is, where the file goes and how to switch.
+- 8087 Bench 0.0.5's third program (1584 tests on the transcendentals' constant ROM) is in
+  `testdata/bench-table.txt`; `probe_uses` and `probe_sensitivity` show which constants
+  each test leans on. The constants get fitted once a real machine has run it.
+- A WAIT hangs like the real machine while the 8087 holds BUSY for an unmasked exception
+  nobody clears (it gave up after a guard count before). The 8086 stays in the WAIT and
+  still takes interrupts. 8087 Bench 0.0.3's risky part now stops at y005 in the emulator
+  as on the real 1101.
+- Microcode 8087: FLDCW, FSTCW, FSTSW, FSTENV, FLDENV, FSAVE, FRSTOR and FNOP take the
+  real 1101's time within about 1.5 clocks (were 3 to 10 off). Timing checked against the
+  real 1137 too: 2.3 % mean error, the 1101 2.0 %.
+- 8087 registers hold a real 1101's power-on pattern instead of zeros: FXAM of an empty
+  register answers 4700 as on the real machines.
 - Internal modem (0.12.0): the modem board's 8749 runs GRiD's own firmware (16020-007.bin
   in the ROM folder; Import ROMs knows it), so `Modem~Device~`, GRiDTerm and PhoneLink work.
   The MCS-48 core has an 8048/8749 mode (128 bytes RAM, MOVX/INS/OUTL BUS, JNI, SEL MB,
@@ -53,6 +83,22 @@ Compass-Emu versions (newest first). MartyPC's own changelog is in [MARTYPC-CHAN
   exactly rounded, FPREM's loop and quotient bits, FBSTP rounding, NaN and denormal
   loads, FXTRACT and FSCALE special cases; list in docs/8087-microcode.md).
 
+## 0.12.0
+
+The internal modem works. The modem's 8749 microcontroller runs GRiD's own
+firmware (roms\16020-007.bin, copy it in by hand or with Import ROMs...), so
+GRiDTerm, PhoneLink and Modem~Device~ dial, answer and connect at 300 and
+1200 baud. The phone line is TCP: a phone book says which address each
+number reaches (--modem-dial NUMBER=HOST:PORT, * = any number) and a listen
+port makes incoming connections ring the Compass (--modem-listen tcp:PORT);
+the same settings are on the setup page (Serial and sound) and the ROMs card.
+See The internal modem above.
+The 8087 runs on its own microcode whenever its ROM file is there (8087mc.txt
+in the ROM folder, or the file named on the setup page or with --fpu-rom); no
+switch needed. The setup page's 8087 box and --fpu-table keep the
+instruction-level 8087. Without the file nothing changes. See The 8087
+microcode ROM above.
+
 ## 0.11.0
 
 GUI for everyday use:
@@ -69,9 +115,9 @@ GUI for everyday use:
   beside the disk fields on the setup page (the last 8 floppies and hard disks).
 - ImageDisk .IMD floppies: used through the .img beside them, made from the
   .IMD when it is missing (GRiD 2102 and IBM sector numbering).
-- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-micro,
-  --fpu-rom) runs the 8087 on its own microcode ROM, which you supply; the
-  setup page says which ROM file it found (docs/8087-microcode.md).
+- 8087 core per machine: Computer > 8087 on the setup page (and --fpu-rom)
+  runs the 8087 on its own microcode ROM, which you supply; the setup page
+  says which ROM file it found (docs/8087-microcode.md).
 - Help > Keyboard map lists every Compass key and its PC key, and the
   emulator keys.
 
@@ -173,7 +219,7 @@ Extras:
 
 Each model now has the hardware its real boards carry (from photos of 1101,
 1121, 1137 and 1139 motherboards):
-- New model 1137 (`--model 1137`, Kurt's machine): 113x board with 512K and the
+- New model 1137 (`--model 1137`, the project's own machine): 113x board with 512K and the
   large screen, the 1139 PROM (as on the real 1137) and the 300001-02 keyboard
   firmware dumped from it. No modem: the 8255 at DFEC0 is missing, so
   Modem~Device~ finds no modem as on the real machine. Its sound DACs and DTMF

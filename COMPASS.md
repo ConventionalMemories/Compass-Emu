@@ -242,13 +242,13 @@ Models: 1101, 1109, 1121, 1129, 1131, 1137 and 1139 (`--model`).
   | 1121 | split | 256K | 320 x 240 | 80130 | real 1101 | modem | 1129 (same PROM; if missing, 1101) | 300067-01 |
   | 1129 | split | 512K | 320 x 240 | 80130 | real 1101 | modem | 1129 (if missing, 1101) | 300067-01 |
   | 1131 | split | 256K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 (same PROM) | 300067-01 |
-  | 1137 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | motherboard, no modem | 1139 (same PROM, as on Kurt's 1137) | 300001-02 |
+  | 1137 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | motherboard, no modem | 1139 (same PROM, as on C.M._'s 1137) | 300001-02 |
   | 1139 | split | 512K | 512 x 256 | 8254 + 8259A | real 1137 | modem | 1139 | 300067-01 |
 
   The 112x carry the 1101's 80130 and the 300063-00 gate array of the later 1101 boards, so
   they take the 1101's timers, interrupts and RAM/display timing, with the Compass II ROM
   sockets, PROM and plug-in bubble board. The 113x share the 1137's 300415-00 gate array
-  and 8254, so they take the timing fitted to Kurt's real 1137. Each keyboard firmware
+  and 8254, so they take the timing fitted to the project's real 1137. Each keyboard firmware
   stands in for the other when missing (the early 1101's 300027-01 is not dumped).
 
   Split board (Compass II): GPIB pseudo-DMA window at DFA00h, video/memory control at

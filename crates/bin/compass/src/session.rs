@@ -74,9 +74,9 @@ pub struct MachineConfig {
     pub symbols: String,
     /// Crash catcher off (it is on unless this is set).
     pub no_catch: bool,
-    /// Run the 8087 on its own microcode ROM (supplied by the user) instead of the
-    /// instruction-level model.
-    pub fpu_micro: bool,
+    /// Keep the instruction-level 8087 even when the microcode ROM is there. Off (the
+    /// default): the 8087 runs on its own microcode ROM when the user has supplied one.
+    pub fpu_table: bool,
     /// The 8087 microcode ROM file ("" = I8087_MICROCODE, else 8087mc.txt or 8087mc.bin in
     /// the ROM folder or in roms/).
     pub fpu_rom: String,
@@ -419,8 +419,8 @@ impl MachineConfig {
         if self.fast {
             a.push("--fast".into());
         }
-        if self.fpu_micro && self.fpu_rom.trim().is_empty() {
-            a.push("--fpu-micro".into());
+        if self.fpu_table {
+            a.push("--fpu-table".into());
         }
         let mut opt = |flag: &str, v: &str| {
             if !v.trim().is_empty() {
@@ -429,7 +429,7 @@ impl MachineConfig {
             }
         };
         opt("--symbols", &self.symbols);
-        if self.fpu_micro {
+        if !self.fpu_table {
             opt("--fpu-rom", &self.fpu_rom);
         }
         opt("--rom-2102", &self.rom_2102);
@@ -508,7 +508,7 @@ fn read(path: &Path, what: &str) -> Result<Vec<u8>, String> {
 /// With the microcode 8087 picked: Some(the ROM file to name, or None to leave
 /// I8087_MICROCODE and roms/ to the 8087 itself). None: the instruction-level 8087.
 pub fn fpu_microcode(cfg: &MachineConfig, rom_dir: &Path) -> Option<Option<PathBuf>> {
-    if !cfg.fpu_micro {
+    if cfg.fpu_table {
         return None;
     }
     if let Some(p) = some(&cfg.fpu_rom) {
@@ -557,15 +557,19 @@ impl Session {
             Some(v) => std::env::set_var("I8087_MICROCODE", v),
             None => std::env::remove_var("I8087_MICROCODE"),
         }
-        match fpu_microcode(cfg, &cfg.rom_dir(default_roms)) {
+        // FPU_CORE=table in the user's environment keeps the instruction-level 8087 too.
+        static USER_CORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let user_table = *USER_CORE.get_or_init(|| std::env::var("FPU_CORE").is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "table" | "old" | "instruction")));
+        match fpu_microcode(cfg, &cfg.rom_dir(default_roms)).filter(|_| !user_table) {
             Some(rom) => {
                 std::env::set_var("FPU_CORE", "micro");
-                match rom {
-                    Some(rom) => std::env::set_var("I8087_MICROCODE", rom),
-                    None => notes.push("8087 microcode: no ROM file named or found in the ROM folder; looking in roms/ (see docs/8087-microcode.md)".into()),
+                // no file named or in the ROM folder: the 8087 looks in roms/ itself and
+                // runs the instruction-level core when there is none
+                if let Some(rom) = rom {
+                    std::env::set_var("I8087_MICROCODE", rom);
                 }
             }
-            None => std::env::remove_var("FPU_CORE"),
+            None => std::env::set_var("FPU_CORE", "table"),
         }
         let mut m = GridMachine::new(model, &even, &odd);
         m.board_mut().e0000_dma =
@@ -943,16 +947,16 @@ impl Session {
     pub fn set_fpu_micro(&mut self, on: bool, default_roms: &Path) -> Result<String, String> {
         if !on {
             self.m.set_fpu_microcode(None);
-            self.cfg.fpu_micro = false;
+            self.cfg.fpu_table = true;
             return Ok("8087: instruction-level core".into());
         }
-        let probe = MachineConfig { fpu_micro: true, ..self.cfg.clone() };
+        let probe = MachineConfig { fpu_table: false, ..self.cfg.clone() };
         let rom = match fpu_microcode(&probe, &self.cfg.rom_dir(default_roms)) {
             Some(Some(p)) => i8087::micro::MicroRom::load(&p)?,
             _ => i8087::micro::MicroRom::find().ok_or("8087 microcode: no ROM file (8087mc.txt in the ROM folder, or Machine setup > ROMs)")?,
         };
         self.m.set_fpu_microcode(Some(rom));
-        self.cfg.fpu_micro = true;
+        self.cfg.fpu_table = false;
         Ok("8087: running on the microcode ROM".into())
     }
 

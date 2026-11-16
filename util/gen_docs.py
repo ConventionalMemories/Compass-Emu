@@ -1,5 +1,5 @@
 """Make CHANGELOG.md and docs/user-guide.md from dist/windows/README.txt (the text that
-ships in the Windows zip). Run from the repository root after editing README.txt."""
+ships in the Windows zip). CHANGELOG.md's "## Unreleased" section is hand-written and kept. Run from the repository root after editing README.txt."""
 import re
 
 lines = open('dist/windows/README.txt').read().split('\n')
@@ -16,6 +16,11 @@ for l in notes:
         out += ['## Not there yet', '']
     else:
         out.append(l[2:] if l.startswith('  ') else l)
+# the Unreleased section is written by hand in CHANGELOG.md: keep it
+old = open('CHANGELOG.md').read()
+m = re.search(r'^## Unreleased\n.*?(?=^## )', old, re.S | re.M)
+if m and '## Unreleased' not in out:
+    out[4:4] = m.group(0).rstrip('\n').split('\n') + ['']
 open('CHANGELOG.md', 'w').write('\n'.join(out).rstrip() + '\n')
 
 g = '# Compass-Emu user guide\n\nThe same text ships as README.txt in the Windows zip.\n'

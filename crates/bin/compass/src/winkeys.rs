@@ -6,7 +6,7 @@
 //! Alt+Space (window menu) while the emulator has focus; those keys then go to the Compass
 //! as CODE-Esc and CODE-Space. Alt+Tab and Alt+F4 still work.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 type Hwnd = *mut core::ffi::c_void;
 
@@ -18,11 +18,28 @@ extern "system" {
     fn GetForegroundWindow() -> Hwnd;
     fn SetWindowsHookExW(id: i32, proc_: usize, hmod: Hwnd, thread: u32) -> Hwnd;
     fn CallNextHookEx(hook: Hwnd, code: i32, wparam: usize, lparam: isize) -> isize;
+    fn GetMessageW(msg: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
+    fn RegisterHotKey(hwnd: Hwnd, id: i32, mods: u32, vk: u32) -> i32;
+    fn UnregisterHotKey(hwnd: Hwnd, id: i32) -> i32;
+    fn SetTimer(hwnd: Hwnd, id: usize, ms: u32, func: usize) -> usize;
+}
+
+/// MSG, only as a buffer for GetMessageW.
+#[repr(C)]
+struct Msg {
+    hwnd: Hwnd,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    time: u32,
+    pt: [i32; 2],
+    private: u32,
 }
 
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Hwnd;
+    fn GetLastError() -> u32;
 }
 
 const WH_KEYBOARD_LL: i32 = 13;
@@ -47,6 +64,11 @@ static SPACE: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)]
 unsafe extern "system" fn kbd_hook(code: i32, wparam: usize, lparam: isize) -> isize {
     if code == 0 && lparam != 0 {
         let k = &*(lparam as *const KbdLl);
+        HOOK_KEYS.fetch_add(1, Ordering::Relaxed);
+        if k.vk == VK_ESCAPE && wparam != 0x101 && wparam != 0x105 {
+            // what the hook saw of the last Esc press, for Help > Keyboard map
+            HOOK_ESC.store((k.flags as usize) << 16 | wparam << 1 | focused() as usize, Ordering::Relaxed);
+        }
         let st = match k.vk {
             VK_ESCAPE => Some(&ESC),
             VK_SPACE => Some(&SPACE),
@@ -60,6 +82,7 @@ unsafe extern "system" fn kbd_hook(code: i32, wparam: usize, lparam: isize) -> i
                 st[0].store(!up, Ordering::Relaxed);
                 if !up {
                     st[1].store(true, Ordering::Relaxed);
+                    CAUGHT_HOOK.fetch_add(1, Ordering::Relaxed);
                 }
                 return 1;
             }
@@ -72,12 +95,46 @@ const GWLP_WNDPROC: i32 = -4;
 const WM_SYSCOMMAND: u32 = 0x0112;
 const WM_SYSCHAR: u32 = 0x0106;
 const SC_KEYMENU: usize = 0xF100;
+const SC_NEXTWINDOW: usize = 0xF040;
+const SC_PREVWINDOW: usize = 0xF050;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
+
+/// What the keyboard help managed to set up (Help > Keyboard map shows it).
+static HOOK_OK: AtomicBool = AtomicBool::new(false);
+static HOOK_ERR: AtomicUsize = AtomicUsize::new(0);
+static SUBCLASS_OK: AtomicBool = AtomicBool::new(false);
+/// How often each guard kept Alt+Esc from Windows: the hook, the window's own keys.
+static CAUGHT_HOOK: AtomicUsize = AtomicUsize::new(0);
+static CAUGHT_WINDOW: AtomicUsize = AtomicUsize::new(0);
+static CAUGHT_HOTKEY: AtomicUsize = AtomicUsize::new(0);
+/// Keys the hook saw at all, and the last Esc press it saw: flags << 16 | message << 1 | focused.
+static HOOK_KEYS: AtomicUsize = AtomicUsize::new(0);
+static HOOK_ESC: AtomicUsize = AtomicUsize::new(0);
+/// System keys (WM_SYSKEYDOWN) that reached the window.
+static WINDOW_SYSKEYS: AtomicUsize = AtomicUsize::new(0);
+/// Alt+Esc registered as this program's hot key (while the window has focus).
+static HOTKEY_ON: AtomicBool = AtomicBool::new(false);
 
 static OLD_PROC: AtomicIsize = AtomicIsize::new(0);
-static mut HWND_MAIN: usize = 0;
+static HWND_MAIN: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
-    if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU {
+    if msg == WM_SYSCOMMAND && matches!(wparam & 0xFFF0, SC_KEYMENU | SC_NEXTWINDOW | SC_PREVWINDOW) {
+        // (Alt+Esc reaches Windows as "next window" through the window's default handling
+        // when the hook did not get to it first)
+        return 0;
+    }
+    if msg == WM_SYSKEYDOWN {
+        WINDOW_SYSKEYS.fetch_add(1, Ordering::Relaxed);
+    }
+    if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && wparam == VK_ESCAPE as usize {
+        // Alt+Esc as a key for this window: keep it from the default handling (which would
+        // switch windows) and give it to the Compass as CODE-Esc.
+        if msg == WM_SYSKEYDOWN {
+            ESC[1].store(true, Ordering::Relaxed);
+            CAUGHT_WINDOW.fetch_add(1, Ordering::Relaxed);
+        }
         return 0;
     }
     if msg == WM_SYSCHAR {
@@ -88,16 +145,61 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
 
 pub fn install(hwnd: *mut core::ffi::c_void) {
     unsafe {
-        HWND_MAIN = hwnd as usize;
-        let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
-        OLD_PROC.store(old, Ordering::Relaxed);
-        // (runs on this thread's message loop, which minifb pumps every frame)
-        SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+        HWND_MAIN.store(hwnd as usize, Ordering::Relaxed);
+        if OLD_PROC.load(Ordering::Relaxed) == 0 {
+            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as usize as isize);
+            OLD_PROC.store(old, Ordering::Relaxed);
+            SUBCLASS_OK.store(old != 0, Ordering::Relaxed);
+        }
+    }
+    // The hook runs on a thread of its own with its own message loop. On the window's thread
+    // a slow frame (power on, loading a state, the exact core) can keep it from answering in
+    // time, and Windows then removes a low-level hook for good without a word: Alt+Esc
+    // switched windows again after that.
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if !STARTED.swap(true, Ordering::Relaxed) {
+        let _ = std::thread::Builder::new().name("keyboard hook".into()).spawn(|| unsafe {
+            let h = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook as usize, GetModuleHandleW(std::ptr::null()), 0);
+            HOOK_OK.store(!h.is_null(), Ordering::Relaxed);
+            if h.is_null() {
+                HOOK_ERR.store(GetLastError() as usize, Ordering::Relaxed);
+            }
+            // Third guard: while the window has focus, Alt+Esc is this program's hot key, so
+            // Windows hands it to us instead of switching windows. Checked 10 times a second
+            // so other programs get Alt+Esc back as soon as the window loses focus.
+            const WM_TIMER: u32 = 0x0113;
+            const WM_HOTKEY: u32 = 0x0312;
+            const MOD_ALT: u32 = 0x0001;
+            const MOD_NOREPEAT: u32 = 0x4000;
+            SetTimer(std::ptr::null_mut(), 0, 100, 0);
+            let mut msg: Msg = std::mem::zeroed();
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                match msg.message {
+                    WM_TIMER => {
+                        let want = focused();
+                        if want != HOTKEY_ON.load(Ordering::Relaxed) {
+                            let ok = if want { RegisterHotKey(std::ptr::null_mut(), 1, MOD_ALT | MOD_NOREPEAT, VK_ESCAPE) != 0 } else { UnregisterHotKey(std::ptr::null_mut(), 1) != 0 };
+                            if ok || !want {
+                                HOTKEY_ON.store(want, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    WM_HOTKEY => {
+                        if focused() {
+                            // a tap: down and pressed-since, let go at the next poll
+                            ESC[1].store(true, Ordering::Relaxed);
+                            CAUGHT_HOTKEY.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }
 
 fn focused() -> bool {
-    unsafe { GetForegroundWindow() as usize == HWND_MAIN }
+    unsafe { GetForegroundWindow() as usize == HWND_MAIN.load(Ordering::Relaxed) }
 }
 
 /// (down now, pressed since last poll) for a virtual key, only while our window has focus.
@@ -143,9 +245,18 @@ pub fn clear() {
 }
 
 /// Compass keys held now and tapped since the last poll, and the modifier bits.
-pub fn poll(down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &mut u8) {
+/// `printed`: keys by printed letter, so digits and punctuation come from typed text instead,
+/// unless Ctrl or Alt alone is held.
+pub fn poll(printed: bool, down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &mut u8) {
     use grid_core::keyboard;
+    let (ctrl, alt) = (vk(VK_CONTROL).0, vk(VK_MENU).0);
+    let text_keys = printed && !(ctrl ^ alt);
     for &(c, k) in KEYS {
+        if text_keys && !(c.is_ascii_lowercase() || " \r\t\x1b\x08\u{e000}\u{e001}\u{e002}\u{e003}".contains(c)) {
+            // still read it, so a press now does not count later
+            let _ = vk(k);
+            continue;
+        }
         let (d, t) = vk(k);
         if let Some((col, bit, _)) = keyboard::key_for_char(c) {
             if d {
@@ -165,4 +276,29 @@ pub fn poll(down: &mut Vec<(usize, u8)>, tapped: &mut Vec<(usize, u8)>, mods: &m
     if vk(VK_MENU).0 {
         *mods |= keyboard::MOD_CODE;
     }
+}
+
+/// One line on the Alt+Esc guards, for Help > Keyboard map.
+pub fn status() -> String {
+    let hook = if HOOK_OK.load(Ordering::Relaxed) {
+        "keyboard hook on".to_string()
+    }
+    else {
+        match HOOK_ERR.load(Ordering::Relaxed) {
+            0 => "keyboard hook not started".to_string(),
+            e => format!("keyboard hook failed (error {e})"),
+        }
+    };
+    let win = if SUBCLASS_OK.load(Ordering::Relaxed) { "window keys on" } else { "window keys off" };
+    let hot = if HOTKEY_ON.load(Ordering::Relaxed) { "hot key on" } else { "hot key off" };
+    let e = HOOK_ESC.load(Ordering::Relaxed);
+    let last = if e == 0 { "no Esc seen yet".to_string() } else { format!("last Esc: message {:X}, flags {:X}, focused {}", (e >> 1) & 0x7FFF, e >> 16, e & 1) };
+    format!(
+        "Alt+Esc guards: {hook}, {win}, {hot}; caught {} times by the hook, {} by the window, {} by the hot key. Hook saw {} keys ({last}); the window got {} system keys.",
+        CAUGHT_HOOK.load(Ordering::Relaxed),
+        CAUGHT_WINDOW.load(Ordering::Relaxed),
+        CAUGHT_HOTKEY.load(Ordering::Relaxed),
+        HOOK_KEYS.load(Ordering::Relaxed),
+        WINDOW_SYSKEYS.load(Ordering::Relaxed)
+    )
 }

@@ -64,6 +64,9 @@ enum Held {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Hw {
+    /// The floppy's write-protect tab (set by the bus before each run).
+    #[serde(default)]
+    write_protect: bool,
     rom: Vec<u8>,
     ram: Vec<u8>,
     clocks: u64,
@@ -134,8 +137,9 @@ impl Ctx<'_, '_> {
         let selected = hw.latch & 0x04 != 0;
         let spinning = selected && !fd.is_empty();
         let now = hw.us();
+        let wp = hw.write_protect;
         let Hw { fdc, mech, disk, .. } = hw;
-        (fdc, Env { now, spinning, selected, mech, disk, image: fd, dirty, write_protect: false, ready: spinning })
+        (fdc, Env { now, spinning, selected, mech, disk, image: fd, dirty, write_protect: wp, ready: spinning })
     }
 
     /// Is a held access to `h` ready now?
@@ -306,6 +310,16 @@ impl Bus86 for Ctx<'_, '_> {
 }
 
 impl Box2101 {
+    /// Set the DIP switches to GPIB address `addr` (hard disk; the floppy answers on addr + 1).
+    /// The floppy's write-protect tab.
+    pub fn set_write_protect(&mut self, on: bool) {
+        self.hw.write_protect = on;
+    }
+
+    pub fn set_address(&mut self, addr: u8) {
+        self.hw.dip = addr & 0x1F;
+    }
+
     /// A 2101 with firmware `rom` (8 KB).
     pub fn new(rom: Vec<u8>) -> Box2101 {
         let mut fdc = Wd2797::new();
@@ -319,6 +333,7 @@ impl Box2101 {
         Box2101 {
             cpu,
             hw: Hw {
+                write_protect: false,
                 rom,
                 ram: vec![0; 0x2000],
                 clocks: 0,

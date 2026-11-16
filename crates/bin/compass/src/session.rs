@@ -47,6 +47,17 @@ pub struct MachineConfig {
     pub gridlink: String,
     /// GRiDLink point-to-point cable (RTS looped to CTS) instead of multidrop.
     pub gridlink_p2p: bool,
+    /// Internal modem phone line: incoming calls on tcp:PORT or tcp:HOST:PORT ring the Compass.
+    pub modem_listen: String,
+    /// Internal modem phone book: NUMBER=HOST:PORT entries, separated by commas; * = any
+    /// other number. A number written as 127*0*0*1*2323 dials that address directly.
+    pub modem_dial: String,
+    /// A caller reaching the Compass's modem connects at 300 baud (default 1200).
+    pub modem_answer_300: bool,
+    /// No modem firmware: the modem board's MCU is left out (the old behaviour).
+    pub modem_off: bool,
+    /// Internal modem 8749 firmware ("" = 16020-007.bin in the ROM folder).
+    pub rom_modem: String,
     pub mute: bool,
     /// --readonly: nothing is written back (the setup page turns it into each unit's write
     /// protect and the bubble's).
@@ -422,10 +433,19 @@ impl MachineConfig {
             opt("--fpu-rom", &self.fpu_rom);
         }
         opt("--rom-2102", &self.rom_2102);
+        opt("--rom-modem", &self.rom_modem);
+        opt("--modem-listen", &self.modem_listen);
+        opt("--modem-dial", &self.modem_dial);
         opt("--rom-2101", &self.rom_2101_20);
         opt("--rom-2101-10", &self.rom_2101_10);
         if self.no_catch {
             a.push("--no-catch".into());
+        }
+        if self.modem_answer_300 {
+            a.push("--modem-answer-300".into());
+        }
+        if self.modem_off {
+            a.push("--no-modem".into());
         }
         a
     }
@@ -474,6 +494,7 @@ pub struct Session {
     pub hostdir: Option<grid_core::hostdir::HostDir>,
     pub serial: Option<host::SerialLink>,
     pub gridlink: Option<host::GridLink>,
+    pub modem_line: Option<host::ModemLine>,
     pub audio: Option<host::Audio>,
     /// Remarks made while starting (a stand-in PROM, a folder's size).
     pub notes: Vec<String>,
@@ -550,6 +571,15 @@ impl Session {
         m.board_mut().e0000_dma =
             roms.e0000_dma || (model.split_board() && !model.wide_screen() && (prom.is_some() || prom_even.is_some()));
         m.board_mut().keyboard = Some(Keyboard::new(read(&kbd, "keyboard firmware")?));
+        let mut modem_line = None;
+        if model.has_modem() && !cfg.modem_off {
+            if let Some(p) = some(&cfg.rom_modem).or(roms.modem.clone()) {
+                let mut modem = grid_core::modem::Modem::new(read(&p, "modem firmware")?);
+                modem.line().answer_1200 = !cfg.modem_answer_300;
+                m.board_mut().modem = Some(modem);
+                modem_line = Some(host::ModemLine::open(&cfg.modem_listen, &cfg.modem_dial).map_err(|e| format!("modem line: {e}"))?);
+            }
+        }
         let drive_roms = cfg.drive_roms(default_roms);
         if let Some(p) = &drive_roms.fd2102 {
             m.board_mut().gpib.rom_2102 = Some(read(p, "2102 floppy firmware")?);
@@ -687,7 +717,7 @@ impl Session {
         }
         let mut cfg = cfg.clone();
         cfg.normalize();
-        Ok(Session { m, cfg, media, units, hostdir, serial, gridlink, audio, notes, serial_out: vec![] })
+        Ok(Session { m, cfg, media, units, hostdir, serial, gridlink, modem_line, audio, notes, serial_out: vec![] })
     }
 
     /// Move sound samples to the speaker and serial bytes to and from the link.
@@ -709,6 +739,10 @@ impl Session {
         }
         else {
             b.serial.tx_out.clear();
+        }
+        if let (Some(ml), Some(modem)) = (&mut self.modem_line, &mut b.modem) {
+            let now = modem.time() as f64;
+            ml.pump(modem.line(), now);
         }
         if let Some(gl) = &mut self.gridlink {
             let frames: Vec<Vec<u8>> = b.serial.sdlc_out.drain(..).map(|(_, f)| f).collect();
@@ -889,6 +923,7 @@ impl Session {
         // Free the serial port and audio device before opening them again.
         self.serial = None;
         self.gridlink = None;
+        self.modem_line = None;
         self.audio = None;
         *self = Session::build(&cfg, default_roms)?;
         Ok(log)

@@ -19,6 +19,7 @@ const KNOWN: &[(u32, usize, &str, &str)] = &[
     (0x85850e38, 4096, "300237-02.bin", "2102 floppy firmware 300237-02"),
     (0x769c3bab, 8192, "300205-05.bin", "2101 firmware 300205-05 (20 MB box)"),
     (0x34e191f5, 8192, "300205-06.bin", "2101 firmware 300205-06 (10 MB box)"),
+    (0x8b526845, 2048, "16020-007.bin", "internal modem 8749 firmware 16020-007"),
 ];
 
 fn known(d: &[u8]) -> Option<&'static (u32, usize, &'static str, &'static str)> {

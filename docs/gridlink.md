@@ -120,7 +120,8 @@ server's side: address poll (XID+P to C0h), address assignment, then TEST+P poll
     HD_IMG=disk.img ROMS=roms OUT=out MODEL=1139 [EXACT=1] [P2P=1] \
       cargo test --release -p grid_core --test gridlink -- --ignored --nocapture
 
-The disk needs CableTest~Run~ in Programs and no Modem~Device~ there (the emulator has no
-modem board, and CableTest hangs activating it). Results (0.9.0): connected, about 500 test
+The disk needs CableTest~Run~ in Programs and, without the modem firmware (16020-007.bin,
+see docs/modem.md), no Modem~Device~ there (CableTest hangs activating it with no modem
+MCU). Results (0.9.0): connected, about 500 test
 exchanges in 20 s on the fast core and 130 on the exact one, no errors of any kind, on both
 cables.

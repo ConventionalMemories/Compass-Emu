@@ -195,7 +195,7 @@ pub struct Micro8087 {
     overflow: bool,
     stack: Vec<u16>,
     /// memory operand as the bus interface delivers it: 16-bit words, lowest first
-    bus_in: [u16; 5],
+    bus_in: Vec<u16>,
     bus_next: usize,
     bus_out: Vec<u16>,
     /// what the exponent converter was last given, and how it reads it
@@ -265,6 +265,10 @@ const LOG: [u128; 16] = [
 /// 8 units).
 const FCONST: [u64; 4] = [0xEC98_1FF5_17BF_4CE5, 0xB8AA_3B29_5C17_F0BC, 0x8A7F_AC5F_0511_F48D, 0xB504_F333_F9DE_6484];
 
+/// Where the register loops of FRSTOR and FSAVE start in the ROM.
+const FRSTOR_LOOP: u16 = 675;
+const FSAVE_LOOP: u16 = 695;
+
 const LOOP_MUL: u8 = 1;
 const LOOP_DIV: u8 = 2;
 const LOOP_SQRT: u8 = 3;
@@ -318,7 +322,7 @@ impl Micro8087 {
             exc: 0,
             overflow: false,
             stack: Vec::new(),
-            bus_in: [0; 5],
+            bus_in: vec![0; 5],
             bus_next: 0,
             bus_out: Vec::new(),
             conv_fmt: Fmt::X80,
@@ -468,13 +472,14 @@ impl Micro8087 {
         self.conv_fmt = Fmt::X80;
         self.loop_mode = 0;
         if let Some((m, a)) = mem.as_mut() {
+            self.bus_in.clear();
             for i in 0..5 {
                 let lo = m.read_u8(*a + 2 * i as u32) as u16;
                 let hi = m.read_u8(*a + 2 * i as u32 + 1) as u16;
-                self.bus_in[i] = lo | hi << 8;
+                self.bus_in.push(lo | hi << 8);
             }
         }
-        let r = self.run(op, modrm);
+        let r = self.run(op, modrm, None);
         if let Some((m, a)) = mem.as_mut() {
             for (i, w) in self.bus_out.iter().enumerate() {
                 m.write_u8(*a + 2 * i as u32, *w as u8);
@@ -484,8 +489,33 @@ impl Micro8087 {
         r
     }
 
-    fn run(&mut self, op: u8, modrm: u8) -> Result<Run, Fault> {
-        let start = entry(op & 7, modrm).ok_or(Fault { addr: 0, word: 0, what: format!("no microcode entry for {:02X} {:02X}", 0xD8 | op, modrm) })?;
+    /// The register loops of FSAVE (`restore` false) and FRSTOR: the eight registers from
+    /// ST(0) on, 80 bytes at `a`. The 14 bytes of environment before them, and FSAVE's
+    /// FINIT at the end, are hardwired in the chip and the caller's business. FRSTOR keeps
+    /// each register's tag (the caller has set them from the new tag word).
+    pub fn exec_state(&mut self, restore: bool, mem: &mut dyn crate::FpuMem, a: u32) -> Result<Run, Fault> {
+        self.bus_next = 0;
+        self.bus_out.clear();
+        self.bus_in.clear();
+        self.conv_fmt = Fmt::X80;
+        self.loop_mode = 0;
+        if restore {
+            for i in 0..40 {
+                let lo = mem.read_u8(a + 2 * i) as u16;
+                let hi = mem.read_u8(a + 2 * i + 1) as u16;
+                self.bus_in.push(lo | hi << 8);
+            }
+        }
+        let r = self.run(5, if restore { 0x20 } else { 0x30 }, Some(if restore { FRSTOR_LOOP } else { FSAVE_LOOP }));
+        for (i, w) in self.bus_out.iter().enumerate() {
+            mem.write_u8(a + 2 * i as u32, *w as u8);
+            mem.write_u8(a + 2 * i as u32 + 1, (*w >> 8) as u8);
+        }
+        r
+    }
+
+    fn run(&mut self, op: u8, modrm: u8, at: Option<u16>) -> Result<Run, Fault> {
+        let start = at.or_else(|| entry(op & 7, modrm)).ok_or(Fault { addr: 0, word: 0, what: format!("no microcode entry for {:02X} {:02X}", 0xD8 | op, modrm) })?;
         self.opcode = ((op as u16 & 7) << 8) | modrm as u16;
         self.top0 = self.top;
         self.swap = false;
@@ -991,7 +1021,7 @@ impl Micro8087 {
             }),
             // the next word of the memory operand
             0x04 => {
-                let w = *self.bus_in.get(self.bus_next).ok_or("more than five operand words read")?;
+                let w = *self.bus_in.get(self.bus_next).ok_or("more operand words read than the instruction has")?;
                 self.bus_next += 1;
                 self.kinds[K_READ] += 1;
                 Val::frac(w as u64)

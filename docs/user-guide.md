@@ -113,7 +113,7 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
             [--modem-dial NUMBER=HOST:PORT]... [--modem-listen tcp:PORT]
             [--modem-answer-300] [--rom-modem F] [--no-modem]
             [--prom-even F --prom-odd F | --prom F] [--kbd F] [--readonly]
-            [--scale 1|2|4] [--overlay] [--fast] [--fpu-micro] [--fpu-rom F]
+            [--scale 1|2|4] [--overlay] [--fast] [--fpu-rom F] [--fpu-table]
             [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|off]...
             [--classic] [--symbols DIR] [--no-catch]
 --model    1101 (default) and 1109 (512K) have the original board; 1121 (256K),
@@ -153,11 +153,11 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139] [--hd disk.img] [--flop
 --no-modem  leave the modem's microcontroller out even with its firmware there.
 --mute     no sound.
 --fast     start with the fast CPU core (whole instructions, approximate timing).
---fpu-micro  run the 8087 on its own microcode ROM, a file you supply (see
-           docs/8087-microcode.md): 8087mc.txt or 8087mc.bin in the ROM folder,
-           else I8087_MICROCODE or roms\. Without the ROM the instruction-level
-           8087 runs. Also on the setup page (Computer, 8087).
---fpu-rom F  the same, with that microcode ROM file.
+--fpu-rom F  the 8087's microcode ROM file. The 8087 runs on its own microcode
+           when you supply that ROM (see "The 8087 microcode ROM" below);
+           without this option the emulator looks for 8087mc.txt or 8087mc.bin
+           in the ROM folder. With no ROM file the instruction-level 8087 runs.
+--fpu-table  keep the instruction-level 8087 even when the ROM file is there.
 --rom-2102 F, --rom-2101 F (20 MB box), --rom-2101-10 F (10 MB box)
            drive firmware files other than the ones in the ROM folder.
 --2101-protocol, --2102-protocol  the protocol model for that drive even when
@@ -262,6 +262,23 @@ from that ROM, even with a hard disk (the PROM decides that), and it needs no
 disk at all.
 "Start Compass-Emu 1139.bat" puts roms\Compass_Socket_0.bin to
 Compass_Socket_3.bin in the sockets when those files are there.
+
+## The 8087 microcode ROM
+
+The 8087 can run on the real chip's own microcode. Its results then match a
+real 8087 almost bit for bit (1554 of 1588 lines of 8087 Bench on a real 1101
+and 1137), and its instruction times are about 2% off on average. Without the
+ROM an instruction-level 8087 runs: same answers for ordinary arithmetic, less
+exact in the corner cases and in timing.
+The ROM is not part of Compass-Emu; you supply the file. It is the dump named
+8087mc.txt (1648 lines of the letters A to P) from tools/8087mc/bin in
+github.com/a-mcego/granite. Save it as roms\8087mc.txt (the ROM folder of the
+profile), or pick the file on the setup page (ROMs, "8087 microcode"). The
+setup page shows whether the file was found, and the status bar says "8087
+microcode" when the 8087 runs on it. Nothing else to switch on.
+To compare, Computer > 8087 on the setup page (or --fpu-table, or Machine >
+8087 on its microcode ROM while running) keeps the instruction-level 8087.
+More in docs/8087-microcode.md.
 
 ## Demo tools
 

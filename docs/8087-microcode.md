@@ -175,33 +175,37 @@ micro-instruction that ran, by kind (`micro::KIND_CLOCKS`, `micro::clocks`):
 
 | Kind | Clocks |
 | --- | --- |
-| register transfer | 1.21 |
-| immediate | 0.16 |
-| shift by a fixed count | 0.93 |
-| shift by a variable count | 0.77 |
-| add or subtract | 1.78 |
-| control | 0.61 |
-| jump taken | 2.18 |
-| jump not taken | 1.82 |
-| call | 2.20 |
-| return | 2.20 |
-| other | 0.71 |
-| one step of the multiply loop | 2.04 |
-| one step of the divide loop | 2.02 |
-| one step of the square root loop | 1.97 |
-| word read on the bus | 3.76 |
-| word written on the bus | 0.98 |
+| register transfer | 0.94 |
+| immediate | 0.57 |
+| shift by a fixed count | 1.07 |
+| shift by a variable count | 0.48 |
+| add or subtract | 2.05 |
+| control | 1.06 |
+| jump taken | 2.10 |
+| jump not taken | 1.90 |
+| call | 2.08 |
+| return | 2.08 |
+| other | 0.95 |
+| one step of the multiply loop | 1.98 |
+| one step of the divide loop | 1.99 |
+| one step of the square root loop | 1.94 |
+| word read on the bus | 4.46 |
+| word written on the bus | 1.13 |
+| one step of FPREM's loop | 1.97 |
+| one step of the transcendentals' quotient loop | 1.98 |
+| bit a variable shift moves its operand by | 0.02 |
+| the same for a shift by the CORDIC loop counter | 0.07 |
 
 The costs and the fixed parts are a least-squares fit to the clocks 8087 Bench measured on
-a real 1101 for about 1950 tests. They are costs that add up right, not the chip's own
-cycle counts (the fixed part of a memory form is negative because its bus words are
-counted on top). Over the timed tests the emulator's mean error is 2.0 % against the real
-1101 (about 2 clocks) and 2.3 % against the real 1137, which was not part of the fit; with
-the instruction-level core's tables it was 40 %. The regression itself reaches 1.8 %: the
-rest is how the CPU's WAIT lines up with the end of the busy time.
+a real 1101 for about 2070 tests, reweighted so that a few odd tests do not steer it. They
+are costs that add up right, not the chip's own cycle counts (the fixed part of a memory
+form is negative because its bus words are counted on top). Over the timed tests the
+emulator's mean error is 1.45 % against the real 1101 (about 1.5 clocks); with the
+instruction-level core's tables it was 40 %. What is left is mostly how the CPU's WAIT
+lines up with the end of the busy time.
 
-The control instructions, FSAVE and FRSTOR are hardwired in the chip, so their times stay
-table times, corrected by a few clocks each to the real 1101 (`micro::control_fit`); they
+The control instructions are hardwired in the chip, and FSAVE and FRSTOR mostly so, so
+their times stay table times, corrected by a few clocks each to the real 1101 (`micro::control_fit`); they
 are within about 1.5 clocks now. The largest errors left are FCOMPP, the far out-of-range
 transcendental arguments and FBLD/FBSTP of some values.
 
@@ -214,8 +218,22 @@ now (after 4096 polls of TEST the WAIT starts over at its own address), so a pro
 hangs on the real machine hangs in the emulator: 8087 Bench 0.0.3's risky part stops at
 y005, as it did on the real 1101.
 
-## Not there yet
+## FSAVE and FRSTOR
 
-FSAVE's and FRSTOR's register loops run in the instruction-level core (the rest of both is
-hardwired in the chip anyway); their results and times match the real machines, so this is
-a matter of form.
+The environment part of both is hardwired in the chip; the eight registers go through two
+microcode loops (FSAVE at 695, FRSTOR at 675), and the microcode core runs those from the
+ROM, with the bus words handed to it and taken from it one by one. The results are the
+same as the instruction-level core's. The time is still one measured figure per
+instruction: a single real pair cannot say how it splits over the loop's steps.
+
+## The constant ROM and 8087 Bench 3
+
+The transcendentals' constants (16 arctangents, 16 logarithms, 4 fractions) are computed,
+not read from a chip, so their last bits are guesses; the thirty lines above hang on them.
+8087 Bench 0.0.5 has a third program whose 1584 tests each lean on one constant: FYL2X
+with 17 values of x that each use a single logarithm constant, F2XM1 around
+log2(1 + 2^-n), FPATAN of 2^-n and FPTAN around atan 2^-n, each a few units either side.
+`probe_uses` (FB_USES) lists which constants a test touches and `probe_sensitivity`
+(FB_SENS) how many of the tests change when a constant moves by a unit: every logarithm
+constant from 2 to 15 moves 3 to 50 results, the arctangents fewer (some only show a move
+of two units). Once a real machine has run it, `fit_constants` can pin the bits down.

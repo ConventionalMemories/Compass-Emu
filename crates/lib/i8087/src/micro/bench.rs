@@ -221,9 +221,23 @@ fn fit_constants() {
     let mut best = score(&mut f);
     eprintln!("{} tests, {} exact at the start", tests.len(), best);
     for _pass in 0..3 {
-        for i in 0..16 {
-            let get = |f: &I8087| if which == "atan" { f.micro.as_ref().unwrap().atan[i] } else { f.micro.as_ref().unwrap().log[i] };
-            let set = |f: &mut I8087, v: u128| if which == "atan" { f.micro.as_mut().unwrap().atan[i] = v } else { f.micro.as_mut().unwrap().log[i] = v };
+        for i in 0..if which == "frac" { 4 } else { 16 } {
+            let get = |f: &I8087| {
+                let m = f.micro.as_ref().unwrap();
+                match which.as_str() {
+                    "atan" => m.atan[i],
+                    "frac" => m.fconst[i] as u128,
+                    _ => m.log[i],
+                }
+            };
+            let set = |f: &mut I8087, v: u128| {
+                let m = f.micro.as_mut().unwrap();
+                match which.as_str() {
+                    "atan" => m.atan[i] = v,
+                    "frac" => m.fconst[i] = v as u64,
+                    _ => m.log[i] = v,
+                }
+            };
             let base = get(&f);
             let mut pick = 0i32;
             for d in -8i32..=8 {

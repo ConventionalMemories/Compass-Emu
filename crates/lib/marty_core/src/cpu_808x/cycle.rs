@@ -384,6 +384,13 @@ impl Intel808x {
     /// only called from within cycle_i() it can be inlined.
     #[inline(always)]
     pub fn tick_dma(&mut self) {
+        let frame = crate::cpu_808x::REFRESH_FRAME.load(std::sync::atomic::Ordering::Relaxed) as u64;
+        if frame > 0 {
+            // n steals spread evenly over each frame: one where k * frame / n is crossed
+            let n = (frame / self.dram_refresh_cycle_period.max(1) as u64).max(1);
+            let pos = self.cycle_num % frame;
+            self.dram_refresh_cycle_num = if (pos * n) % frame >= frame - n { 1 } else { 2 };
+        }
         self.dram_refresh_cycle_num = self.dram_refresh_cycle_num.saturating_sub(1);
 
         // Reset scheduler at terminal count

@@ -1,18 +1,14 @@
 # Compass-Emu
 
-A cycle-accurate emulator of the **GRiD Compass** (1982), the first clamshell laptop. Its
+A cycle-accurate emulator of the **GRiD Compass** (1982). Its
 timing is fitted to measurements from a real Compass 1101 and 1137. It runs GRiD-OS,
 the Executive, the GRiD compilers and the programs written for them. It runs the GRiD
 firmware of the keyboard, the disk drives and the modem on their own emulated chips. It
 also has a fast core that makes it usable as a build machine.
 
-> **Version 0.13.0, the first release for testers.** Expect rough edges, and please
-> [report](#reporting-problems) anything that behaves differently from a real Compass.
+> **Version 0.13.0, the first beta release.** Expect rough edges.
 
 ![GRiD Compass 1101 Executive](docs/img/compass-1101-executive.png)
-![GRiD Compass II 1139 Executive](docs/img/compass-1139-executive.png)
-
-![Compass-Emu window with the debugger workspace](docs/img/compass-gui-debugger.png)
 
 ![The crash catcher stopping a Pascal program on a division by zero, with procedure names and source lines](docs/img/compass-crash-catcher.png)
 
@@ -73,9 +69,6 @@ also has a fast core that makes it usable as a build machine.
 | **States** | Quick save and quick load (disks included), and saved states with a picture of the screen, per profile. |
 | **Debugging** | Debugger workspace with code, port, interrupt and memory breakpoints, a profiler, call stack, recent instructions, a GRiD-OS call log and a Chips window. Program symbols from a debug build (procedure names, Pascal source lines, breakpoints by name). A crash catcher. Cycle counter marks and a frame meter overlay for timing your own code. |
 
-Not emulated yet: the test ROM socket at C0000h, a GRiD Server for GRiDLink, and the
-modem's busy and ringback tones and speaker. More in [Left to do](#left-to-do).
-
 ## How accurate it is
 
 All numbers are from my own runs of GRiDBench, GRiDProbe, 8087 Bench and Disk Toolkit
@@ -109,6 +102,44 @@ bubble and display numbers, are in [docs/accuracy.md](docs/accuracy.md).
 | Steps of 1/16 | 122.5 | 118.4 | 120.6 |
 
 2102 page reads in ms (GRiDBench 2.1b, real 2102 with a Gotek, motor running):
+
+| Pattern | Real | Low level | Protocol model |
+|---|---:|---:|---:|
+| Same page | 212 | 200 | 197 |
+| Sequential | 133 | 121 | 121 |
+| Random | 235 | 243 | |
+| First/last | 415 | 403 | 395 |
+| Steps of 1/16 | 172 | 196 | 211 |
+
+After 12-30 s idle the low-level 2102 powers its drive down. The next read takes 1.8-1.9 s
+(real: 1.9-2.0 s). Bubble memory timing and status bytes follow GRiDProbe's seek patterns on
+the real 1101 (replayed in `crates/lib/grid_core/tests/devices.rs`).
+
+### CPU, 8087 and display
+
+| What | Result |
+|---|---|
+| 8086 instruction set (SingleStepTests suite, both cores) | No register, flag or memory errors. About 94.5 % of tests have exact clock counts. |
+| 8086 timing on the Compass (GRiDBench 2.2 jump, memory and REP rows) | 1.2 % rms on the 1101, 1.4 % on the 113x |
+| 8087 timing, microcode core (8087 Bench, 2068 timed tests) | 1.45 % mean error against the real 1101 (about 1.5 clocks). |
+| 8087 results, microcode core (8087 Bench, 1588 result lines) | All but 34 lines identical to the real chip (the rest are last-bit differences in transcendentals) |
+| 8087 transcendentals dumped from a real 1101 (141 results) | 134 bit for bit, 7 one unit off |
+| GRiD-OS's WAIT-to-INT 3 overhead per 8087 instruction | 55.8 clocks (real 1101: 55.7), 57.8 on the 113x (real 1137: 58.7) |
+| Display frame (GRiDProbe beam finder) | 1101: 307 clocks x 268 lines, 60.8 Hz. 113x: 316 x 263, 60.2 Hz. |
+
+### Disk drives
+
+2101 page reads in ms (GRiDBench 2.1b on the real 1101 + 2101):
+
+| Pattern | Real | Low level | Protocol model |
+|---|---:|---:|---:|
+| Same page | 19.0 | 21.1 | 19.4 |
+| Sequential | 21.1 | 26.8 | 19.4 |
+| 8 pages | 53.5 | 63.8 | 65 |
+| Random | 130.3 | 132.8 | 130.0 |
+| Steps of 1/16 | 122.5 | 118.4 | 120.6 |
+
+2102 page reads in ms (GRiDBench 2.1b, real 2102):
 
 | Pattern | Real | Low level | Protocol model |
 |---|---:|---:|---:|
@@ -206,49 +237,34 @@ every environment variable are in [docs/developer.md](docs/developer.md).
   and 1200 baud.
 - RS-232 on real hardware: the bit rate at 9600, the fastest rate without lost characters,
   and DCD/CTS behaviour.
-- RS-422/GRiDLink against a real cable and server. The 8274's receive FIFO depth in SDLC
+- RS-422/GRiDLink testing. The 8274's receive FIFO depth in SDLC
   mode is assumed.
-- SoundTest on a real 1137. Where its DACs and DTMF chip sit is assumed.
 - 113x unknowns: whether the 8259A takes a non-specific EOI, how the 8254's timer 1 is
-  gated, the timing before GRiD-OS turns the large screen on, and what each DFE04 bit does.
-- The CPU clock against the real-time clock. Every clock count assumes exactly 5 MHz.
+  gated, and what each DFE04 bit does.
 - Only the 1101 and the 1137 were measured. The 1109, 1121, 1129, 1131 and 1139 use their
   fits.
 
 **Known timing gaps**
 
-- REP STOSW and REP MOVSW per word (12.2 clocks emulated against 11.15 real), and REP LODSB
-  on the 113x (about 10 % slow).
 - The low-level 2101's sequential and multi-page reads (see the table above), and the
   2102's stepped reads.
 - Bubble timing was fitted on the 1101 only. The 1137's bubble looked slower.
 
 **Not emulated yet**
 
-- The test ROM socket at C0000h.
-- A built-in GRiD Server for GRiDLink.
 - The modem's busy and ringback tones and its speaker. The 8087's arithmetic on unnormal
   operands.
 
-**Packaging**
-
-- No console window behind the emulator, a static C runtime, a third-party licence file,
-  and an icon.
-- Settings and saved states in a per-user folder instead of next to the exe.
-- Working CI, and Linux and macOS release builds.
 
 ## Reporting problems
 
 Open an [issue](https://github.com/ConventionalMemories/Compass-Emu/issues) with:
 
-- the Compass-Emu version (Help > About) and your Windows version,
 - the model and the profile settings (or the shortcut .bat),
 - which GRiD-OS disk and which program,
 - what you did, what happened, and what a real Compass does, if you know,
 - a saved state or screenshot if you can.
 
-Results from real hardware are especially welcome: if you have a Compass and can run a test
-program, I'd like to hear from you.
 
 ## How this was made (AI disclosure)
 
@@ -264,7 +280,7 @@ from a real Compass.
 
 ## Sources and credits
 
-Special thanks to **vklachkov**, **JDat** and **usernameak**. Their MAME work, reverse
+Special thanks to **vklachkov** and **JDat**. Their MAME work, reverse
 engineering and schematics of the GRiD Compass and its drives made this emulator possible to
 build and to check.
 
@@ -272,11 +288,10 @@ build and to check.
   (Cp: cp.main, Rom.Asm, BankSwitch.PLM, splitboard.gpib.asm), the GRiD-OS system-dependent
   code (SysDep: RomDriver, RomDir, Os.Sysdep) and the file system.
 - **GRiD documentation**: *Programming EPROMs for GRiDCase and Compass* (031031-44, 1986),
-  *GRiDCase Technical Reference* (1985).
-- **US patent 4,571,456** (GRiD Systems): clocks, display RAM arbitration, GPIB pseudo-DMA
+  *US patent 4,571,456* (GRiD Systems): clocks, display RAM arbitration, GPIB pseudo-DMA
   and its keyboard watchdog, serial clock latches.
 - **MAME**: the gridcomp, grid2102 and gridkeyb drivers (Sergey Svishchev, usernameak, Vas
-  Crabb, vklachkov and others), and the tms9914, i7220, z80sio and mm58174 devices
+  Crabb and others), and the tms9914, i7220, z80sio and mm58174 devices
   (BSD-3-Clause), for the memory map, keyboard matrix and device behaviour.
 - **[vklachkov](https://github.com/vklachkov)**: much of MAME's GRiD Compass emulation,
   tracked in [mamedev/mame#16845](https://github.com/mamedev/mame/issues/16845): the
@@ -288,14 +303,11 @@ build and to check.
   reversed MS-DOS modem driver and Setochka GRiD Server were used to check the internal modem.
 - **[JDat](https://github.com/JDat)**: schematics of the 2102 floppy drive (the base of the
   low-level 2102), the internal modem board (used to check the modem's pin wiring), and part
-  of the 1101 motherboard (drawn with me, most of the work by JDat), plus early display
-  timing measurements. Also author of [GRiDemulator](https://github.com/JDat/GRiDemulator).
-- **[usernameak](https://github.com/usernameak)**: MAME's GRiD 2101/2102 GPIB drive devices
-  (grid2102), the starting point for Compass-Emu's protocol-level 2101 and 2102 models.
+  of the 1101 motherboard.
 - **MartyPC** by Daniel Balsom: the 8086 core and emulator framework (MIT).
 - **Real-hardware measurements** by me: GRiDBench 2.x, GRiDProbe and 8087 Bench runs on a
   1101 (with 2101 hard disk and 2102 floppy) and a 1137, Disk Toolkit seek tests, Rom
-  Toolbox dumps of the boot PROMs and application ROMs, the 1137 keyboard controller dump,
+  Toolbox dumps of the boot PROMs and application ROMs, the keyboard controllers,
   and the internal modem's 8749 firmware dump.
 - **Ken Shirriff's 8087 articles** (righto.com), for the microcode engine, FPTAN's method
   and the constant ROM.

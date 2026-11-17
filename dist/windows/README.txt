@@ -1,4 +1,4 @@
-Compass-Emu 0.13.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1137, 1139)
+Compass-Emu 0.14.0 - GRiD Compass emulator (1101, 1109, 1121, 1129, 1131, 1137, 1139)
 ====================================================================================
 
 Setup
@@ -254,6 +254,13 @@ Bubble memory
   blank and Write protect. The image holds the raw bubble contents, 128 KB per
   module. A missing file is made blank; format a blank one with GRiD-OS's
   Initialize Media. The bubble is saved on exit like the disks.
+
+  Backups made by GRiD Bubble Fix (the "<name> Module N~Bin~" or "~Raw~" files)
+  can be the image too: pick the file of any module and the other modules'
+  files next to it are read with it, each at its module's place (missing ones
+  stay blank). The backups are never written over: the GRiD's changes go to a
+  raw image "<name> bubble.img" beside them, and that image is used from then on
+  as long as it is newer than the backups.
 
 Build in the window
   Project > Project window: pick the project folder (NAME.pas, NAME.asm and the

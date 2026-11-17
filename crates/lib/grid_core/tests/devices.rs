@@ -101,7 +101,8 @@ fn bubble_write_status_and_stuck_abort() {
     b.write(1, 0x11, t);
     t += 200_000;
     b.read(1, t);
-    // one page written: status 42, FSA status marks MBM 0
+    // one page written: status 42, FSA status marks MBM 0 (GRiDProbe b82 read FF 20 28 28 ..:
+    // the first channel FFH, see Bubble::fsa_first_ff)
     params(&mut b, 0x1001, 0, t);
     b.write(1, 0x13, t);
     let mut n = 0;
@@ -120,7 +121,7 @@ fn bubble_write_status_and_stuck_abort() {
     b.write(1, 0x18, t);
     t += 5_000;
     let fsa: Vec<u8> = (0..6).map(|_| b.read(0, t)).collect();
-    assert_eq!(fsa, [0xFF, 0x28, 0x20, 0x20, 0x20, 0x20]);
+    assert_eq!(fsa, [0x28, 0x28, 0x20, 0x20, 0x20, 0x20]);
     // Abort after 1 byte: harmless
     assert_eq!(bubble_poll_read(&mut b, &mut t, 16, Some(1)).0, 1);
     assert_eq!(bubble_poll_read(&mut b, &mut t, 4, None), (256, 0x40));
@@ -299,4 +300,129 @@ fn serial_sdlc_frames() {
     assert_eq!(s.read(2, t) & 0x20, 0);
     wr(&mut s, 5, 0x02, t);
     assert_ne!(s.read(2, t) & 0x20, 0);
+}
+
+/// Count modules the way the Compass II ROM driver (sized bigbubbles.plm, 1984) does: register
+/// test, Abort, Software Reset, Reset FIFO, Read FSA Status, then read the data port while the
+/// status shows FIFO ready, counting the bytes that are not FFH, halved.
+fn rom_driver_count(b: &mut Bubble, t: &mut u64) -> usize {
+    b.write(1, 0x0A, *t);
+    b.write(0, 0x5A, *t);
+    b.write(1, 0x0A, *t);
+    assert_eq!(b.read(0, *t), 0x5A); // the RAC now points at the BLR
+    let mut n = 0;
+    for cmd in [0x19, 0x1F, 0x1D, 0x18] {
+        b.write(1, cmd, *t);
+        while b.read(1, *t) & 0x80 != 0 {
+            *t += 100;
+        }
+    }
+    let mut guard = 0;
+    while b.read(1, *t) & 1 != 0 && guard < 100 {
+        if b.read(0, *t) != 0xFF {
+            n += 1;
+        }
+        guard += 1;
+    }
+    n / 2
+}
+
+/// GRiD-OS 3.1.5D on a 113x and MS-DOS 2.11C size the bubble from Read FSA Status. A command
+/// must point the RAC back at the FIFO, and every channel must answer, or the driver counts
+/// too many (or too few) modules and formatting fails past the last page.
+#[test]
+fn bubble_module_count_for_grid_driver() {
+    for mbms in 1..=4 {
+        let mut b = Bubble::new(vec![0; mbms * 128 * 1024]);
+        let mut t = 0u64;
+        assert_eq!(rom_driver_count(&mut b, &mut t), mbms, "{mbms} modules");
+    }
+    // with GRiDProbe's FFH first byte the count comes out one short
+    let mut b = Bubble::new(vec![0; 3 * 128 * 1024]);
+    b.fsa_first_ff = true;
+    let mut t = 0u64;
+    assert_eq!(rom_driver_count(&mut b, &mut t), 2);
+}
+
+/// Initialize naming a module that is not fitted never finds its bootloop: busy until Abort.
+#[test]
+fn bubble_initialize_missing_module_stays_busy() {
+    let mut b = Bubble::new(vec![0; 3 * 128 * 1024]);
+    let mut t = 0u64;
+    params(&mut b, 0x1000, 3 << 11, t);
+    b.write(1, 0x11, t);
+    t += 10_000_000;
+    assert_eq!(b.read(1, t) & 0x80, 0x80);
+    b.write(1, 0x19, t);
+    t += 10_000;
+    assert_eq!(b.read(1, t) & 0xC0, 0x40);
+    params(&mut b, 0x1000, (2 << 11) | 0x7FC, t);
+    b.write(1, 0x11, t);
+    t += 200_000;
+    assert_eq!(b.read(1, t) & 0xC0, 0x40);
+}
+
+/// A Bubble Fix 2 backup of one module: 64-byte header, 2048 pages of `psize` bytes, status
+/// bytes, tail with the page shift.
+fn bubfix_file(module: u8, psize: usize, found: u8, shift: u16, fill: impl Fn(usize) -> u8) -> Vec<u8> {
+    let mut d = b"BUBBACK1".to_vec();
+    d.extend([module, if psize == 68 { b'R' } else { b'C' }, psize as u8, found, 0x00, 0x08, 0, 0, 0]);
+    d.resize(64, 0);
+    for p in 0..2048 {
+        let start = d.len();
+        d.extend((0..64).map(|i| fill(p * 64 + i)));
+        d.resize(start + psize, 0xEE); // raw check bytes
+    }
+    d.extend((0..2048).map(|p| if p == 7 { 0 } else { 0x40 }));
+    d.extend(b"BUBTAIL1");
+    d.extend([0, 8, 0, 0, 0, 0]);
+    d.extend(shift.to_le_bytes());
+    d
+}
+
+#[test]
+fn bubble_fix_backups_load_as_one_image() {
+    let dir = std::env::temp_dir().join(format!("compass-bubfix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pat = |m: usize| move |i: usize| (i / 64 * 3 + i + m) as u8;
+    // module 1 raw (68-byte pages, found by Initialize), module 3 corrected, found from its own
+    // map with the pages shifted by 5
+    std::fs::write(dir.join("Bubble Module 1~Raw~"), bubfix_file(0, 68, 1, 0xFFFF, pat(0))).unwrap();
+    std::fs::write(dir.join("Bubble Module 3~Bin~"), bubfix_file(2, 64, 2, 5, pat(2))).unwrap();
+    // only one module named: its siblings with the same file type are found
+    let l = grid_core::bubble::load_image(&dir.join("Bubble Module 1~Raw~"), 3 * 128 * 1024).unwrap();
+    assert_eq!(l.image.len(), 3 * 128 * 1024);
+    assert_eq!(l.save_to, dir.join("Bubble bubble.img"));
+    assert!(l.note.contains("module 1 of 3"), "{}", l.note);
+    assert!((0..128 * 1024).filter(|i| i / 64 != 7).all(|i| l.image[i] == pat(0)(i)));
+    assert!(l.image[7 * 64..8 * 64].iter().all(|&v| v == 0), "a page not read stays blank");
+    assert!(l.image[128 * 1024..256 * 1024].iter().all(|&v| v == 0));
+    // the ~Bin~ name of module 3 finds no ~Raw~ siblings except by its own name
+    let l3 = grid_core::bubble::load_image(&dir.join("Bubble Module 3~Bin~"), 0).unwrap();
+    let m3 = &l3.image[2 * 128 * 1024..];
+    for p in [0usize, 100, 2047] {
+        if p == 7 {
+            continue;
+        }
+        let q = (p + 5) % 2048;
+        assert_eq!(&m3[q * 64..q * 64 + 64], &(0..64).map(|i| pat(2)(p * 64 + i)).collect::<Vec<u8>>()[..]);
+    }
+    // a version 1 copy (pages + status bytes) and a raw image load too
+    let mut v1: Vec<u8> = (0..128 * 1024).map(|i| (i % 251) as u8).collect();
+    v1.extend([0x40; 2048]);
+    std::fs::write(dir.join("Old Module 2"), &v1).unwrap();
+    let l = grid_core::bubble::load_image(&dir.join("Old Module 2"), 0).unwrap();
+    assert_eq!(&l.image[128 * 1024..], &v1[..128 * 1024]);
+    let raw = vec![0x55u8; 2 * 128 * 1024];
+    std::fs::write(dir.join("raw.img"), &raw).unwrap();
+    let l = grid_core::bubble::load_image(&dir.join("raw.img"), 0).unwrap();
+    assert!(l.image == raw && l.note.is_empty() && l.save_to == dir.join("raw.img"));
+    let l = grid_core::bubble::load_image(&dir.join("new.img"), 3 * 128 * 1024).unwrap();
+    assert_eq!(l.image.len(), 3 * 128 * 1024);
+    // once saved, the raw image next to the backups is used
+    std::fs::write(dir.join("Bubble bubble.img"), &raw).unwrap();
+    let l = grid_core::bubble::load_image(&dir.join("Bubble Module 1~Raw~"), 0).unwrap();
+    assert!(l.image == raw && l.note.contains("using Bubble bubble.img"), "{}", l.note);
+    let _ = std::fs::remove_dir_all(&dir);
 }

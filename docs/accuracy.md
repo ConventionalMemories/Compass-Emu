@@ -149,6 +149,16 @@ GRiDProbe on the real 1101, replayed in `crates/lib/grid_core/tests/devices.rs`:
 
 The 1137's bubble looked slower than the 1101's; all models use the 1101's timing for now.
 
+Read FSA Status gives two bytes per module, 20H each (28H once the module was written).
+GRiD's drivers that size the bubble, the Compass II ROM's (GRiD's 1984 sized
+bigbubbles.plm) and MS-DOS 2.11C's, count the bytes that are not FFH and halve the count. So
+every channel answers here, although GRiDProbe read FFH for the first channel on the real
+1101 (b01/b82). With that FFH, MS-DOS would format only 256K of the 1101's 384K.
+`Bubble::fsa_first_ff` brings it back. A command also points the register address counter
+back at the FIFO, or those drivers would count five parametric registers as well. An
+Initialize whose address register names a module that isn't fitted stays busy until an Abort.
+To be checked on the real 1101: MS-DOS 2.11C's FORMAT E: should report 768 sectors.
+
 ## Not compared yet
 
 The serial port and GRiDLink, the internal modem, sound levels, the keyboard scan rate and

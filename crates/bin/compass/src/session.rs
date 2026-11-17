@@ -499,6 +499,8 @@ pub struct Session {
     /// Remarks made while starting (a stand-in PROM, a folder's size).
     pub notes: Vec<String>,
     serial_out: Vec<u8>,
+    /// Where the bubble is saved (the image itself, or a raw image next to Bubble Fix backups).
+    pub bubble_save: Option<PathBuf>,
 }
 
 fn read(path: &Path, what: &str) -> Result<Vec<u8>, String> {
@@ -681,9 +683,14 @@ impl Session {
                 m.board_mut().insert_rom(slot, chip).map_err(|e| format!("{}: {e}", p.display()))?;
             }
         }
+        let mut bubble_save = None;
         if let (Some(p), false) = (some(&cfg.bubble), cfg.bubble_off) {
-            let img = fs::read(&p).unwrap_or_else(|_| vec![0u8; cfg.bubble_bytes()]);
-            m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(img));
+            let l = grid_core::bubble::load_image(&p, cfg.bubble_bytes())?;
+            if !l.note.is_empty() {
+                notes.push(l.note);
+            }
+            m.board_mut().bubble = Some(grid_core::bubble::Bubble::new(l.image));
+            bubble_save = Some(l.save_to);
         }
         let serial = match some(&cfg.serial) {
             Some(sp) => {
@@ -721,7 +728,7 @@ impl Session {
         }
         let mut cfg = cfg.clone();
         cfg.normalize();
-        Ok(Session { m, cfg, media, units, hostdir, serial, gridlink, modem_line, audio, notes, serial_out: vec![] })
+        Ok(Session { m, cfg, media, units, hostdir, serial, gridlink, modem_line, audio, notes, serial_out: vec![], bubble_save })
     }
 
     /// Move sound samples to the speaker and serial bytes to and from the link.
@@ -837,7 +844,7 @@ impl Session {
             log.extend(self.save_drive(i));
         }
         if !self.cfg.readonly && !self.cfg.bubble_protect {
-            if let (Some(p), Some(bub)) = (some(&self.cfg.bubble), self.m.board_mut().bubble.as_mut()) {
+            if let (Some(p), Some(bub)) = (self.bubble_save.clone(), self.m.board_mut().bubble.as_mut()) {
                 if bub.dirty {
                     match fs::write(&p, &bub.image) {
                         Ok(_) => {

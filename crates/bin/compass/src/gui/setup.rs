@@ -395,10 +395,14 @@ fn bubble_card(ui: &mut egui::Ui, c: &mut MachineConfig) -> bool {
         }
     });
     ui.add_enabled_ui(!c.bubble_off, |ui| {
-        ch |= path_row(ui, "Bubble image (raw, 128 KB per 7110 module)", &mut c.bubble, false, &[]);
+        ch |= path_row(ui, "Bubble image (raw, 128 KB per 7110 module, or a Bubble Fix backup)", &mut c.bubble, false, &[]);
         let p = PathBuf::from(c.bubble.trim());
         ui.horizontal(|ui| {
             match std::fs::metadata(&p) {
+                Ok(m) if !c.bubble.trim().is_empty() && grid_core::bubble::is_bubfix_file(&p) => {
+                    ui.label(format!("{} KB: a Bubble Fix backup", m.len() / 1024))
+                        .on_hover_text("read with the other modules' backups next to it; the GRiD's changes go to a raw image \"<name> bubble.img\" beside them, never into the backups");
+                }
                 Ok(m) if !c.bubble.trim().is_empty() => {
                     let kb = m.len() / 1024;
                     ui.label(format!("{kb} KB, {} module(s)", (m.len() as usize).div_ceil(grid_core::bubble::MBM_SIZE)));

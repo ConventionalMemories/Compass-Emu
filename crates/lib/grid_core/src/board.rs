@@ -541,7 +541,10 @@ impl ExternalBoard for GridBoard {
                 if address & 1 == 0 && self.bubble.is_some() && (address <= 0xDFE83 || self.model.split_board()) =>
             {
                 let now = self.clocks + _cycles as u64;
-                let v = self.bubble.as_mut().unwrap().read((address >> 1) & 1, now);
+                let split = self.model.split_board();
+                let b = self.bubble.as_mut().unwrap();
+                b.fsa_first_ff = !split;
+                let v = b.read((address >> 1) & 1, now);
                 self.sync_bubble_int();
                 v
             }
@@ -634,7 +637,10 @@ impl ExternalBoard for GridBoard {
             0xDFEC0..=0xDFECF => {}
             0xDFE80..=0xDFE83 if address & 1 == 0 && self.bubble.is_some() => {
                 let now = self.clocks + _cycles as u64;
-                self.bubble.as_mut().unwrap().write((address >> 1) & 1, data, now);
+                let split = self.model.split_board();
+                let b = self.bubble.as_mut().unwrap();
+                b.fsa_first_ff = !split;
+                b.write((address >> 1) & 1, data, now);
                 self.sync_bubble_int();
             }
             0xDFF00..=0xDFF1F if address & 1 == 0 => {

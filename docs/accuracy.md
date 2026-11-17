@@ -149,6 +149,15 @@ GRiDProbe on the real 1101, replayed in `crates/lib/grid_core/tests/devices.rs`:
 
 The 1137's bubble looked slower than the 1101's; all models use the 1101's timing for now.
 
+Read FSA Status gives two bytes per module. The real 1101 answers FFH for the first one
+(GRiDProbe b01/b82), which the 1101 model keeps. The Compass II models (1121 to 1139) answer
+20H on every channel. Their ROM bubble driver, GRiD's 1984 sized bigbubbles.plm, sizes the
+bubble by counting the bytes that are not FFH and halving the count, so with the FF it would
+come out one module short. A command also points the register address counter back at the
+FIFO, or that driver's count would take in five parametric registers as well. An Initialize
+whose address register names a module that isn't fitted stays busy until an Abort. ASSUMED
+for the Compass II board: no real 113x bubble has been measured yet.
+
 ## Not compared yet
 
 The serial port and GRiDLink, the internal modem, sound levels, the keyboard scan rate and

@@ -28,6 +28,7 @@ hard disk.
 | Floppy (2101 or 2102) | raw image, `.img` | 360 KB: 720 pages (40 cylinders, 2 sides, 9 sectors of 512 bytes) |
 | Floppy, ImageDisk | `.IMD` | used through an `.img` with the same name beside it, made from the .IMD the first time; changes go to the .img, the .IMD stays as it was |
 | Bubble memory | raw 7220/7110 contents in address order | 128 KB per module (384K on the 1101); a missing file is made blank |
+| Bubble Fix backup | `<name> Module N~Bin~` / `~Raw~` from GRiD Bubble Fix (version 1 or 2) | one file per module; the files of all modules beside the chosen one are read together, raw (68-byte) pages without their check bytes, pages put back by the backup's page shift. Changes are saved to a raw `<name> bubble.img` beside them, which is used instead once it is newer than the backups |
 | PC folder | a folder on the PC | built into a GRiD volume of up to 32 MB at start (see [drives.md](drives.md#pc-folder-drive)) |
 | Application ROM | raw chip dump | 32, 64 or 128 KB per socket |
 

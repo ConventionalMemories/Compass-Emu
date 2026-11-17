@@ -138,6 +138,8 @@ With their firmware in the ROM folder, the 2101 Disc System and the 2102 Portabl
 
 The bubble memory board (7220 controller with 7110 bubbles, 384K on the 1101) is on the setup page's Bubble card: on/off, image file, size of a new image, Make blank and Write protect. The image holds the raw bubble contents, 128 KB per module. A missing file is made blank; format a blank one with GRiD-OS's Initialize Media. The bubble is saved on exit like the disks.
 
+Backups made by GRiD Bubble Fix (the "<name> Module N~Bin~" or "~Raw~" files) can be the image too: pick the file of any module and the other modules' files next to it are read with it, each at its module's place (missing ones stay blank). The backups are never written over: the GRiD's changes go to a raw image "<name> bubble.img" beside them, and that image is used from then on as long as it is newer than the backups.
+
 ## Build in the window
 
 Project > Project window: pick the project folder (NAME.pas, NAME.asm and the other sources) and a development disk (empty = the machine's hard disk; the disk needs Pascal~Run~ and DevelopmentExecutive~Run~). Then Build, Build and run, or Debug build.

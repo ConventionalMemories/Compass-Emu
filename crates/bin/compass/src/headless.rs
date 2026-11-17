@@ -70,7 +70,12 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
     let Some(command) = command else { fail("no command given") };
     let Some(hd) = hd else { fail("--hd disk.img is needed") };
     let img = fs::read(&hd).unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", hd.display())));
-    let bub = bubble.as_ref().map(|p| fs::read(p).unwrap_or_else(|_| vec![0u8; 3 * grid_core::bubble::MBM_SIZE]));
+    let loaded = bubble.as_ref().map(|p| grid_core::bubble::load_image(p, 3 * grid_core::bubble::MBM_SIZE).unwrap_or_else(|e| fail(&e)));
+    if let Some(n) = loaded.as_ref().map(|l| &l.note).filter(|n| !n.is_empty()) {
+        eprintln!("{n}");
+    }
+    let bubble_save = loaded.as_ref().map(|l| l.save_to.clone());
+    let bub = loaded.map(|l| l.image);
     let wall = Instant::now();
     let resumed = state.as_ref().and_then(|p| fs::read(p).ok()).and_then(|d| match grid_core::GridMachine::load_state(&d) {
         Ok(m) if m.model == model => Some(m),
@@ -224,7 +229,7 @@ pub fn run(args: Vec<String>, roms_default: PathBuf) -> i32 {
             }
         }
     }
-    if let (Some(p), Some(bb)) = (&bubble, &b.bubble) {
+    if let (Some(p), Some(bb)) = (&bubble_save, &b.bubble) {
         if bb.dirty {
             let _ = fs::write(p, &bb.image);
         }

@@ -164,6 +164,15 @@ pub struct Bubble {
     /// MBMs written since the last Software Reset (their FSA status has bit 3 set).
     #[serde(default)]
     written: u16,
+    /// Read FSA Status gives FFH for the first channel, as on a real 1101 (GRiDProbe b01/b82).
+    /// The board sets it: off on the Compass II plug-in bubble board, whose ROM driver counts
+    /// the modules from these bytes (see `start`).
+    #[serde(default = "yes")]
+    pub fsa_first_ff: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Bubble {
@@ -195,6 +204,7 @@ impl Bubble {
             stuck: false,
             short: false,
             written: 0,
+            fsa_first_ff: true,
         }
     }
 
@@ -299,6 +309,12 @@ impl Bubble {
     }
 
     fn start(&mut self, cmd: u8, now: u64) {
+        // A command points the register address counter back at the FIFO. The Compass II ROM
+        // driver (GRiD's 1984 bigbubbles.plm) reads the utility register (RAC then 0BH), gives
+        // Abort, Software Reset, Reset FIFO and Read FSA Status, and reads the data port while
+        // the status says FIFO ready, counting the bytes that are not FFH: with the RAC still
+        // on the parametric registers it would count five of them as modules too.
+        self.rac = 0;
         self.phase = Phase::Exec;
         self.str_ &= !SR_CLEAR;
         if self.log {
@@ -327,6 +343,13 @@ impl Bubble {
                 if self.nfc() != 2 {
                     self.op = Op::Fail;
                     self.next = now + t.fail_clocks;
+                }
+                else if self.mbm() >= self.mbms {
+                    // An address register naming a module that is not fitted: the controller
+                    // never finds that module's bootloop and stays busy until an Abort (Bubble
+                    // Fix's module count and the Compass II driver rely on this failing).
+                    self.op = Op::Init;
+                    self.next = u64::MAX;
                 }
                 else {
                     // GRiDProbe on a real 1101: 6.0 .. 8.6 ms, but 0.49 ms after a Purge
@@ -438,10 +461,11 @@ impl Bubble {
                 Op::ReadFsa => {
                     // GRiDProbe b01/b82 on a real 1101: FF 20 20 20 20 20 (the first channel
                     // always reads FF), with 28 for both channels of an MBM written since the
-                    // last Software Reset.
+                    // last Software Reset. The Compass II driver counts the bytes that are not
+                    // FFH and halves the count, so there every channel answers.
                     for c in 0..self.mbms * 2 {
                         let w = self.written >> (c / 2) & 1 != 0;
-                        self.fifo_push(if c == 0 { 0xFF } else if w { 0x28 } else { 0x20 });
+                        self.fifo_push(if c == 0 && self.fsa_first_ff { 0xFF } else if w { 0x28 } else { 0x20 });
                     }
                     self.end(true);
                 }
@@ -556,4 +580,168 @@ impl Bubble {
             self.rac = (v & 15) as usize;
         }
     }
+}
+
+/// Pages in one 7110 module.
+pub const MBM_PAGES: usize = 2048;
+
+/// A bubble image read from a file, as `load_image` found it.
+pub struct LoadedImage {
+    pub image: Vec<u8>,
+    /// Where the emulator saves the bubble: the file itself for a raw image, a new raw image
+    /// next to it for Bubble Fix backups (they are never written over).
+    pub save_to: std::path::PathBuf,
+    /// What was read, for the user (empty for a raw image).
+    pub note: String,
+}
+
+/// One module from a Bubble Fix backup.
+struct FixModule {
+    module: Option<usize>,
+    pages: Vec<u8>,
+}
+
+/// Parse a GRiD Bubble Fix backup of one module ("<name> Module N~Bin~" or "~Raw~"):
+/// version 2 (64-byte BUBBACK1 header, 2048 pages of 64 or 68 bytes, 2048 status bytes,
+/// BUBTAIL1 tail with the page shift) or version 1 (pages and status bytes only). Gives the
+/// module's 128K in page order; pages the backup could not read are zeros.
+fn parse_bubfix(d: &[u8]) -> Option<FixModule> {
+    let n = MBM_PAGES;
+    let (module, psize, body, synced, shift) = if d.len() >= 64 && &d[..8] == b"BUBBACK1" {
+        let psize = d[10] as usize;
+        let pages = u16::from_le_bytes([d[12], d[13]]) as usize;
+        if !(psize == 64 || psize == 68) || pages != n || d.len() < 64 + n * psize {
+            return None;
+        }
+        let tail = 64 + n * psize + n;
+        let shift = (d.len() >= tail + 16 && &d[tail..tail + 8] == b"BUBTAIL1")
+            .then(|| u16::from_le_bytes([d[tail + 14], d[tail + 15]]))
+            .filter(|&s| s != 0xFFFF)
+            .map(|s| s as usize % n);
+        (Some((d[8] & 7) as usize), psize, &d[64..], d[11] == 1, shift)
+    }
+    else if d.len() == n * 64 + n || d.len() == n * 68 + n {
+        (None, (d.len() - n) / n, d, true, None)
+    }
+    else {
+        return None;
+    };
+    // a status byte per page: 00H = not read (a file cut short keeps its pages)
+    let status = |p: usize| body.get(n * psize + p).copied().unwrap_or(0x40);
+    let mut pages = vec![0u8; MBM_SIZE];
+    for p in 0..n {
+        if status(p) == 0 {
+            continue;
+        }
+        // a backup made without the bootloop has its pages shifted: the restore puts page p
+        // at (p + shift) mod 2048, and so do we
+        let q = if synced { p } else { (p + shift.unwrap_or(0)) % n };
+        pages[q * 64..q * 64 + 64].copy_from_slice(&body[p * psize..p * psize + 64]);
+    }
+    Some(FixModule { module, pages })
+}
+
+/// Is this file a Bubble Fix backup (reads only its first bytes)?
+pub fn is_bubfix_file(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut head = [0u8; 8];
+    let magic = f.read_exact(&mut head).is_ok() && &head == b"BUBBACK1";
+    magic || len == MBM_PAGES * 65 || len == MBM_PAGES * 69
+}
+
+/// The module number (1-8) a Bubble Fix file name carries ("Bubble Module 2~Bin~"), with the
+/// byte range of the digit.
+fn module_in_name(name: &str) -> Option<(usize, std::ops::Range<usize>)> {
+    let low = name.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = low[from..].find("module") {
+        let mut j = from + i + 6;
+        while low.as_bytes().get(j) == Some(&b' ') || low.as_bytes().get(j) == Some(&b'_') {
+            j += 1;
+        }
+        if let Some(c @ b'1'..=b'8') = low.as_bytes().get(j).copied() {
+            return Some(((c - b'1') as usize, j..j + 1));
+        }
+        from += i + 6;
+    }
+    None
+}
+
+/// Read a bubble image. A raw image (128K per module) is used as it is; a missing file gives
+/// a blank image of `blank_bytes`. A GRiD Bubble Fix backup of one module is read with its
+/// sibling modules (the same name with the other module numbers), each put at its module's
+/// place; modules without a backup stay blank. The changed bubble is then saved to a raw
+/// image next to the backups ("<name> bubble.img"), never into them.
+pub fn load_image(path: &std::path::Path, blank_bytes: usize) -> Result<LoadedImage, String> {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LoadedImage { image: vec![0u8; blank_bytes.max(MBM_SIZE)], save_to: path.to_path_buf(), note: String::new() })
+        }
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let Some(first) = parse_bubfix(&data) else {
+        return Ok(LoadedImage { image: data, save_to: path.to_path_buf(), note: String::new() });
+    };
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let named = module_in_name(&name);
+    let mut found: Vec<(usize, Vec<u8>)> = vec![];
+    let mut sources = vec![path.to_path_buf()];
+    let place = |m: Option<usize>, fallback: usize, pages: Vec<u8>, found: &mut Vec<(usize, Vec<u8>)>| {
+        let m = m.unwrap_or(fallback);
+        if !found.iter().any(|(k, _)| *k == m) {
+            found.push((m, pages));
+        }
+    };
+    place(first.module, named.as_ref().map(|n| n.0).unwrap_or(0), first.pages, &mut found);
+    let mut base = name.clone();
+    if let Some((_, r)) = &named {
+        for k in 0..8 {
+            let mut sib = name.clone();
+            sib.replace_range(r.clone(), &((b'1' + k as u8) as char).to_string());
+            let sp = path.with_file_name(&sib);
+            if sib == name || !sp.is_file() {
+                continue;
+            }
+            if let Some(fm) = std::fs::read(&sp).ok().and_then(|d| parse_bubfix(&d)) {
+                place(fm.module, k, fm.pages, &mut found);
+                sources.push(sp);
+            }
+        }
+        // "Bubble Module 1~Bin~" -> "Bubble"
+        let low = name.to_ascii_lowercase();
+        let cut = low[..r.start].rfind("module").unwrap_or(r.start);
+        base = name[..cut].trim_end_matches([' ', '_', '-']).to_string();
+    }
+    let save_to = path.with_file_name(format!("{} bubble.img", if base.is_empty() { "Bubble Fix" } else { &base }));
+    // the bubble saved from these backups before (and not older than them) holds the GRiD's
+    // later changes: use it
+    let newest = sources.iter().filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok()).max();
+    if let (Ok(saved), Some(newest)) = (std::fs::metadata(&save_to).and_then(|m| m.modified()), newest) {
+        if saved >= newest {
+            if let Ok(image) = std::fs::read(&save_to) {
+                let note = format!("Bubble Fix backup: using {} (saved from these backups before)", save_to.file_name().unwrap().to_string_lossy());
+                return Ok(LoadedImage { image, save_to, note });
+            }
+        }
+    }
+    found.sort_by_key(|f| f.0);
+    let mbms = found.last().map(|f| f.0 + 1).unwrap_or(1).max(blank_bytes / MBM_SIZE).max(1);
+    let mut image = vec![0u8; mbms * MBM_SIZE];
+    for (m, pages) in &found {
+        image[m * MBM_SIZE..(m + 1) * MBM_SIZE].copy_from_slice(pages);
+    }
+    let list = found.iter().map(|f| (f.0 + 1).to_string()).collect::<Vec<_>>().join(", ");
+    let missing: Vec<String> = (0..mbms).filter(|m| !found.iter().any(|f| f.0 == *m)).map(|m| (m + 1).to_string()).collect();
+    let mut note = format!(
+        "Bubble Fix backup: module{} {list} of {mbms}",
+        if found.len() == 1 { "" } else { "s" }
+    );
+    if !missing.is_empty() {
+        note += &format!(" (module {} blank)", missing.join(", "));
+    }
+    note += &format!("; saved to {}", save_to.file_name().unwrap().to_string_lossy());
+    Ok(LoadedImage { image, save_to, note })
 }

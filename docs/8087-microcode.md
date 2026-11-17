@@ -3,25 +3,31 @@
 `crates/lib/i8087/src/micro` is a second 8087 core that runs the chip's own microcode ROM
 (1648 words of 16 bits) on a model of its datapath: tmpA/tmpB/tmpC, the adder with its B
 register and sum register, the shifter, the rounding bits, the micro-stack. It is built
-beside the instruction-level core in `lib.rs` and checked against it. The emulator runs on
-it when asked to (see below); by default it uses the instruction-level core.
+beside the instruction-level core in `lib.rs` and checked against it. Since 0.12.0 the
+emulator runs on it whenever the ROM file is there.
 
 ## Running the emulator on the microcode
 
-Supply the ROM (next section) and the emulator uses it: it prints "8087: running on the
-microcode ROM" at start. Without the file it prints that it found none and runs the
-instruction-level core, as before. `FPU_CORE=table` keeps the instruction-level core even
-with the ROM present (for comparing the two). With the microcode every
-instruction that has a routine in the ROM runs there. Two things stay with the
-instruction-level core:
+Supply the ROM (next section) and the emulator uses it: the setup page shows the file it
+found, the status bar says "8087 microcode", and the headless runner prints "8087: running
+on the microcode ROM" at start. Without the file the instruction-level core runs, as before.
+
+To keep the instruction-level core even with the ROM there (for comparing the two): the
+setup page's 8087 box ("Instruction-level 8087 even with the microcode ROM"), `--fpu-table`
+on the command line, Machine > 8087 on its microcode ROM while the machine runs (the switch
+happens between two instructions), or `FPU_CORE=table` headless.
+
+With the microcode every instruction that has a routine in the ROM runs there. The rest is
+hardwired in the chip, and stays with the instruction-level core:
 
 - The control instructions (FINIT, FCLEX, FENI, FDISI, FLDCW, FSTCW, FSTSW, FSTENV,
-  FLDENV). The chip does these in hardwired logic; the ROM has no routines for them.
-- FSAVE and FRSTOR. The ROM holds only their loops over the eight registers (entries 675
-  and 695), the environment part is hardwired.
+  FLDENV). The ROM has no routines for them.
+- The environment part of FSAVE and FRSTOR. Their loops over the eight registers (ROM
+  entries 675 and 695) run from the ROM since 0.13.0.
+
 The time an instruction takes comes from the microcode too (see "Timing" below), except
 for the control instructions, FSAVE and FRSTOR, which keep the instruction-level core's
-tables.
+tables, corrected to the real 1101 (within about 1.5 clocks).
 
 If the microcode core meets a micro-instruction the model does not know, that instruction
 is done by the instruction-level core instead (`I8087::micro_faults` counts them; none are
@@ -32,9 +38,10 @@ known).
 Compass-Emu does not ship the microcode. The emulator and the tests read it from a file you
 supply:
 
+- the file named on the setup page (ROMs, "8087 microcode") or with `--fpu-rom FILE`,
 - the environment variable `I8087_MICROCODE` = path to the file, or
-- `roms/8087mc.txt` (or `roms/8087mc.bin`) under the current directory or beside the
-  program.
+- `8087mc.txt` (or `8087mc.bin`) in the ROM folder (`roms` beside the program or under
+  the current directory). Import ROMs copies it there by its name.
 
 The text form is the one the "Opcode Collective" dump uses (`tools/8087mc/bin/8087mc.txt` in
 github.com/a-mcego/granite): one line per word, 16 columns for bits A..P, a letter for 1 and a

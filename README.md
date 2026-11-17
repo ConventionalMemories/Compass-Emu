@@ -17,6 +17,7 @@ also has a fast core that makes it usable as a build machine.
 - [What it emulates](#what-it-emulates)
 - [How accurate it is](#how-accurate-it-is)
 - [Getting started (Windows)](#getting-started-windows)
+- [Documentation](#documentation)
 - [Building GRiD programs and the Claude Code hook](#building-grid-programs-and-the-claude-code-hook)
 - [Building from source](#building-from-source)
 - [Left to do](#left-to-do)
@@ -73,8 +74,46 @@ also has a fast core that makes it usable as a build machine.
 All numbers are from my own runs of GRiDBench, GRiDProbe, 8087 Bench and Disk Toolkit
 (test programs written for this) on a real **1101** with a 2101 and a 2102, and a real
 **1137**. The questions each measurement answered are in
-[docs/real-hw-tests.md](docs/real-hw-tests.md), and the known gaps are in
-[COMPASS.md](COMPASS.md).
+[docs/real-hw-tests.md](docs/real-hw-tests.md), and the full tables, with GRiDProbe's
+bubble and display numbers, are in [docs/accuracy.md](docs/accuracy.md).
+
+### CPU, 8087 and display
+
+| What | Result |
+|---|---|
+| 8086 instruction set (SingleStepTests suite, both cores) | No register, flag or memory errors. About 94.5 % of tests have exact clock counts. |
+| 8086 timing on the Compass (GRiDBench 2.2 jump, memory and REP rows) | 1.2 % rms on the 1101, 1.4 % on the 113x |
+| 8087 timing, microcode core (8087 Bench, 2068 timed tests) | 1.45 % mean error against the real 1101 (about 1.5 clocks). The instruction-level core's tables were 40 % off. |
+| 8087 results, microcode core (8087 Bench, 1588 result lines) | All but 34 lines identical to the real chip (the rest are last-bit differences in transcendentals) |
+| 8087 transcendentals dumped from a real 1101 (141 results) | 134 bit for bit, 7 one unit off |
+| GRiD-OS's WAIT-to-INT 3 overhead per 8087 instruction | 55.8 clocks (real 1101: 55.7), 57.8 on the 113x (real 1137: 58.7) |
+| Display frame (GRiDProbe beam finder) | 1101: 307 clocks x 268 lines, 60.8 Hz. 113x: 316 x 263, 60.2 Hz. |
+
+### Disk drives
+
+2101 page reads in ms (GRiDBench 2.1b on the real 1101 + 2101):
+
+| Pattern | Real | Low level | Protocol model |
+|---|---:|---:|---:|
+| Same page | 19.0 | 21.1 | 19.4 |
+| Sequential | 21.1 | 26.8 | 19.4 |
+| 8 pages | 53.5 | 63.8 | 65 |
+| Random | 130.3 | 132.8 | 130.0 |
+| Steps of 1/16 | 122.5 | 118.4 | 120.6 |
+
+2102 page reads in ms (GRiDBench 2.1b, real 2102 with a Gotek, motor running):
+
+| Pattern | Real | Low level | Protocol model |
+|---|---:|---:|---:|
+| Same page | 212 | 200 | 197 |
+| Sequential | 133 | 121 | 121 |
+| Random | 235 | 243 | |
+| First/last | 415 | 403 | 395 |
+| Steps of 1/16 | 172 | 196 | 211 |
+
+After 12-30 s idle the low-level 2102 powers its drive down. The next read takes 1.8-1.9 s
+(real: 1.9-2.0 s). Bubble memory timing and status bytes follow GRiDProbe's seek patterns on
+the real 1101 (replayed in `crates/lib/grid_core/tests/devices.rs`).
 
 ### CPU, 8087 and display
 
@@ -136,10 +175,27 @@ through it. Disk changes are written to the image files when you power off or cl
 window.
 
 The full guide, including the command line, is in [docs/user-guide.md](docs/user-guide.md).
-It ships as README.txt in the zip.
+It ships as README.txt in the zip. Which ROM file is which is in [docs/roms.md](docs/roms.md).
 
 The release is Windows only for now. Linux builds from source (see below), and macOS
 is untested.
+
+## Documentation
+
+| | |
+|---|---|
+| [User guide](docs/user-guide.md) | The window, the command line, every feature (ships as README.txt in the zip) |
+| [ROM files](docs/roms.md) | Every ROM and firmware file: name, size, checksum, where it comes from |
+| [Disks and media](docs/disks.md) | Which GRiD-OS for which model, image formats, blank media, when changes are saved |
+| [Disk drives](docs/drives.md) | The 2101 and 2102 at low level and as a protocol model, the PC folder drive |
+| [Hardware model](docs/hardware.md) | How each part of the Compass is modelled, per model |
+| [8087 microcode](docs/8087-microcode.md) | The 8087 running its own microcode: what runs, timing, what a real chip answered |
+| [Internal modem](docs/modem.md) | The modem's firmware, the TCP phone line, the wiring |
+| [GRiDLink](docs/gridlink.md) | The SDLC network over TCP and its wire format |
+| [Build mode and MCP](docs/build-and-mcp.md) | Building GRiD programs, headless runs, the Claude Code hook |
+| [Accuracy](docs/accuracy.md) | Real-vs-emulator numbers in full |
+| [Real-hardware tests](docs/real-hw-tests.md) | What was measured and what is still open |
+| [Developer guide](docs/developer.md) | Code tour, building, tests, environment variables |
 
 ## Building GRiD programs and the Claude Code hook
 
@@ -167,8 +223,8 @@ OpenGL to run the window. The Windows build can be cross-compiled with
 
 The code is in `crates/lib/grid_core` (the Compass and its drives), `crates/lib/i8087` (the
 8087) and `crates/bin/compass` (the window, the command line and the MCP server).
-`crates/lib/marty_core` is the part of MartyPC that is kept. Technical notes on the hardware
-model are in [COMPASS.md](COMPASS.md).
+`crates/lib/marty_core` is the part of MartyPC that is kept. The code tour, the tests and
+every environment variable are in [docs/developer.md](docs/developer.md).
 
 ## Left to do
 
@@ -242,7 +298,9 @@ build and to check.
   low-level keyboard, the 113x screen modes, 2102 geometry and formatting, RS-232, the 8087
   hookup, the test ROM and machine-ID ROM devices, bubble memory, and ROM dumps. Also the
   reverse engineering in [grid-compass-fdd-2102](https://github.com/vklachkov/grid-compass-fdd-2102)
-  and [grid-compass-2101](https://github.com/vklachkov/grid-compass-2101).
+  and [grid-compass-2101](https://github.com/vklachkov/grid-compass-2101), and
+  [grid-compass-network](https://github.com/vklachkov/grid-compass-network) (MIT), whose
+  reversed MS-DOS modem driver and Setochka GRiD Server were used to check the internal modem.
 - **[JDat](https://github.com/JDat)**: schematics of the 2102 floppy drive (the base of the
   low-level 2102), the internal modem board (used to check the modem's pin wiring), and part
   of the 1101 motherboard.

@@ -164,15 +164,11 @@ pub struct Bubble {
     /// MBMs written since the last Software Reset (their FSA status has bit 3 set).
     #[serde(default)]
     written: u16,
-    /// Read FSA Status gives FFH for the first channel, as on a real 1101 (GRiDProbe b01/b82).
-    /// The board sets it: off on the Compass II plug-in bubble board, whose ROM driver counts
-    /// the modules from these bytes (see `start`).
-    #[serde(default = "yes")]
+    /// Read FSA Status gives FFH for the first channel, as GRiDProbe b01/b82 read it on a real
+    /// 1101. Off by default: GRiD's own drivers (the Compass II ROM, MS-DOS 2.11C) count the
+    /// modules from these bytes and would come out one short (see `start`).
+    #[serde(default)]
     pub fsa_first_ff: bool,
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl Bubble {
@@ -204,7 +200,7 @@ impl Bubble {
             stuck: false,
             short: false,
             written: 0,
-            fsa_first_ff: true,
+            fsa_first_ff: false,
         }
     }
 
@@ -459,10 +455,11 @@ impl Bubble {
                 Op::Fail => self.end(false),
                 Op::Init | Op::Quick => self.end(true),
                 Op::ReadFsa => {
-                    // GRiDProbe b01/b82 on a real 1101: FF 20 20 20 20 20 (the first channel
-                    // always reads FF), with 28 for both channels of an MBM written since the
-                    // last Software Reset. The Compass II driver counts the bytes that are not
-                    // FFH and halves the count, so there every channel answers.
+                    // 20H per channel, 28H for both channels of an MBM written since the last
+                    // Software Reset (GRiDProbe b82 on a real 1101). GRiDProbe read FFH for the
+                    // first channel, but GRiD's drivers that size the bubble (Compass II ROM,
+                    // MS-DOS 2.11C) count the bytes that are not FFH and halve the count, and
+                    // they found all three modules on real 1101s, so every channel answers here.
                     for c in 0..self.mbms * 2 {
                         let w = self.written >> (c / 2) & 1 != 0;
                         self.fifo_push(if c == 0 && self.fsa_first_ff { 0xFF } else if w { 0x28 } else { 0x20 });

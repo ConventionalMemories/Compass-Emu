@@ -101,7 +101,8 @@ fn bubble_write_status_and_stuck_abort() {
     b.write(1, 0x11, t);
     t += 200_000;
     b.read(1, t);
-    // one page written: status 42, FSA status marks MBM 0
+    // one page written: status 42, FSA status marks MBM 0 (GRiDProbe b82 read FF 20 28 28 ..:
+    // the first channel FFH, see Bubble::fsa_first_ff)
     params(&mut b, 0x1001, 0, t);
     b.write(1, 0x13, t);
     let mut n = 0;
@@ -120,7 +121,7 @@ fn bubble_write_status_and_stuck_abort() {
     b.write(1, 0x18, t);
     t += 5_000;
     let fsa: Vec<u8> = (0..6).map(|_| b.read(0, t)).collect();
-    assert_eq!(fsa, [0xFF, 0x28, 0x20, 0x20, 0x20, 0x20]);
+    assert_eq!(fsa, [0x28, 0x28, 0x20, 0x20, 0x20, 0x20]);
     // Abort after 1 byte: harmless
     assert_eq!(bubble_poll_read(&mut b, &mut t, 16, Some(1)).0, 1);
     assert_eq!(bubble_poll_read(&mut b, &mut t, 4, None), (256, 0x40));
@@ -326,19 +327,19 @@ fn rom_driver_count(b: &mut Bubble, t: &mut u64) -> usize {
     n / 2
 }
 
-/// GRiD-OS 3.1.5D on a 113x sizes the bubble from Read FSA Status. A command must point the
-/// RAC back at the FIFO, and on the Compass II board every channel answers, or the driver
-/// counts too many (or too few) modules and Initialize Media fails past the last page.
+/// GRiD-OS 3.1.5D on a 113x and MS-DOS 2.11C size the bubble from Read FSA Status. A command
+/// must point the RAC back at the FIFO, and every channel must answer, or the driver counts
+/// too many (or too few) modules and formatting fails past the last page.
 #[test]
-fn bubble_module_count_for_compass_ii_driver() {
+fn bubble_module_count_for_grid_driver() {
     for mbms in 1..=4 {
         let mut b = Bubble::new(vec![0; mbms * 128 * 1024]);
-        b.fsa_first_ff = false;
         let mut t = 0u64;
         assert_eq!(rom_driver_count(&mut b, &mut t), mbms, "{mbms} modules");
     }
-    // the 1101 keeps its measured FF for the first channel
+    // with GRiDProbe's FFH first byte the count comes out one short
     let mut b = Bubble::new(vec![0; 3 * 128 * 1024]);
+    b.fsa_first_ff = true;
     let mut t = 0u64;
     assert_eq!(rom_driver_count(&mut b, &mut t), 2);
 }

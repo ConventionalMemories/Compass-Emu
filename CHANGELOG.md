@@ -4,14 +4,14 @@ Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/d
 
 ## 0.14.0
 
-- Bubble memory on the Compass II models (1121 to 1139): GRiD-OS 3.1.5D couldn't format a
-  blank bubble image ("Write error 103" past the last page). Their ROM bubble driver counts
-  the modules from Read FSA Status and was given 5 of them. Commands now point the 7220's
-  register address counter back at the FIFO, the Compass II board answers on every FSA
-  channel (the 1101 keeps its measured FFH on the first), and an Initialize naming a module
-  that isn't fitted stays busy until an Abort, as a missing bootloop does. 384K and 512K
-  blank images now format on a 1139; the 1101 with GRiD-OS 3.1.0A formats and boots as
-  before.
+- Bubble memory: GRiD-OS 3.1.5D on the Compass II models (1121 to 1139) couldn't format a
+  blank bubble image ("Write error 103" past the last page). MS-DOS 2.11C's FORMAT stopped
+  at sector 773 of 1280. Both drivers count the modules from Read FSA Status, and they were
+  given 5. Now commands point the 7220's register address counter back at the FIFO, every
+  FSA channel answers, and an Initialize naming a module that isn't fitted stays busy until
+  an Abort, as a missing bootloop does. A 1139 with 3.1.5D formats blank 384K and 512K
+  images. MS-DOS formats 768 of 768 sectors on the 1101 and the 1139. The 1101 with GRiD-OS
+  3.1.0A formats and boots as before.
 - GRiD Bubble Fix backups can be the bubble image: choose any module's file and the other
   modules' files beside it are read too (version 1 and 2, corrected or raw, page shift
   applied). The backups are never written over; changes go to "<name> bubble.img" beside

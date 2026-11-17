@@ -89,31 +89,6 @@ bubble and display numbers, are in [docs/accuracy.md](docs/accuracy.md).
 | GRiD-OS's WAIT-to-INT 3 overhead per 8087 instruction | 55.8 clocks (real 1101: 55.7), 57.8 on the 113x (real 1137: 58.7) |
 | Display frame (GRiDProbe beam finder) | 1101: 307 clocks x 268 lines, 60.8 Hz. 113x: 316 x 263, 60.2 Hz. |
 
-### Disk drives
-
-2101 page reads in ms (GRiDBench 2.1b on the real 1101 + 2101):
-
-| Pattern | Real | Low level | Protocol model |
-|---|---:|---:|---:|
-| Same page | 19.0 | 21.1 | 19.4 |
-| Sequential | 21.1 | 26.8 | 19.4 |
-| 8 pages | 53.5 | 63.8 | 65 |
-| Random | 130.3 | 132.8 | 130.0 |
-| Steps of 1/16 | 122.5 | 118.4 | 120.6 |
-
-2102 page reads in ms (GRiDBench 2.1b, real 2102 with a Gotek, motor running):
-
-| Pattern | Real | Low level | Protocol model |
-|---|---:|---:|---:|
-| Same page | 212 | 200 | 197 |
-| Sequential | 133 | 121 | 121 |
-| Random | 235 | 243 | |
-| First/last | 415 | 403 | 395 |
-| Steps of 1/16 | 172 | 196 | 211 |
-
-After 12-30 s idle the low-level 2102 powers its drive down. The next read takes 1.8-1.9 s
-(real: 1.9-2.0 s). Bubble memory timing and status bytes follow GRiDProbe's seek patterns on
-the real 1101 (replayed in `crates/lib/grid_core/tests/devices.rs`).
 
 ### CPU, 8087 and display
 

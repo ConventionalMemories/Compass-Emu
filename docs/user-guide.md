@@ -16,13 +16,45 @@ Compass-Emu needs the GRiD ROMs and a GRiD-OS disk. Neither is included.
    ```
 3. Pick a model and the disk images, then press Power on.
 
-"Save as shortcut" on the setup page writes a .bat that starts that machine straight away.
+"Save as shortcut" on the setup page writes a .bat that starts that machine straight away (on Linux a .sh script or a .desktop launcher).
+
+Where Compass-Emu keeps its own files (compass-profiles.json, saved-states, states and imported roms): next to compass.exe, as long as that folder can be written to. When it can't (Program Files, /usr/bin, an AppImage), they go to a folder of your own: %APPDATA%\Compass-Emu on Windows, ~/.local/share/compass-emu on Linux. The setup page shows the profile file's path at the bottom. To pick another folder, set COMPASS_DATA_DIR. ROMs are also still found in a roms folder next to the program.
+
+## Linux
+
+Download compass-emu-VERSION-linux-x86_64.tar.gz from the releases page and unpack it anywhere (in a file manager: right-click > Extract; or tar xzf compass-emu-\*.tar.gz). Start the compass program inside from a terminal (Ubuntu's file manager doesn't start programs on a double-click; in the folder, right-click > Open in Terminal):
+```
+cd compass-emu-VERSION-linux-x86_64
+./compass
+```
+Everything in this guide works the same way; read compass for compass.exe and / for \ in paths.
+
+- It runs on 64-bit x86 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Mint 21 or newer). It needs the ALSA sound library and, on an X11 desktop, xkbcommon-x11. Ubuntu doesn't always install the second one (its Wayland session doesn't need it); if the window doesn't open and the terminal says libxkbcommon-x11.so could not be loaded, install them with
+  ```
+  sudo apt install libasound2 libxkbcommon-x11-0
+  ```
+  (Fedora: sudo dnf install alsa-lib libxkbcommon-x11). Sound through PulseAudio or PipeWire works through their ALSA plugin.
+- It is built for both X11 and Wayland desktops. The window uses OpenGL, so it needs a working graphics driver (Mesa is fine).
+- File dialogs (Insert floppy, Import ROMs...) use the desktop's portal (xdg-desktop-portal), or zenity when there is no portal. Without either, drop disk images on the window or type paths in the setup page.
+- Real serial ports are named /dev/ttyUSB0, /dev/ttyS0 and so on. To use them without root, add yourself to the port's group once and log in again:
+  ```
+  sudo usermod -aG dialout $USER
+  ```
+  (on Arch the group is uucp).
+- The desktop can take some keys before the emulator sees them (Super, Alt+Tab, Alt+F4, sometimes Alt+drag or Ctrl+Alt+arrows). The Compass Code key is on Alt, so turn off a desktop shortcut that gets in the way, or use the on-screen keyboard (View menu).
+- "Save as shortcut" writes a shell script (.sh) or, if the name ends in .desktop, a launcher for the desktop's menus (copy it to ~/.local/share/applications). Both start the program from where it is now, so make them again after moving it.
+
+Building it yourself: install Rust (https://rustup.rs) and the ALSA headers (sudo apt install build-essential pkg-config libasound2-dev), then in the source folder:
+```
+cargo build --release -p compass
+```
+The program is target/release/compass.
 
 ## The window
 
 The emulator has menus (Machine, Edit, Media, Project, View, Debug, Help), a toolbar and a status bar with the speed and a light for each drive.
 
-- Setup page: started on its own (double-click compass.exe), the emulator opens the machine setup page. Pick a profile or make one (model, ROM folder, GPIB devices, bubble, ROM sockets, serial port, modem phone line, sound), then Power on (the button beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe. Started from a shortcut .bat, or with machine options on the command line, the machine powers on right away.
+- Setup page: started on its own (double-click compass.exe), the emulator opens the machine setup page. Pick a profile or make one (model, ROM folder, GPIB devices, bubble, ROM sockets, serial port, modem phone line, sound), then Power on (the button beside each profile, or double-click the profile). Profiles are kept in compass-profiles.json next to compass.exe (see Setup for when they go elsewhere). Started from a shortcut .bat, or with machine options on the command line, the machine powers on right away.
 - ROMs card: every ROM the profile uses, the file found and a field to pick another. Import ROMs... copies GRiD ROMs from a folder or zip.
 - GPIB devices: one card per unit on the Compass's GPIB bus (2101 Disc System, 2102 Floppy, PC folder drive), "+ Add device" for more. Each card has:
   - an on/off box (off: left out of the machine for now, settings kept),
@@ -31,7 +63,7 @@ The emulator has menus (Machine, Edit, Media, Project, View, Debug, Help), a too
   - its disks, each with a Write protect box.
 
   Two 2101 boxes can each have their own level. A floppy drive with no disk is still there, so GRiD-OS lists it and sees a disk inserted later. The status bar names each drive by its GRiD-OS name and shows LL or P beside it (WP when write protected).
-- Machine menu: power off (back to setup), restart, pause, turbo, the fast CPU core and the 8087 core (both switch while the machine runs), quick save and quick load (kept in memory, disks included), Save state and Saved states... (states with a picture of the screen, kept per profile in saved-states\ next to compass.exe), and save or load a state file. A state file holds no disks, so keep them as they were.
+- Machine menu: power off (back to setup), restart, pause, turbo, the fast CPU core and the 8087 core (both switch while the machine runs), quick save and quick load (kept in memory, disks included), Save state and Saved states... (states with a picture of the screen, kept per profile in saved-states\ next to compass.exe or in the data folder), and save or load a state file. A state file holds no disks, so keep them as they were.
 - Media menu: one entry per floppy drive (Insert, Recent, Take out), the floppy library (every floppy image in a folder with its GRiD volume name; double-click one to insert it) and the media manager. Swap or take out floppies while the machine runs (a changed disk is written back first) and write changed disks back now. The media manager is a GRiD file browser for disk images: hard disk volumes, subjects and files with sizes and dates. Export files to the PC from any disk; import, delete and add subjects on images that are not in use (while the machine runs, use the PC folder drive for that). "Make..." creates a blank 360K floppy image.
 - Edit menu: Paste text (types the clipboard's text on the Compass keyboard) and Copy screen (the Compass screen to the clipboard as a picture).
 - Project menu: build a GRiD program from a project folder and run it (see Build in the window).
@@ -65,7 +97,7 @@ compass.exe [--model 1101|1109|1121|1129|1131|1137|1139]
             [--folder DIR] [--folder-addr 5|6|13] [--rom0 chip.bin .. --rom3 chip.bin]
             [--gpib UNIT|addr=N|hd=F|disk=F|folder=DIR|rom=F|protocol|protect-hd|protect-disk|off]...
             [--bubble bubble.img] [--bubble-protect] [--readonly]
-            [--serial tcp:PORT | connect:[HOST:]PORT | COMn]
+            [--serial tcp:PORT | connect:[HOST:]PORT | COMn | /dev/ttyX]
             [--gridlink tcp:PORT | connect:[HOST:]PORT] [--gridlink-p2p]
             [--modem-dial NUMBER=HOST:PORT]... [--modem-listen tcp:PORT]
             [--modem-answer-300] [--rom-modem F] [--no-modem] [--mute]
@@ -92,7 +124,7 @@ compass.exe mcp
 | `--bubble` | bubble memory image (see Bubble memory). Saved on exit like the disks. |
 | `--bubble-protect` | never save the bubble. |
 | `--readonly` | never write any disk, folder or bubble back. |
-| `--serial` | the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a terminal such as PuTTY in "Raw" mode), connect:2323 or connect:HOST:2323 connects to another emulator (see Two Compasses on a null-modem cable), COM3 uses a real PC port (the bit rate follows what the GRiD program sets). |
+| `--serial` | the Compass serial port: tcp:2323 listens on 127.0.0.1:2323 (connect a terminal such as PuTTY in "Raw" mode), connect:2323 or connect:HOST:2323 connects to another emulator (see Two Compasses on a null-modem cable), COM3 (Windows) or /dev/ttyUSB0 (Linux) uses a real PC port (the bit rate follows what the GRiD program sets). |
 | `--gridlink` | the same port with a GRiDLink cable: SDLC frames over TCP. tcp:2400 waits on 127.0.0.1:2400 for a GRiDLink server program, connect:HOST:PORT connects to one. See GRiDLink. |
 | `--gridlink-p2p` | point-to-point GRiDLink cable (RTS looped to CTS); default multidrop. |
 | `--modem-dial` | internal modem phone book entry: NUMBER=HOST:PORT, the address a dialed number reaches (repeat it, or separate entries with commas; *=HOST:PORT for any other number). See The internal modem. |
@@ -119,7 +151,7 @@ compass.exe mcp
 
 ## ROM files
 
-The ROM folder is roms next to compass.exe (or the one the profile names). Import ROMs... puts every file there under the right name. Which files each model and device uses:
+The ROM folder is roms next to compass.exe, else roms in the data folder (see Setup), or the one the profile names. Import ROMs... puts every file there under the right name. Which files each model and device uses:
 
 - Boot PROM: the model's own pair under MAME's names (1101even.rev4.bin / 1101odd.rev4.bin, 1129even.ccprom.bin ..., 1139even.ccprom.bin ...), else the one it shares: the 1109 uses the 1101's, the 1121 the 1129's (or the 1101's), the 1131 and 1137 the 1139's. Without the 1129 PROM the 1121 and 1129 boot the 1101's (slower boot). The 1101 boots the later rev 4 PROM when it is there, else rev 3.
 - Keyboard controller: 300067-01.bin. The 1137 uses 300001-02.bin when it is there. Each stands in for the other when missing.
@@ -144,7 +176,7 @@ Backups made by GRiD Bubble Fix (the "<name> Module N~Bin~" or "~Raw~" files) ca
 
 Project > Project window: pick the project folder (NAME.pas, NAME.asm and the other sources) and a development disk (empty = the machine's hard disk; the disk needs Pascal~Run~ and DevelopmentExecutive~Run~). Then Build, Build and run, or Debug build.
 
-The build runs inside compass.exe on a hidden Compass (an 1129, or an 1139 when the disk has the 113x build of GRiD-OS) on the fast core, while your machine keeps running. The first build of a disk boots it (about a minute) and keeps that state in states\ next to compass.exe; later builds take a few seconds. Results go to the project folder: NAME.run, NAME.lst (and NAME.asm.lst), screen.png, and output\ for other new files. A debug build adds the .obj and .map files for Load program symbols. FATAL ERROR 9010 or 9011 means the development disk is full.
+The build runs inside compass.exe on a hidden Compass (an 1129, or an 1139 when the disk has the 113x build of GRiD-OS) on the fast core, while your machine keeps running. The first build of a disk boots it (about a minute) and keeps that state in states\ next to compass.exe (or in the data folder); later builds take a few seconds. Results go to the project folder: NAME.run, NAME.lst (and NAME.asm.lst), screen.png, and output\ for other new files. A debug build adds the .obj and .map files for Load program symbols. FATAL ERROR 9010 or 9011 means the development disk is full.
 
 Build and run copies NAME~Run~ into the running machine's PC folder drive: files added or changed in the PC folder show up while the machine runs (once GRiD has left the drive alone for two seconds). The same from a command prompt:
 ```

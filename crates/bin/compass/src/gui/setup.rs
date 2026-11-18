@@ -1,4 +1,5 @@
-//! Machine setup page: saved machine profiles (compass-profiles.json next to the program)
+//! Machine setup page: saved machine profiles (compass-profiles.json in the data folder, see
+//! crate::data_dir: next to the program, or a per-user folder when that can't be written)
 //! and the form for one of them.
 
 use std::path::{Path, PathBuf};
@@ -106,7 +107,7 @@ pub struct SetupPage {
 }
 
 fn profile_path() -> PathBuf {
-    crate::exe_dir().join("compass-profiles.json")
+    crate::data_dir().join("compass-profiles.json")
 }
 
 /// First profiles: the machines the package's .bat files start, where their disks exist,
@@ -157,6 +158,9 @@ impl SetupPage {
     pub fn save(&mut self) {
         if !self.dirty {
             return;
+        }
+        if let Some(dir) = self.file.parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
         match serde_json::to_vec_pretty(&self.data).map_err(|e| e.to_string()).and_then(|d| std::fs::write(&self.file, d).map_err(|e| e.to_string())) {
             Ok(_) => self.dirty = false,
@@ -223,7 +227,7 @@ fn roms_card(ui: &mut egui::Ui, c: &mut MachineConfig, default_roms: &Path, impo
     ui.horizontal(|ui| {
         ui.label("ROMs are looked for in the ROM folder under their usual names; a file set below is used instead.");
     });
-    ch |= path_row(ui, "ROM folder (empty = roms next to compass.exe)", &mut c.rom_dir, true, &[]);
+    ch |= path_row(ui, "ROM folder (empty = the roms folder next to the program or in the data folder)", &mut c.rom_dir, true, &[]);
     ui.horizontal(|ui| {
         if ui.button("Import ROMs...").on_hover_text("pick a folder (a MAME roms folder, your own dumps, zip files in it): every Compass ROM found there by its checksum is copied into the ROM folder under the right name").clicked() {
             *import = true;
@@ -649,7 +653,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     if ui.add(egui::Button::new(RichText::new("▶ Power on").strong()).fill(egui::Color32::from_rgb(0x2E, 0x7D, 0x32))).clicked() {
                         power = true;
                     }
-                    if ui.button("Save as shortcut (.bat)...").clicked() {
+                    if ui.button(if cfg!(windows) { "Save as shortcut (.bat)..." } else { "Save as shortcut (.sh/.desktop)..." }).clicked() {
                         shortcut = true;
                     }
                 });
@@ -759,21 +763,14 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             }
             if shortcut {
                 let name = if c.name.is_empty() { "Compass".to_string() } else { c.name.clone() };
-                if let Some(p) = rfd::FileDialog::new().add_filter("Batch file", &["bat"]).set_file_name(format!("Start {name}.bat")).save_file() {
-                    let args: Vec<String> = c.args().iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
-                    let bat = format!("@echo off\r\nrem Compass-Emu machine \"{name}\"\r\ncd /d \"%~dp0\"\r\ncompass.exe {}\r\nif errorlevel 1 pause\r\n", args.join(" "));
-                    sp.message = Some(match std::fs::write(&p, bat) {
-                        Ok(_) => format!("wrote {}", p.display()),
-                        Err(e) => format!("{}: {e}", p.display()),
-                    });
-                }
+                sp.message = save_shortcut(&name, &c.args());
             }
             ui.add_space(10.0);
             if let Some(m) = &sp.message {
                 ui.label(m);
             }
             ui.add_space(10.0);
-            ui.label(RichText::new("Paths can be relative to the folder Compass-Emu was started in. Profiles are kept in compass-profiles.json next to compass.exe. Disk images and folders can also be dropped on this window.").weak().small());
+            ui.label(RichText::new(format!("Paths can be relative to the folder Compass-Emu was started in. Profiles are kept in {}. Disk images and folders can also be dropped on this window.", sp.file.display())).weak().small());
             if !app.log.is_empty() {
                 ui.add_space(8.0);
                 ui.label(RichText::new("Messages").strong());
@@ -787,5 +784,99 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         app.setup.save();
         let cfg = app.setup.current().clone();
         app.power_on(cfg);
+    }
+}
+
+/// "Save as shortcut": asks where, then writes a file that starts this machine.
+/// Windows: a .bat next to compass.exe (it changes to its own folder first, as before).
+/// Elsewhere: a shell script (.sh), or a desktop launcher (.desktop) when that is the name
+/// chosen; both start the program where it is now and in the folder it was started in,
+/// so the profile's relative paths still work.
+fn save_shortcut(name: &str, args: &[String]) -> Option<String> {
+    let (filter, ext): (&str, &[&str]) = if cfg!(windows) { ("Batch file", &["bat"]) } else { ("Shell script or desktop launcher", &["sh", "desktop"]) };
+    let p = rfd::FileDialog::new().add_filter(filter, ext).set_file_name(format!("Start {name}.{}", ext[0])).save_file()?;
+    let text = if cfg!(windows) {
+        let args: Vec<String> = args.iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
+        format!("@echo off\r\nrem Compass-Emu machine \"{name}\"\r\ncd /d \"%~dp0\"\r\ncompass.exe {}\r\nif errorlevel 1 pause\r\n", args.join(" "))
+    } else {
+        // inside an AppImage the program runs from a temporary mount; start the AppImage itself
+        let prog = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok()).unwrap_or_else(|| PathBuf::from("compass"));
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let desktop = p.extension().map(|e| e.eq_ignore_ascii_case("desktop")).unwrap_or(false);
+        if desktop {
+            desktop_entry(name, &prog, &cwd, args)
+        } else {
+            let q: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
+            format!("#!/bin/sh\n# Compass-Emu machine \"{name}\"\ncd {} || exit 1\nexec {} {}\n", sh_quote(&cwd.display().to_string()), sh_quote(&prog.display().to_string()), q.join(" "))
+        }
+    };
+    let r = std::fs::write(&p, text);
+    #[cfg(unix)]
+    if r.is_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+    }
+    Some(match r {
+        Ok(_) => format!("wrote {}", p.display()),
+        Err(e) => format!("{}: {e}", p.display()),
+    })
+}
+
+/// One word for /bin/sh: in single quotes, a ' as '\''.
+fn sh_quote(a: &str) -> String {
+    if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:+,".contains(c)) {
+        return a.to_string();
+    }
+    format!("'{}'", a.replace('\'', "'\\''"))
+}
+
+/// A freedesktop.org launcher. Exec quoting per the Desktop Entry spec: each argument in
+/// double quotes with \ " ` $ escaped, % doubled, and then every \ doubled again for the
+/// string value.
+fn desktop_entry(name: &str, prog: &Path, cwd: &Path, args: &[String]) -> String {
+    let arg = |a: &str| {
+        let mut q = String::from("\"");
+        for ch in a.chars() {
+            match ch {
+                '\\' | '"' | '`' | '$' => {
+                    q.push('\\');
+                    q.push(ch);
+                }
+                '%' => q.push_str("%%"),
+                _ => q.push(ch),
+            }
+        }
+        q.push('"');
+        q.replace('\\', "\\\\")
+    };
+    let line = |v: &str| v.replace(['\n', '\r'], " ");
+    let mut exec = vec![arg(&prog.display().to_string())];
+    exec.extend(args.iter().map(|a| arg(a)));
+    format!(
+        "[Desktop Entry]\nType=Application\nName={}\nComment=Compass-Emu machine\nExec={}\nPath={}\nTerminal=false\nCategories=Game;Emulator;\n",
+        line(&format!("Compass-Emu: {name}")),
+        line(&exec.join(" ")),
+        line(&cwd.display().to_string())
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_quoting() {
+        assert_eq!(sh_quote("--model"), "--model");
+        assert_eq!(sh_quote("my disk.img"), "'my disk.img'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(sh_quote(""), "''");
+    }
+
+    #[test]
+    fn desktop_launcher() {
+        let d = desktop_entry("A 1101", Path::new("/opt/c e/compass"), Path::new("/home/me"), &["--hd".into(), "50% $x.img".into()]);
+        assert!(d.contains("Exec=\"/opt/c e/compass\" \"--hd\" \"50%% \\\\$x.img\"\n"), "{d}");
+        assert!(d.contains("Path=/home/me\n"));
+        assert!(d.contains("Name=Compass-Emu: A 1101\n"));
     }
 }

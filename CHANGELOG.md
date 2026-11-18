@@ -2,7 +2,7 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/dbalsom/martypc](https://github.com/dbalsom/martypc).
 
-## 0.15.0
+## 0.14.1
 
 Linux.
 - Every release now has a Linux build next to the Windows zip:

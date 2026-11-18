@@ -22,7 +22,7 @@ Where Compass-Emu keeps its own files (compass-profiles.json, saved-states, stat
 
 ## Linux
 
-Download compass-emu-VERSION-linux-x86_64.tar.gz from the releases page and unpack it anywhere (in a file manager: right-click > Extract; or tar xzf compass-emu-\*.tar.gz). Start the compass program inside: double-click it, or from a terminal:
+Download compass-emu-VERSION-linux-x86_64.tar.gz from the releases page and unpack it anywhere (in a file manager: right-click > Extract; or tar xzf compass-emu-\*.tar.gz). Start the compass program inside from a terminal (Ubuntu's file manager doesn't start programs on a double-click; in the folder, right-click > Open in Terminal):
 ```
 cd compass-emu-VERSION-linux-x86_64
 ./compass

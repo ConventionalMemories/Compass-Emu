@@ -2,6 +2,24 @@
 
 Compass-Emu versions (newest first). MartyPC's own changelog is at [github.com/dbalsom/martypc](https://github.com/dbalsom/martypc).
 
+## 0.15.0
+
+Linux.
+- Every release now has a Linux build next to the Windows zip:
+  `compass-emu-VERSION-linux-x86_64.tar.gz`. It's built on Ubuntu 22.04, so it runs on
+  distros with glibc 2.35 or newer. It only needs the ALSA and xkbcommon libraries.
+- Building from source on Linux no longer needs libudev-dev (the serial port list it was
+  for was never used). Only `libasound2-dev` and `pkg-config` are needed.
+- Profiles, saved states, build states and imported ROMs still go next to the program
+  when that folder can be written to. When it can't (Program Files, /usr/bin, an
+  AppImage), they go to a per-user folder: `~/.local/share/compass-emu` on Linux
+  (`$XDG_DATA_HOME`), `%APPDATA%\Compass-Emu` on Windows. COMPASS_DATA_DIR picks another
+  folder. The setup page shows where the profiles are.
+- "Save as shortcut" on Linux writes a shell script (.sh) or a desktop launcher
+  (.desktop) instead of a .bat.
+- The user guide has a Linux section (install, libraries, serial ports and the dialout
+  group, desktop keys, building).
+
 ## 0.14.0
 
 - Bubble memory: GRiD-OS 3.1.5D on the Compass II models (1121 to 1139) couldn't format a

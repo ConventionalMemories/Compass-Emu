@@ -31,7 +31,7 @@ struct Entry {
 pub fn folder(profile: &str) -> PathBuf {
     let name: String = profile.chars().map(|c| if c.is_alphanumeric() || " -_.()".contains(c) { c } else { '_' }).collect();
     let name = name.trim().trim_matches('.').to_string();
-    crate::exe_dir().join("saved-states").join(if name.is_empty() { "Compass".to_string() } else { name })
+    crate::data_dir().join("saved-states").join(if name.is_empty() { "Compass".to_string() } else { name })
 }
 
 fn png_of(state: &Path) -> PathBuf {

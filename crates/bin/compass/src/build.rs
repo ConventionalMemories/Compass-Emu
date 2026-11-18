@@ -218,7 +218,7 @@ fn build(job: &BuildJob, tx: &Sender<BuildMsg>) -> Result<BuildResult, String> {
     let max_s = 10800.0;
 
     // A saved state at the command line prompt, per disk, model and emulator version.
-    let states = crate::exe_dir().join("states");
+    let states = crate::data_dir().join("states");
     // (the boot PROM is part of the key: a stand-in PROM boots a different machine)
     let found = grid_core::roms::find(model, &job.roms);
     let prom: Vec<u8> = [&found.prom_even, &found.prom_odd].iter().flat_map(|p| fs::read(p).unwrap_or_default()).collect();

@@ -77,8 +77,8 @@ its fixup-masked code bytes, since the bound .run keeps no symbols. Cycle counte
 
     cargo build --release -p compass
 
-The toolchain version is pinned in `rust-toolchain.toml`. Linux needs `libasound2-dev` and
-`libudev-dev` to build, and `libxkbcommon-x11-0` and OpenGL to run the window. Windows
+The toolchain version is pinned in `rust-toolchain.toml`. Linux needs `pkg-config` and
+`libasound2-dev` to build, and `libasound2`, `libxkbcommon-x11-0` and OpenGL to run the window. Windows
 builds natively with MSVC, or from Linux with `rustup target add x86_64-pc-windows-gnu`,
 mingw-w64, and `cargo build --release -p compass --target x86_64-pc-windows-gnu`.
 
@@ -119,7 +119,8 @@ Example:
       cargo test --release -p grid_core --test gridlink -- --ignored --nocapture
 
 CI (`.github/workflows/compass.yml`) runs the plain tests on Windows and Linux, builds the
-Windows zip, and publishes a release for a `v*` tag with that version's CHANGELOG notes.
+Windows zip and the Linux tarball (on Ubuntu 22.04, for glibc 2.35 and up), and publishes a
+release with both for a `v*` tag with that version's CHANGELOG notes.
 
 ## Docs
 
@@ -143,6 +144,7 @@ against real measurements; none is needed for normal use.
 | `FPU_CORE` | `table` = the instruction-level 8087 even with the ROM |
 | `GRID_E0000_DMA` | split board also answers the 1101's DMA window (gridemu; the GUI sets it when the 1101 PROM stands in) |
 | `GRID_DEV_DISK` | development disk for the MCP server's `grid_build` |
+| `COMPASS_DATA_DIR` | where profiles, saved states, build states and imported ROMs go (default: next to the program if it can write there, else `$XDG_DATA_HOME/compass-emu` / `%APPDATA%\Compass-Emu`) |
 | `GRID_ROOT`, `GRID_EMU` | where the MCP server finds an external `tools/gridbuild.py`, and the exe it tells that script to use |
 
 **Timing models**

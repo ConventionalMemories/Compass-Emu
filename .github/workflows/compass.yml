@@ -1,10 +1,10 @@
 name: Compass-Emu
 
-# Builds and tests Compass-Emu on every push and pull request and makes the Windows zip.
-# Pushing a tag like v0.3.12 also publishes a GitHub Release with that zip and the
-# version's notes from CHANGELOG.md.
-# No apt packages are needed: the Windows job builds the program (MSVC), the Linux job
-# tests the emulation crates, which need no system libraries.
+# Builds and tests Compass-Emu on every push and pull request and makes the Windows zip
+# and the Linux tarball. Pushing a tag like v0.3.12 also publishes a GitHub Release with
+# both and the version's notes from CHANGELOG.md.
+# The Linux build runs on Ubuntu 22.04 so the program also starts on older distros
+# (glibc 2.35 and up); its only build package is libasound2-dev (ALSA, for sound).
 
 on:
   push:
@@ -21,8 +21,6 @@ jobs:
     name: Windows build and test
     runs-on: windows-2022
     timeout-minutes: 60
-    permissions:
-      contents: write
     defaults:
       run:
         shell: bash
@@ -62,25 +60,24 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: compass-emu-${{ env.VERSION }}-windows
-          path: out/compass-emu
-
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          [ "v$VERSION" = "$TAG" ] || { echo "tag $TAG does not match crate version $VERSION"; exit 1; }
-          awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
-          gh release create "$TAG" "out/compass-emu-$VERSION.zip" --title "Compass-Emu $VERSION" --notes-file notes.md
+          path: out/compass-emu-${{ env.VERSION }}.zip
 
   linux:
-    name: Linux tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    name: Linux build and test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install ALSA headers
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q &&
+            sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends libasound2-dev pkg-config && exit 0
+            sleep 20
+          done
+          exit 1
 
       - name: Install Rust (version from rust-toolchain.toml)
         run: rustup toolchain install
@@ -91,8 +88,57 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: compass-linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: compass-linux-
+          key: compass-linux2204-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: compass-linux2204-
 
-      - name: Test the emulation crates
-        run: cargo test --locked --release -p grid_core -p i8087
+      - name: Test
+        run: cargo test --locked --release -p grid_core -p i8087 -p compass
+
+      - name: Build
+        run: cargo build --locked --release -p compass
+
+      - name: Make the Linux tarball
+        run: |
+          VERSION=$(grep -m1 '^version' crates/bin/compass/Cargo.toml | cut -d'"' -f2)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          D="compass-emu-$VERSION-linux-x86_64"
+          mkdir -p "out/$D"
+          cp dist/windows/README.txt "out/$D/README.txt"
+          cp target/release/compass "out/$D/compass"
+          strip "out/$D/compass"
+          cp LICENSE "out/$D/LICENSE.txt"
+          cp CHANGELOG.md "out/$D/CHANGELOG.md"
+          ldd "out/$D/compass"
+          # tar keeps the program's executable bit (an Actions artifact alone would not)
+          tar -C out -czf "out/$D.tar.gz" "$D"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-emu-${{ env.VERSION }}-linux-x86_64
+          path: out/compass-emu-${{ env.VERSION }}-linux-x86_64.tar.gz
+
+  release:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -m1 '^version' crates/bin/compass/Cargo.toml | cut -d'"' -f2)
+          TAG="${GITHUB_REF_NAME}"
+          [ "v$VERSION" = "$TAG" ] || { echo "tag $TAG does not match crate version $VERSION"; exit 1; }
+          awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          gh release create "$TAG" "dl/compass-emu-$VERSION.zip" "dl/compass-emu-$VERSION-linux-x86_64.tar.gz" --title "Compass-Emu $VERSION" --notes-file notes.md

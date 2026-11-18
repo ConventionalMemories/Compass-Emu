@@ -56,7 +56,7 @@
 //!   grid_core::marks), F11 = save screenshot, F12 = turbo on/off, Esc = Compass ESC. Close the window to quit
 //!   (changed disks are written back unless --readonly).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use grid_core::{screen, GridModel};
 mod build;
@@ -75,7 +75,7 @@ mod winkeys;
 
 use session::{MachineConfig, Session};
 
-pub const VERSION: &str = "0.14.0";
+pub const VERSION: &str = "0.15.0";
 
 fn usage() -> ! {
     eprintln!(
@@ -89,14 +89,66 @@ pub fn exe_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Where Compass-Emu keeps what it writes itself: compass-profiles.json, saved-states/,
+/// states/ and imported roms/.
+///
+/// 1. COMPASS_DATA_DIR, when set.
+/// 2. The program's folder, when compass-profiles.json is already there or the folder can be
+///    written to (the portable zip/tarball way, as before).
+/// 3. Otherwise (installed in /usr/bin, Program Files, an AppImage ...) a per-user folder:
+///    $XDG_DATA_HOME/compass-emu (normally ~/.local/share/compass-emu) on Linux,
+///    ~/Library/Application Support/Compass-Emu on macOS, %APPDATA%\Compass-Emu on Windows.
+pub fn data_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(d) = std::env::var_os("COMPASS_DATA_DIR").filter(|d| !d.is_empty()) {
+            return PathBuf::from(d);
+        }
+        let exe = exe_dir();
+        if exe.join("compass-profiles.json").exists() || dir_writable(&exe) {
+            return exe;
+        }
+        user_data_dir().unwrap_or(exe)
+    })
+    .clone()
+}
+
+/// Whether a file can be made in `dir` (made and removed again to find out).
+fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".compass-write-test-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The per-user data folder of this platform, if its base can be found.
+fn user_data_dir() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        env("APPDATA").map(|d| d.join("Compass-Emu"))
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|h| h.join("Library").join("Application Support").join("Compass-Emu"))
+    } else {
+        env("XDG_DATA_HOME").filter(|d| d.is_absolute()).or_else(|| env("HOME").map(|h| h.join(".local").join("share"))).map(|d| d.join("compass-emu"))
+    }
+}
+
+/// A file in the roms folder: looked for next to the program, in the data folder and in
+/// the current folder; when it is in none of them, the data folder's roms (where
+/// Import ROMs puts them).
 pub fn default_path(name: &str) -> PathBuf {
-    for base in [exe_dir(), PathBuf::from(".")] {
+    let data = data_dir();
+    for base in [exe_dir(), data.clone(), PathBuf::from(".")] {
         let p = base.join("roms").join(name);
         if p.exists() {
             return p;
         }
     }
-    PathBuf::from("roms").join(name)
+    data.join("roms").join(name)
 }
 
 /// Options for the window itself (not part of a machine profile).

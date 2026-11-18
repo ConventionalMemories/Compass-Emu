@@ -152,8 +152,8 @@ window.
 The full guide, including the command line, is in [docs/user-guide.md](docs/user-guide.md).
 It ships as README.txt in the zip. Which ROM file is which is in [docs/roms.md](docs/roms.md).
 
-The release is Windows only for now. Linux builds from source (see below), and macOS
-is untested.
+Each release has a Windows zip and a Linux tarball (x86-64, glibc 2.35 or newer; see the
+Linux section of the user guide). macOS builds from source but is untested.
 
 ## Documentation
 
@@ -192,8 +192,8 @@ cargo build --release -p compass
 cargo test --release -p grid_core -p i8087 -p compass
 ```
 
-Linux needs `libasound2-dev` and `libudev-dev` to build, and `libxkbcommon-x11-0` and
-OpenGL to run the window. The Windows build can be cross-compiled with
+Linux needs `pkg-config` and `libasound2-dev` to build, and `libasound2`,
+`libxkbcommon-x11-0` and OpenGL to run the window. The Windows build can be cross-compiled with
 `--target x86_64-pc-windows-gnu`.
 
 The code is in `crates/lib/grid_core` (the Compass and its drives), `crates/lib/i8087` (the

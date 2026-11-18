@@ -44,8 +44,10 @@ Linux
   for \ in paths.
 
   - It runs on 64-bit x86 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian
-    12, Fedora 36, Mint 21 or newer). It needs the ALSA sound library and
-    xkbcommon, which every desktop has; on a minimal system install them with
+    12, Fedora 36, Mint 21 or newer). It needs the ALSA sound library and, on
+    an X11 desktop, xkbcommon-x11. Ubuntu doesn't always install the second one
+    (its Wayland session doesn't need it); if the window doesn't open and the
+    terminal says libxkbcommon-x11.so could not be loaded, install them with
         sudo apt install libasound2 libxkbcommon-x11-0
     (Fedora: sudo dnf install alsa-lib libxkbcommon-x11). Sound through
     PulseAudio or PipeWire works through their ALSA plugin.

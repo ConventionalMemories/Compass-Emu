@@ -309,12 +309,20 @@ fn main() {
     }
     let start = given.then_some(cfg.clone());
     let gui_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gui::run(start, &opts)))
-        .unwrap_or_else(|_| Err("the window system could not be opened".into()));
+        .unwrap_or_else(|p| {
+            let msg = p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("");
+            // X11 without libxkbcommon-x11 (not installed on every desktop, e.g. Ubuntu's
+            // default Wayland install): say what to install
+            if msg.contains("libxkbcommon-x11") {
+                eprintln!("Compass-Emu needs the xkbcommon X11 library: sudo apt install libxkbcommon-x11-0 (Fedora: sudo dnf install libxkbcommon-x11)");
+            }
+            Err("the window system could not be opened".into())
+        });
     if let Err(e) = gui_result {
         // No OpenGL 2 (an old graphics driver or a virtual machine): fall back to the plain window.
         eprintln!("the GUI could not start ({e}); using the classic window");
         if !given {
-            eprintln!("start it with machine options (see compass --help) or from one of the .bat files");
+            eprintln!("start it with machine options (see compass --help) or from a saved shortcut");
             std::process::exit(1);
         }
         let s = Session::build(&cfg, &default_path("")).unwrap_or_else(|e| {
